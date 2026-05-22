@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        /* 字体在 shared/render_templates/fonts/；Playwright base_url 仍为 maimai 模板根，故使用相对路径 ../../../shared/render_templates/fonts/... */
+        /* ── 西文/通用 ── */
+        @font-face {
+            font-family: "Inter";
+            src: url("../../../shared/render_templates/fonts/Inter-VariableFont_opsz,wght.ttf") format("truetype");
+            font-weight: 100 900;   /* 可变字体：声明完整字重范围 */
+            font-style: normal;
+            font-display: swap;
+        }
+
+        /* ── 日文 ── */
+        @font-face {
+            font-family: "NotoSansJP";
+            src: url("../../../shared/render_templates/fonts/NotoSansJP-VariableFont_wght.ttf") format("truetype");
+            font-weight: 100 900;   /* 可变字体 */
+            font-style: normal;
+            font-display: swap;
+        }
+
+        @font-face {
+            font-family: "ヒラギノ角ゴ Pro W3";
+            src: url("../../../shared/render_templates/fonts/ヒラギノ角ゴ Pro W3.otf") format("opentype");
+            font-weight: 300;       /* W3 对应 Light/300 */
+            font-style: normal;
+            font-display: swap;
+        }
+
+        /* FOT-Seurat Pro：maimai 常用圆黑体（DemiBold） */
+        @font-face {
+            font-family: "FOT-Seurat Pro";
+            src: url("../../../shared/render_templates/fonts/FOT-Seurat Pro DB.otf") format("opentype");
+            font-weight: 600;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        /* FOT-RaglanPunchStd：冲压风格展示字体（UltraBold），适用于评级/大标题 */
+        @font-face {
+            font-family: "FOT-RaglanPunchStd";
+            src: url("../../../shared/render_templates/fonts/FOT-RaglanPunchStd-UB.otf") format("opentype");
+            font-weight: 900;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        /* FOT-NewRodinPro：maimai 主界面圆体；多字重共用同一 family-name，
+           通过 font-weight 区分，CSS 会自动选择最接近的字重文件 */
+        @font-face {
+            font-family: "FOT-NewRodinPro";
+            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-M.otf") format("opentype");
+            font-weight: 500;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: "FOT-NewRodinPro";
+            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-DB.otf") format("opentype");
+            font-weight: 600;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: "FOT-NewRodinPro";
+            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-B.otf") format("opentype");
+            font-weight: 700;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: "FOT-NewRodinPro";
+            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-EB.otf") format("opentype");
+            font-weight: 800;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: "FOT-NewRodinPro";
+            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-UB.otf") format("opentype");
+            font-weight: 900;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        /* GenSenRounded2 (源ノ角ゴシック2 丸)：多字重 TTC 系列
+           .ttc 格式在 Chromium (Playwright) 中通过 format("collection") 声明；
+           Firefox 不支持 .ttc，但本项目使用 Playwright/Chromium 渲染，无需担心。 */
+        @font-face {
+            font-family: "GenSenRounded2";
+            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-EL.ttc") format("collection");
+            font-weight: 200;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: "GenSenRounded2";
+            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-L.ttc") format("collection");
+            font-weight: 300;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: "GenSenRounded2";
+            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-R.ttc") format("collection");
+            font-weight: 400;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: "GenSenRounded2";
+            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-M.ttc") format("collection");
+            font-weight: 500;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: "GenSenRounded2";
+            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-B.ttc") format("collection");
+            font-weight: 700;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: "GenSenRounded2";
+            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-H.ttc") format("collection");
+            font-weight: 800;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        /* ── 中文 ── */
+        @font-face {
+            font-family: "思源黑体";
+            src: url("../../../shared/render_templates/fonts/思源黑体CN-Bold.otf") format("opentype");
+            font-weight: 700;       /* 仅有 Bold 字重 */
+            font-style: normal;
+            font-display: swap;
+        }
+
+        /* ── 后备 Arial Bold ── */
+        @font-face {
+            font-family: "arial";
+            src: url("../../../shared/render_templates/fonts/arialbd.ttf") format("truetype");
+            font-weight: 700;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            /* 优先使用 maimai 原生字体，依次回退到通用字体 */
+            font-family: 'FOT-NewRodinPro', 'GenSenRounded2', 'Inter', 'NotoSansJP',
+                         'ヒラギノ角ゴ Pro W3', '思源黑体', 'arial', 'Microsoft YaHei', sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .player-info-section {
+            flex-shrink: 0;
+            width: 100%;
+        }
+
+        .main-content-area {
+            flex: 1;
+            position: relative;
+            min-height: 0;
+            overflow: hidden;
+            width: 100%;
+        }
+
+        .overlay-section {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            z-index: 300;
+            pointer-events: none;
+        }
+
+        .overlay-section > * {
+            pointer-events: auto;
+        }
+
+        .bg-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .bg-container iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+    </style>
+    {% block additional_css %}{% endblock %}
+</head>
+<body>
+    <div class="player-info-section" id="player-info-section">
+        {% block player_info %}{% endblock %}
+    </div>
+    <div class="main-content-area">
+        <div class="bg-container">
+            {% if bg_image_url %}
+            <img src="{{ bg_image_url }}" style="width:100%;height:100%;object-fit:cover;display:block;">
+            {% else %}
+            <iframe src="{{ bg_page_url }}"></iframe>
+            {% endif %}
+        </div>
+        <div class="overlay-section">
+            {% block overlay_content %}{% endblock %}
+        </div>
+    </div>
+    {# Playwright：主文档 domcontentloaded 后 iframe 子文档可能仍未就绪，由 Python 侧 wait_for_function 等待 __BG_IFRAME_READY__ #}
+    <script>
+        (function () {
+            window.__BG_IFRAME_READY__ = false;
+            window.__BG_IFRAME_ERROR__ = false;
+            window.__BG_BG_MODE__ = "unknown";
+            var SAFETY_MS = 25000;
+
+            function markReady() {
+                window.__BG_IFRAME_READY__ = true;
+            }
+            function markError() {
+                window.__BG_IFRAME_ERROR__ = true;
+                markReady();
+            }
+
+            // 等待页面内所有 <img> 加载完毕（含外部图像）后执行 callback
+            function waitForAllImages(callback) {
+                var pending = Array.from(document.images).filter(function (img) {
+                    return !img.complete;
+                });
+                if (pending.length === 0) { callback(); return; }
+                var remaining = pending.length;
+                function onOne() { if (--remaining <= 0) callback(); }
+                pending.forEach(function (img) {
+                    img.addEventListener("load", onOne, { once: true });
+                    img.addEventListener("error", onOne, { once: true });
+                });
+            }
+
+            var container = document.querySelector(".bg-container");
+            if (!container) {
+                window.__BG_BG_MODE__ = "none";
+                waitForAllImages(markReady);
+                return;
+            }
+
+            var iframe = container.querySelector("iframe");
+            if (iframe) {
+                window.__BG_BG_MODE__ = "iframe";
+                function onIframeDone() { waitForAllImages(markReady); }
+                iframe.addEventListener("load", onIframeDone, { once: true });
+                iframe.addEventListener("error", function () {
+                    window.__BG_IFRAME_ERROR__ = true;
+                    waitForAllImages(markReady);
+                }, { once: true });
+                setTimeout(function () {
+                    if (window.__BG_IFRAME_READY__) return;
+                    try {
+                        var doc = iframe.contentDocument;
+                        if (doc && doc.readyState === "complete") {
+                            waitForAllImages(markReady);
+                            return;
+                        }
+                    } catch (e) { /* cross-origin */ }
+                    markError();
+                }, SAFETY_MS);
+            } else {
+                // img 模式或无背景：等待页面内所有图像（含 bg img）加载完毕
+                window.__BG_BG_MODE__ = container.querySelector("img") ? "image" : "none";
+                waitForAllImages(markReady);
+            }
+        })();
+    </script>
+</body>
+</html>

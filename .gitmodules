@@ -1,0 +1,3 @@
+[submodule "src/submodule/autopcr"]
+	path = src/submodule/autopcr
+	url = https://github.com/cc004/autopcr.git

@@ -1,0 +1,505 @@
+{% extends "bg_template.html" %}
+
+{% block additional_css %}
+<style>
+    /* 覆盖基模板 body 字体栈，不启用新字体 */
+    body {
+        font-family: 'Inter', 'NotoSansJP', 'ヒラギノ角ゴ Pro W3', '思源黑体', 'arial', 'Microsoft YaHei', sans-serif;
+    }
+
+    /* 玩家信息容器 - 在背景上方垂直排列 */
+    .player-info-container {
+        position: relative;
+        width: 100%;
+        min-height: 536px;
+        display: flex;
+    }
+    
+    .player-info-bg-img {
+        position: absolute;
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 100%;
+        height: auto;
+        z-index: 1;
+        object-fit: contain;
+        pointer-events: none;
+    }
+
+    .player-info-content {
+        position: relative;
+        z-index: 2;
+        width: 100%;
+    }
+
+    /* 如果需要固定尺寸，可以这样设置 */
+    /* .player-info-container.fixed-size {
+        width: 800px;
+        height: 600px;
+        background-size: 100% 100%;
+        margin: 0 auto;
+    } */
+
+    /* B50容器 - 在overlay-section中居中显示 */
+    .b50-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        padding: 5%;
+        margin-top: 20px;
+        margin-bottom: 20px;
+    }
+
+    .b50-content {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(3px);
+        -webkit-backdrop-filter: blur(3px);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        border-radius: 15px;
+        padding: 15px 20px;
+        width: 100%;
+        height: 100%;
+        max-width: 90vw;
+        max-height: 80vh;
+        overflow-y: auto;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+    }
+
+    .b50-header {
+        position: relative;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        color: #fff;
+        margin: 10px 0px;
+    }
+
+    .b50-header img {
+        width: auto;
+        max-width: 100%;
+        height: 70px;
+        display: block;
+    }
+
+    .b50-header h2 {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        margin: 0;
+        z-index: 2;
+    } 
+
+    .song-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+    }
+
+    .song-card {
+        color: white;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        text-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
+
+        background-size: 100% 100%, auto 100%;
+        background-position: left center, right center;
+        background-repeat: no-repeat, no-repeat;
+        position: relative;
+        overflow: hidden;
+        height: 95px;
+    }
+
+    .song-title {
+        display: flex;
+        justify-content: space-between;
+        font-size: 15px;
+        font-weight: bold;
+        margin-bottom: 5px;
+    }
+
+    .song-title .title-text {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .song-title .title-index {
+        flex: 0 0 auto;
+        margin-left: 8px;
+        white-space: nowrap;
+    }
+
+    .song-stats {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .dx-rating-fonts-img {
+        display: inline-block;
+        width: 58px;
+        height: 69px;
+        background-image: url("assets/UI_CMN_Num_70p.png");
+        background-repeat: no-repeat;
+        background-size: 232px 276px; /* 0.8 */
+        filter: 
+            brightness(0) saturate(100%) invert(66%) sepia(95%) saturate(901%) hue-rotate(2deg) brightness(106%) contrast(103%)
+            drop-shadow(0.5px 0px 0px #343434)     /* 右 */
+            drop-shadow(-0.5px 0px 0px #343434)    /* 左 */
+            drop-shadow(0px 0.5px 0px #343434)     /* 下 */
+            drop-shadow(0px -0.5px 0px #343434);    /* 上 */
+
+    }
+    .dx-rating-fonts-img-0 { background-position:   0px   0px; }
+    .dx-rating-fonts-img-1 { background-position: -58px   0px; }
+    .dx-rating-fonts-img-2 { background-position: -116px   0px; }
+    .dx-rating-fonts-img-3 { background-position: -174px   0px; }
+    .dx-rating-fonts-img-4 { background-position:   0px -69px; }
+    .dx-rating-fonts-img-5 { background-position: -58px -69px; }
+    .dx-rating-fonts-img-6 { background-position: -116px -69px; }
+    .dx-rating-fonts-img-7 { background-position: -174px -69px; }
+    .dx-rating-fonts-img-8 { background-position:   0px -138px; }
+    .dx-rating-fonts-img-9 { background-position: -58px -138px; }
+
+    .frame {
+        position: relative;
+        display: flex;
+        height: auto;
+        margin-top: 30px;
+        margin-left: 40px;
+    }
+
+    .frame-panel {
+        position: absolute;
+        top: 0;
+        left: 33%;
+        transform: translateX(-50%);
+        height: auto;
+        z-index: 1;
+        object-fit: contain;
+        width: 850px;
+    }
+
+    .frame-avatar {
+        position: relative;
+        z-index: 2;
+        width: 120px;
+        height: 120px;
+        object-fit: cover;
+        /* margin-left: 82px; */
+        margin-top: 11px;
+    }
+
+    .player-info {
+        display: flex;
+        z-index: 2;
+        flex-direction: column;
+    }
+
+    .player-info-details {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: var(--player-info-gap, 12px);
+        background-color: #fff;
+        border-radius: 10px;
+        width: 290px;
+        height: 28px;
+        padding: var(--player-info-padding, 6px 12px);
+        color: black;
+        font-size: 22px;
+        text-shadow: 1px 1px 2px black;
+        margin-top: 2px;
+        margin-left: 6px;
+    }
+
+    .player-info-details p {
+        margin: 0;
+        line-height: 2;
+        white-space: nowrap;
+        /* overflow: hidden;
+        text-overflow: ellipsis; */
+    }
+
+    .player-info-course {
+        height: 40px;
+        object-fit: cover;
+        flex: 0 0 auto;
+        margin-left: 33px;
+    }
+
+    .ach { display: inline-flex; align-items: baseline; }
+    .ach-big { font-size: 1.6em; font-weight: 700; line-height: 1; }
+    .ach-small { font-size: 1.1em; line-height: 1; margin-left: 1px; opacity: 0.95; }
+
+    .icon-placeholder {
+        width: 24px;
+        height: 24px;
+        display: inline-block;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.9);          /* 淡白填充 */
+        border: 1px solid rgba(255, 255, 255, 0.45);    /* 细边框 */
+        box-shadow: 0 0 2px rgba(0,0,0,0.25) inset;      /* 内阴影，更像圆饼 */
+    }
+
+    .song-icons {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 5px;
+    }
+</style>
+{% endblock %}
+
+{% block player_info %}
+<div class="player-info-container">
+    {% if player_info_bg %}
+    <img class="player-info-bg-img" src="{{ player_info_bg }}" alt="背景图片" />
+    {% endif %}
+    <div class="player-info-content">
+        <div class="frame">
+            <img class="frame-avatar" src="{{ player_avatar }}">
+            <img class="frame-panel" src="{{ player_panel }}">
+            <div class="player-info">
+                <!-- dx rating -->
+                <div>
+                    {% set b50_scale = b50_scale | default(1) %}
+                    <svg xmlns="http://www.w3.org/2000/svg" width="{{ 664 * b50_scale }}" height="{{ 130 * b50_scale }}" 
+                            viewBox="0 0 664 130" preserveAspectRatio="xMidYMid meet"
+                            style="margin-left: 5px; margin-top: 8px;">
+                        <!-- 背景图：动态选择 -->
+                        <image href="{{ dx_rating_image }}"
+                                x="0" y="0" height="130" width="664" />
+                        <foreignObject x="308" y="38" width="265" height="60">
+                            <div xmlns="http://www.w3.org/1999/xhtml" style="display:flex; align-items:center; height:100%;">
+                            {% for ch in dx_rating|string %}
+                                <span class="dx-rating-fonts-img dx-rating-fonts-img-{{ ch }}"></span>
+                            {% endfor %}
+                            </div>
+                        </foreignObject>
+                    </svg>
+                    <img src="{{ player_class }}" style="width: 93px; height: 56px; margin-top: -90px; margin-left: 10px;" />
+                </div>
+                <div class="player-info-details">
+                     <p>{{ player_name|default("未知玩家") }}</p>
+                     <img class="player-info-course" src="{{ player_course }}" alt="course"/>
+                </div>
+                {% set trophy_scale = trophy_scale | default(1) %}
+                <svg xmlns="http://www.w3.org/2000/svg" width="{{ 276 * trophy_scale }}" height="{{ 36 * trophy_scale }}" viewBox="0 0 276 36" preserveAspectRatio="xMidYMid meet"
+                        style="margin-left: 1px;">
+                    <!-- 背景图 -->
+                    <image href="{{ trophy_color }}"
+                            x="0" y="0" height="36" width="276" preserveAspectRatio="xMidYMid meet" />
+
+                    <!-- 居中文字 -->
+                    <foreignObject x="0" y="6" width="276" height="30">
+                        <div xmlns="http://www.w3.org/1999/xhtml"
+                            style="
+                            width:235px;
+                            margin:0 auto;
+                            text-align:center;
+                            white-space:nowrap;
+                            overflow:hidden;
+                            text-overflow:ellipsis;
+                            color:white;
+                            font-size:14px;
+                            /* 模拟黑色描边 (上下左右四个阴影) */
+                            text-shadow:
+                                black 1px 1px 0, black -1px -1px 0,/*右下、左上*/
+                                black -1px 1px 0, black 1px -1px 0,/*右上、左下*/
+                                black 0px 1px 0, black 0 -1px 0,/*右、左*/
+                                black -1px 0 0, black 1px 0 0
+                            ">
+                        {{ trophy_name }}
+                        </div>
+                    </foreignObject>
+                </svg>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block overlay_content %}
+<div class="b50-container">
+    <div class="b50-content">
+        {% if b35_data and b35_data|length > 0 %}
+        <div class="b50-header">
+            <img src="{{ title_img }}">
+            <h2>Best 35</h2>
+        </div>
+        <div class="song-grid">
+            {% for song in b35_data %}
+            <div class="song-card" style="background-image: {{ gradients[song.level_index] }}, url('jacket/UI_Jacket_{{ '{:0>6}'.format(song.id % 10000 if song.id > 10000 else song.id) }}.png');">
+                <div class="song-title">
+                    <span class="title-text">{{ song.song_name|default("未知曲目") }}</span>
+                    <span class="title-index" style="text-shadow: {{ shadows[song.level_index] }};"># {{ loop.index }} </span>
+                </div>
+                <div class="song-stats">
+                    {% set ach = song.achievements %}
+                    {% if ach is number %}
+                        {% set s = '{:.4f}'.format(ach) %}
+                        {% set pts = s.split('.') %}
+                        {% set big = pts[0] ~ '.' ~ pts[1][0] %}
+                        {% set small = pts[1][1:] %}
+                        <span class="ach">
+                            <span class="ach-big">{{ big }}</span><span class="ach-small">{{ small }}</span>
+                        </span>
+                    {% else %}
+                        <span class="ach-big">?</span>
+                    {% endif %}
+                    {% set dx_rating = song.dx_rating %}
+                    {% if dx_rating is number %}
+                        {% set s = '{:.4f}'.format(dx_rating) %}
+                        {% set pts = s.split('.') %}
+                        {% set int = pts[0] %}
+                        <span>{{ '{:.1f}'.format(song.internalLevelValue|default("?")) }} -> {{ int }}</span>
+                    {% else %}
+                        <span>{{ '{:.1f}'.format(song.internalLevelValue|default("?")) }} -> ?</span>
+                    {% endif %}
+                </div>
+                <div class="song-icons">
+                    <img src="assets/prism/UI_TTR_Rank_{{ song.rate }}.png" style="width: 70px; margin-left: -10px;">
+                    {% if song.fc %}
+                        <img src="assets/music_icon_{{ song.fc }}.png" style="height: 32px;">
+                    {% else %}
+                        <span class="icon-placeholder" aria-hidden="true"></span>
+                    {% endif %}
+                    {% if song.fs %}
+                        <img src="assets/music_icon_{{ song.fs }}.png" style="height: 32px;">
+                    {% else %}
+                        <span class="icon-placeholder" aria-hidden="true"></span>
+                    {% endif %}
+                    <!-- {% if song.dx_star != 0 %}
+                        <img src="assets/music_icon_dxstar_{{ song.dx_star }}.png" style="width: 30px;">
+                    {% endif %} -->
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        
+        {% if b15_data and b15_data|length > 0 %}
+        <div class="b50-header">
+            <img src="{{ title_img }}">
+            <h2>Best 15</h2>
+        </div>
+        <div class="song-grid">
+            {% for song in b15_data %}
+            <div class="song-card" style="background-image: {{ gradients[song.level_index] }}, url('jacket/UI_Jacket_{{ '{:0>6}'.format(song.id % 10000 if song.id > 10000 else song.id) }}.png');">
+                <div class="song-title">
+                    <span class="title-text">{{ song.song_name|default("未知曲目") }}</span>
+                    <span class="title-index" style="text-shadow: {{ shadows[song.level_index] }};"># {{ loop.index }} </span>
+                </div>
+                <div class="song-stats">
+                    {% set ach = song.achievements %}
+                    {% if ach is number %}
+                        {% set s = '{:.4f}'.format(ach) %}
+                        {% set pts = s.split('.') %}
+                        {% set big = pts[0] ~ '.' ~ pts[1][0] %}
+                        {% set small = pts[1][1:] %}
+                        <span class="ach">
+                            <span class="ach-big">{{ big }}</span><span class="ach-small">{{ small }}</span>
+                        </span>
+                    {% else %}
+                        <span class="ach-big">?</span>
+                    {% endif %}
+                    {% set dx_rating = song.dx_rating %}
+                    {% if dx_rating is number %}
+                        {% set s = '{:.4f}'.format(dx_rating) %}
+                        {% set pts = s.split('.') %}
+                        {% set int = pts[0] %}
+                        <span>{{ '{:.1f}'.format(song.internalLevelValue|default("?")) }} -> {{ int }}</span>
+                    {% else %}
+                        <span>{{ '{:.1f}'.format(song.internalLevelValue|default("?")) }} -> ?</span>
+                    {% endif %}
+                </div>
+                <div class="song-icons">
+                    <img src="assets/prism/UI_TTR_Rank_{{ song.rate }}.png" style="width: 70px; margin-left: -10px;">
+                    {% if song.fc %}
+                        <img src="assets/music_icon_{{ song.fc }}.png" style="height: 32px;">
+                    {% else %}
+                        <span class="icon-placeholder" aria-hidden="true"></span>
+                    {% endif %}
+                    {% if song.fs %}
+                        <img src="assets/music_icon_{{ song.fs }}.png" style="height: 32px;">
+                    {% else %}
+                        <span class="icon-placeholder" aria-hidden="true"></span>
+                    {% endif %}
+                    <!-- {% if song.dx_star != 0 %}
+                        <img src="assets/music_icon_dxstar_{{ song.dx_star }}.png" style="width: 30px;">
+                    {% endif %} -->
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% if r50_data and r50_data|length > 0 %}
+        <div class="b50-header">
+            <img src="{{ title_img }}">
+            <h2>Recent 50</h2>
+        </div>
+        <div class="song-grid">
+            {% for song in r50_data %}
+            <div class="song-card" style="background-image: {{ gradients[song.level_index] }}, url('jacket/UI_Jacket_{{ '{:0>6}'.format(song.id % 10000 if song.id > 10000 else song.id) }}.png');">
+                <div class="song-title">
+                    <span class="title-text">{{ song.song_name|default("未知曲目") }}</span>
+                    <span class="title-index" style="text-shadow: {{ shadows[song.level_index] }};"># {{ loop.index }} </span>
+                </div>
+                <div class="song-stats">
+                    {% set ach = song.achievements %}
+                    {% if ach is number %}
+                        {% set s = '{:.4f}'.format(ach) %}
+                        {% set pts = s.split('.') %}
+                        {% set big = pts[0] ~ '.' ~ pts[1][0] %}
+                        {% set small = pts[1][1:] %}
+                        <span class="ach">
+                            <span class="ach-big">{{ big }}</span><span class="ach-small">{{ small }}</span>
+                        </span>
+                    {% else %}
+                        <span class="ach-big">?</span>
+                    {% endif %}
+                    {% set dx_rating = song.dx_rating %}
+                    {% if dx_rating is number %}
+                        {% set s = '{:.4f}'.format(dx_rating) %}
+                        {% set pts = s.split('.') %}
+                        {% set int = pts[0] %}
+                        <span>{{ '{:.1f}'.format(song.internalLevelValue|default("?")) }} -> {{ int }}</span>
+                    {% else %}
+                        <span>{{ '{:.1f}'.format(song.internalLevelValue|default("?")) }} -> ?</span>
+                    {% endif %}
+                </div>
+                <div class="song-icons">
+                    <img src="assets/prism/UI_TTR_Rank_{{ song.rate }}.png" style="width: 70px; margin-left: -10px;">
+                    {% if song.fc %}
+                        <img src="assets/music_icon_{{ song.fc }}.png" style="height: 32px;">
+                    {% else %}
+                        <span class="icon-placeholder" aria-hidden="true"></span>
+                    {% endif %}
+                    {% if song.fs %}
+                        <img src="assets/music_icon_{{ song.fs }}.png" style="height: 32px;">
+                    {% else %}
+                        <span class="icon-placeholder" aria-hidden="true"></span>
+                    {% endif %}
+                    <!-- {% if song.dx_star != 0 %}
+                        <img src="assets/music_icon_dxstar_{{ song.dx_star }}.png" style="width: 30px;">
+                    {% endif %} -->
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% if r50_data and r50_data|length > 0 %}
+    {% endif %}
+    <p style="color: white; font-size: larger; font-weight: 600; text-shadow: -1px -1px 0 rgba(0, 0, 0, 0.8), 1px -1px 0 rgba(0, 0, 0, 0.8), -1px 1px 0 rgba(0, 0, 0, 0.8), 1px 1px 0 rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.8);">Powered By maimai.lxns.net & dxrating.net / Generated By ChiffonBot / Developed By DreamRain</p>
+</div>
+{% endblock %}

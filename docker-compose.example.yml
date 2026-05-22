@@ -1,0 +1,91 @@
+# Copy this file to docker-compose.yml or docker-compose-dev.yml and adjust values for your host.
+services:
+  napcat:
+    hostname: dreamrain
+    init: true
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    environment:
+      NAPCAT_UID: "${UID:-1000}"
+      NAPCAT_GID: "${GID:-1000}"
+      TZ: "${TZ:-Asia/Shanghai}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+    ports:
+      - "${NAPCAT_PORT:-6099}:6099"
+    volumes:
+      - "${NAPCAT_CONFIG_DIR:-./runtime/napcat/config}:/app/napcat/config"
+      - "${QQ_CONFIG_DIR:-./runtime/qq-config}:/app/.config/QQ"
+      - "${APP_DATA_DIR:-./runtime/data}:/app/data"
+    networks:
+      - qq
+
+  dreamrain-bot:
+    hostname: dreamrain-bot
+    container_name: dreamrain-bot
+    image: "${BOT_IMAGE:-dreamrain-bot:latest}"
+    build:
+      context: .
+      args:
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+      dockerfile: Dockerfile
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      HTMLRENDER_CONNECT: "${HTMLRENDER_CONNECT:-ws://playwright:3000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      playwright:
+        condition: service_healthy
+    volumes:
+      - "./.env.prod:/app/.env.prod:ro"
+      - "${APP_DATA_DIR:-./runtime/data}:/app/data"
+      - "${APP_LOG_DIR:-./runtime/logs}:/app/logs"
+    networks:
+      - qq
+
+  playwright:
+    hostname: playwright
+    image: mcr.microsoft.com/playwright:v1.57.0-noble
+    container_name: playwright
+    entrypoint:
+      - /bin/sh
+      - -c
+      - npx -y playwright@1.57.0 run-server --port 3000 --host 0.0.0.0
+    ports:
+      - "${PLAYWRIGHT_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:3000 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - "${APP_DATA_DIR:-./runtime/data}:/app/data:ro"
+    networks:
+      - qq
+
+  postgres:
+    hostname: postgres
+    image: postgres:16-alpine
+    container_name: dreamrain-postgres
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-dreamrain}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change-me}"
+      POSTGRES_DB: "${POSTGRES_DB:-dreamrain_bot}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - "${POSTGRES_DATA_DIR:-./runtime/postgres_data}:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - qq
+
+networks:
+  qq:
+    driver: bridge

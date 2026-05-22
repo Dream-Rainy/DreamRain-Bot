@@ -1,0 +1,90 @@
+import hashlib
+import json
+import time
+from urllib.parse import quote
+
+from nonebot import logger
+
+from . import rsacr
+from .aiorequests import post
+
+
+bili_login = "https://line1-sdk-center-login-sh.biligame.net/"
+
+
+async def send_post(url: str, data):
+    headers = {
+        "User-Agent": "Mozilla/5.0 BSGameSDK",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Host": "line1-sdk-center-login-sh.biligame.net",
+    }
+    res = await (await post(url=url, data=data, headers=headers)).content
+    if res is None:
+        raise Exception("登录接口返回空响应")
+    return json.loads(res)
+
+
+def set_sign(data: dict) -> str:
+    data["timestamp"] = int(time.time())
+    data["client_timestamp"] = int(time.time())
+    sign = ""
+    data2 = ""
+    for key in data:
+        if key == "pwd":
+            pwd = quote(data["pwd"])
+            data2 += f"{key}={pwd}&"
+            continue
+        data2 += f"{key}={data[key]}&"
+    for key in sorted(data):
+        sign += f"{data[key]}"
+    sign = sign + "fe8aac4e02f845b8ad67c427d48bfaf1"
+    sign = hashlib.md5(sign.encode()).hexdigest()
+    data2 += "sign=" + sign
+    return data2
+
+
+modolrsa = '{"operators":"5","merchant_id":"1","isRoot":"0","domain_switch_count":"0","sdk_type":"1","sdk_log_type":"1","timestamp":"1613035485639","support_abis":"x86,armeabi-v7a,armeabi","access_key":"","sdk_ver":"3.4.2","oaid":"","dp":"1280*720","original_domain":"","imei":"227656364311444","version":"1","udid":"KREhESMUIhUjFnJKNko2TDQFYlZkB3cdeQ==","apk_sign":"e89b158e4bcf988ebd09eb83f5378e87","platform_type":"3","old_buvid":"XZA2FA4AC240F665E2F27F603ABF98C615C29","android_id":"84567e2dda72d1d4","fingerprint":"","mac":"08:00:27:53:DD:12","server_id":"1592","domain":"line1-sdk-center-login-sh.biligame.net","app_id":"1370","version_code":"90","net":"4","pf_ver":"6.0.1","cur_buvid":"XZA2FA4AC240F665E2F27F603ABF98C615C29","c":"1","brand":"Android","client_timestamp":"1613035486888","channel_id":"1","uid":"","game_id":"1370","ver":"2.4.10","model":"MuMu"}'
+modollogin = '{"operators":"5","merchant_id":"1","isRoot":"0","domain_switch_count":"0","sdk_type":"1","sdk_log_type":"1","timestamp":"1613035508188","support_abis":"x86,armeabi-v7a,armeabi","access_key":"","sdk_ver":"3.4.2","oaid":"","dp":"1280*720","original_domain":"","imei":"227656364311444","gt_user_id":"fac83ce4326d47e1ac277a4d552bd2af","seccode":"","version":"1","udid":"KREhESMUIhUjFnJKNko2TDQFYlZkB3cdeQ==","apk_sign":"e89b158e4bcf988ebd09eb83f5378e87","platform_type":"3","old_buvid":"XZA2FA4AC240F665E2F27F603ABF98C615C29","android_id":"84567e2dda72d1d4","fingerprint":"","validate":"84ec07cff0d9c30acb9fe46b8745e8df","mac":"08:00:27:53:DD:12","server_id":"1592","domain":"line1-sdk-center-login-sh.biligame.net","app_id":"1370","pwd":"rxwA8J+GcVdqa3qlvXFppusRg4Ss83tH6HqxcciVsTdwxSpsoz2WuAFFGgQKWM1+GtFovrLkpeMieEwOmQdzvDiLTtHeQNBOiqHDfJEKtLj7h1nvKZ1Op6vOgs6hxM6fPqFGQC2ncbAR5NNkESpSWeYTO4IT58ZIJcC0DdWQqh4=","version_code":"90","net":"4","pf_ver":"6.0.1","cur_buvid":"XZA2FA4AC240F665E2F27F603ABF98C615C29","c":"1","brand":"Android","client_timestamp":"1613035509437","channel_id":"1","uid":"","captcha_type":"1","game_id":"1370","challenge":"efc825eaaef2405c954a91ad9faf29a2","user_id":"doo349","ver":"2.4.10","model":"MuMu"}'
+modolcaptch = '{"operators":"5","merchant_id":"1","isRoot":"0","domain_switch_count":"0","sdk_type":"1","sdk_log_type":"1","timestamp":"1613035486182","support_abis":"x86,armeabi-v7a,armeabi","access_key":"","sdk_ver":"3.4.2","oaid":"","dp":"1280*720","original_domain":"","imei":"227656364311444","version":"1","udid":"KREhESMUIhUjFnJKNko2TDQFYlZkB3cdeQ==","apk_sign":"e89b158e4bcf988ebd09eb83f5378e87","platform_type":"3","old_buvid":"XZA2FA4AC240F665E2F27F603ABF98C615C29","android_id":"84567e2dda72d1d4","fingerprint":"","mac":"08:00:27:53:DD:12","server_id":"1592","domain":"line1-sdk-center-login-sh.biligame.net","app_id":"1370","version_code":"90","net":"4","pf_ver":"6.0.1","cur_buvid":"XZA2FA4AC240F665E2F27F603ABF98C615C29","c":"1","brand":"Android","client_timestamp":"1613035487431","channel_id":"1","uid":"","game_id":"1370","ver":"2.4.10","model":"MuMu"}'
+
+
+async def _login(account: str, password: str, challenge: str = "", gt_user: str = "", validate: str = ""):
+    rsa = await send_post(bili_login + "api/client/rsa", set_sign(json.loads(modolrsa)))
+    data = json.loads(modollogin)
+    public_key = rsa["rsa_key"]
+    data["access_key"] = ""
+    data["gt_user_id"] = gt_user
+    data["uid"] = ""
+    data["challenge"] = challenge
+    data["user_id"] = account
+    data["validate"] = validate
+    if validate:
+        data["seccode"] = validate + "|jordan"
+    data["pwd"] = rsacr.rsa_create(rsa["hash"] + password, public_key)
+    return await send_post(bili_login + "api/client/login", set_sign(data))
+
+
+async def login(bili_account: str, bili_pwd: str, captcha_verifier):
+    logger.info("logging in with acc = {}, pwd = {}", bili_account, bili_pwd)
+    login_sta = await _login(bili_account, bili_pwd)
+    if login_sta.get("message", "") == "用户名或密码错误":
+        raise Exception("用户名或密码错误")
+
+    # 需要二次验证（geetest）
+    if login_sta.get("code") == 200000:
+        cap = await send_post(
+            bili_login + "api/client/start_captcha",
+            set_sign(json.loads(modolcaptch)),
+        )
+        try:
+            challenge, gt_user_id, captcha_done = await captcha_verifier(
+                cap["gt"], cap["challenge"], cap["gt_user_id"]
+            )
+        except Exception as e:
+            raise Exception(f"验证码校验失败: {e}") from e
+        login_sta = await _login(
+            bili_account, bili_pwd, challenge, gt_user_id, captcha_done
+        )
+        if login_sta.get("message", "") == "用户名或密码错误":
+            raise Exception("用户名或密码错误")
+    return login_sta

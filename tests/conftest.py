@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import nonebot
+import pytest
+import pytest_asyncio
+from nonebug import NONEBOT_INIT_KWARGS
+from nonebot.plugin import get_plugin
+from tortoise import Tortoise
+
+from tests.fixtures.song_seed import seed_song_data
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.stash[NONEBOT_INIT_KWARGS] = {
+        "driver": "~fastapi",
+        "command_start": ["/"],
+        "host": "127.0.0.1",
+        "port": 18080,
+        "superusers": {"test_superuser"},
+        "lxns_api_key": "test",
+        "lxns_client_id": "test",
+        "lxns_client_secret": "test",
+        "db_engine": "sqlite",
+        "db_url": "data/test.sqlite3",
+        "permission_admin_path": "data/test-permissions.json",
+    }
+
+
+@pytest.fixture()
+def loaded_chiffon_bot(app):
+    if get_plugin("nonebot_plugin_saa") is None:
+        nonebot.load_plugin("nonebot_plugin_saa")
+
+    plugin = get_plugin("chiffon_bot")
+    if plugin is None:
+        plugin = nonebot.load_plugin("src.plugins.chiffon_bot")
+
+    assert plugin is not None
+    return plugin
+
+
+@pytest_asyncio.fixture()
+async def seeded_song_db(tmp_path: Path, loaded_chiffon_bot):
+    db_path = tmp_path / "songs.sqlite3"
+    await Tortoise.init(
+        {
+            "connections": {
+                "default": {
+                    "engine": "tortoise.backends.sqlite",
+                    "credentials": {"file_path": str(db_path)},
+                }
+            },
+            "apps": {
+                "models": {
+                    "models": ["src.plugins.chiffon_bot.infra.db.models"],
+                    "default_connection": "default",
+                }
+            },
+        }
+    )
+    await Tortoise.generate_schemas()
+    await seed_song_data()
+    try:
+        yield
+    finally:
+        await Tortoise.close_connections()
+
+
+@pytest.fixture()
+def song_indexes(seeded_song_db):
+    from src.plugins.chiffon_bot.integrations.lxns.plugin_data import plugin_data
+    from tests.fixtures.song_seed import (
+        CHUNI_SONG_ID,
+        CHUNI_SONG_TITLE,
+        MAI_SONG_ID,
+        MAI_SONG_TITLE,
+    )
+
+    plugin_data.mai_song_index = {MAI_SONG_ID: MAI_SONG_TITLE}
+    plugin_data.chuni_song_index = {CHUNI_SONG_ID: CHUNI_SONG_TITLE}
+    plugin_data.mai_song_data = {}
+    plugin_data.chuni_song_data = {}
+    return plugin_data

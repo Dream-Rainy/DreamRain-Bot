@@ -1,0 +1,581 @@
+{# CHUNITHM 乐曲信息页 — extends 共享 bg_template；素材说明见同目录 MEDIA_PLACEHOLDERS.md。#}
+{% extends "bg_template.html" %}
+
+{% block additional_css %}
+<style>
+    /* ── 与 song_info 相同的容器节奏，配色偏 CHUNITHM 金橙 ── */
+    .song-info-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 5%;
+        margin-top: -10px;
+        margin-bottom: 20px;
+    }
+
+    .song-info-content {
+        width: 100%;
+        height: 100%;
+        max-width: 90vw;
+        overflow-y: auto;
+        min-width: 1100px;
+    }
+
+    .info-section {
+        width: 93%;
+        max-width: 950px;
+        min-height: 256px;
+        margin: 10px auto;
+        padding: 20px 30px;
+        background: linear-gradient(
+            135deg,
+            rgba(243, 166, 7, 0.18) 0%,
+            rgba(255, 255, 255, 0.55) 100%
+        );
+        backdrop-filter: blur(25px) saturate(180%);
+        -webkit-backdrop-filter: blur(25px) saturate(180%);
+        border: 1px solid rgba(243, 166, 7, 0.35);
+        border-radius: 15px;
+        color: #1a1a1a;
+        display: flex;
+        flex-direction: row;
+        justify-content: space-between;
+    }
+
+    .jacket-container {
+        position: relative;
+        display: inline-block;
+    }
+
+    .song-jacket {
+        height: 256px;
+        border-radius: 10px;
+        display: block;
+        object-fit: cover;
+        background: rgba(0, 0, 0, 0.06);
+    }
+
+    .lock-icon, .new-song-icon {
+        position: absolute;
+        pointer-events: none;
+        z-index: 1;
+    }
+
+    .lock-icon { top: 8px; left: 8px; width: 48px; height: 48px; }
+    .new-song-icon { top: 8px; right: -8px; width: 96px; height: auto; }
+
+    .song-details {
+        height: 256px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        min-width: 620px;
+        max-width: 640px;
+    }
+
+    .base-info.title-row {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        min-width: 0;
+    }
+
+    .base-info .title {
+        font-size: 26px;
+        font-weight: bold;
+        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        color: #1a1a1a;
+        display: block;
+        flex: 1 1 auto;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        line-height: 1.3;
+    }
+
+    .base-info .song-id {
+        margin-left: 0;
+        flex: 0 0 auto;
+        font-size: 16px;
+        font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;
+        color: #555;
+    }
+
+    .base-info .artist {
+        margin-top: 10px;
+        font-size: 18px;
+        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        color: #333;
+        font-weight: 500;
+        word-wrap: break-word;
+        line-height: 1.3;
+    }
+
+    .extra-info {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px 14px;
+        width: 100%;
+        font-weight: 600;
+        font-size: 14px;
+        color: #333;
+    }
+
+    .extra-info > span {
+        text-align: center;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .region-tags-grid {
+        margin-top: 8px;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 6px;
+        max-width: 88px;
+        margin-left: auto;
+        margin-right: auto;
+        font-size: 11px;
+    }
+
+    .region-tag {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background-color: rgba(243, 166, 7, 0.2);
+        color: #b87300;
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+    }
+
+    .region-tag.unavailable {
+        background-color: rgba(128, 128, 128, 0.15);
+        color: #888;
+    }
+
+    .data-table {
+        max-width: 1000px;
+        min-width: 980px;
+        margin: 20px auto;
+        border-collapse: collapse;
+        background-color: rgba(255, 255, 255, 0.95);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        border-radius: 10px;
+        overflow: hidden;
+    }
+
+    .data-table thead {
+        background: linear-gradient(90deg, #f3a607 0%, #e8940a 100%);
+        color: white;
+    }
+
+    .data-table th, .data-table td {
+        padding: 12px 14px;
+        text-align: center;
+        border-bottom: 1px solid #e0e0e0;
+        color: black;
+        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+    }
+
+    .data-table th {
+        font-weight: 600;
+        font-size: 12px;
+        letter-spacing: 0.5px;
+    }
+
+    .multi-row {
+        padding: 0 !important;
+        vertical-align: middle;
+    }
+
+    .multi-row .row-item {
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        box-sizing: border-box;
+    }
+
+    .multi-row .row-item:last-child { border-bottom: none; }
+
+    .multi-row.note-designer-cell .row-item {
+        word-break: break-word;
+        line-height: 1.25;
+        max-width: 200px;
+    }
+
+    .level-display {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;
+        color: #c77800;
+    }
+
+    .level-delta { font-size: 12px; font-family: 'Inter', sans-serif; margin-top: 2px; }
+    .level-delta-up { color: #c62828; }
+    .level-delta-down { color: #2e7d32; }
+
+    /* 无 PNG 时的难度文字标签 */
+    .diff-fallback {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 10px;
+        font-weight: 700;
+        font-size: 11px;
+        text-transform: uppercase;
+        color: #fff;
+    }
+
+    .diff-fallback.basic { background: #43a047; }
+    .diff-fallback.advanced { background: #fbc02d; color: #333; }
+    .diff-fallback.expert { background: #f4511e; }
+    .diff-fallback.master { background: #8e24aa; }
+    .diff-fallback.ultima { background: #37474f; }
+
+    .table-divider td {
+        height: 4px;
+        padding: 0 !important;
+        background: linear-gradient(90deg, #f3a607 0%, #ff6f00 100%);
+        border: none;
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 40px;
+        color: #999;
+        font-style: italic;
+    }
+
+    .type-badge-chuni {
+        display: inline-block;
+        padding: 6px 14px;
+        border-radius: 8px;
+        font-weight: 700;
+        font-size: 13px;
+        background: #2196f3;
+        color: #fff;
+    }
+
+    .type-badge-we {
+        display: inline-block;
+        padding: 6px 14px;
+        border-radius: 8px;
+        font-weight: 700;
+        font-size: 13px;
+        background: linear-gradient(135deg, #7c4dff 0%, #e040fb 100%);
+        color: #fff;
+        letter-spacing: 0.5px;
+    }
+</style>
+
+<script>
+    window.addEventListener('load', function() {
+        const rows = document.querySelectorAll('.data-table tbody tr');
+        rows.forEach(row => {
+            const multiRowCells = row.querySelectorAll('.multi-row');
+            if (multiRowCells.length === 0) return;
+            let maxRowItems = 0;
+            multiRowCells.forEach(cell => {
+                const items = cell.querySelectorAll('.row-item');
+                maxRowItems = Math.max(maxRowItems, items.length);
+            });
+            const noteCells = Array.from(multiRowCells).filter(c => c.classList.contains('note-designer-cell'));
+            for (let i = 0; i < maxRowItems; i++) {
+                multiRowCells.forEach(cell => {
+                    const item = cell.querySelectorAll('.row-item')[i];
+                    if (item) {
+                        item.style.height = 'auto';
+                        if (cell.classList.contains('note-designer-cell')) item.style.fontSize = '';
+                    }
+                });
+                let mh = 0;
+                multiRowCells.forEach(cell => {
+                    const item = cell.querySelectorAll('.row-item')[i];
+                    if (item) mh = Math.max(mh, item.offsetHeight);
+                });
+                if (mh > 90 && noteCells.length) {
+                    let fs = 14;
+                    const probe = noteCells[0].querySelectorAll('.row-item')[i];
+                    if (probe) {
+                        const p = parseFloat(getComputedStyle(probe).fontSize);
+                        if (!isNaN(p)) fs = p;
+                    }
+                    while (fs >= 8) {
+                        noteCells.forEach(cell => {
+                            const item = cell.querySelectorAll('.row-item')[i];
+                            if (item) item.style.fontSize = fs + 'px';
+                        });
+                        mh = 0;
+                        multiRowCells.forEach(cell => {
+                            const item = cell.querySelectorAll('.row-item')[i];
+                            if (item) mh = Math.max(mh, item.offsetHeight);
+                        });
+                        if (mh < 90) break;
+                        fs -= 1;
+                    }
+                } else {
+                    noteCells.forEach(cell => {
+                        const item = cell.querySelectorAll('.row-item')[i];
+                        if (item) item.style.fontSize = '';
+                    });
+                }
+                const maxHeight = Math.max(mh, 70);
+                multiRowCells.forEach(cell => {
+                    const item = cell.querySelectorAll('.row-item')[i];
+                    if (item) item.style.height = maxHeight + 'px';
+                });
+            }
+        });
+    });
+</script>
+{% endblock %}
+
+{# 难度图：有文件则显示，否则 onerror 显示 CSS 标签 #}
+{% macro chuni_diff_badge(difficulty) %}
+    {% set diff_key = (difficulty or '')|lower|replace(' ', '_') %}
+    <img src="assets/chuni/diff_{{ diff_key }}.png" alt="" style="height:28px;"
+         onerror="this.outerHTML='<span class=\'diff-fallback {{ diff_key }}\'>{{ difficulty }}</span>'">
+{% endmacro %}
+
+{% block overlay_content %}
+<div class="song-info-container">
+    <div class="song-info-content">
+        {% if song_info %}
+        <div class="info-section">
+            <div class="jacket-container">
+                {% if song_info.jacket_url %}
+                <img class="song-jacket" src="{{ song_info.jacket_url }}" alt="">
+                {% elif chuni_jacket_base_url and song_info.image_name %}
+                <img class="song-jacket"
+                     src="{{ chuni_jacket_base_url.rstrip('/') }}/{{ song_info.image_name }}"
+                     alt=""
+                     onerror="this.onerror=null; this.style.opacity=0.3;">
+                {% else %}
+                {# 封面：请设置 chuni_jacket_base_url + image_name，或直接传 song_info.jacket_url #}
+                <div class="song-jacket" style="width:256px;display:flex;align-items:center;justify-content:center;font-size:12px;color:#666;">
+                    （封面未配置）
+                </div>
+                {% endif %}
+                {% if song_info.isLocked %}
+                <img class="lock-icon" src="assets/chuni/icon_lock.png" alt=""
+                     onerror="this.style.display='none'">
+                {% endif %}
+                {% if song_info.isNew %}
+                <img class="new-song-icon" src="assets/chuni/icon_new.png" alt="New"
+                     onerror="this.style.display='none'">
+                {% endif %}
+            </div>
+            <div class="song-details">
+                <div>
+                    <div class="base-info title-row">
+                        <span class="title">{{ song_info.title | default('???') }}</span>
+                        <span class="song-id">#{{ song_info.id | default('-') }}</span>
+                    </div>
+                    <div class="base-info">
+                        <span class="artist">{{ song_info.artist | default('-') }}</span>
+                    </div>
+                </div>
+                <div class="extra-info">
+                    <span>BPM: {{ song_info.bpm | default('-') }}</span>
+                    <span>{{ song_info.category | default(song_info.genre) | default('-') }}</span>
+                    <span>Ver: {{ song_info.version | default('-') }}</span>
+                    <span>{{ song_info.releaseDate | default('') }}</span>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% set charts = standard_charts | default([]) %}
+        <div class="table-container">
+            {% if charts and charts | length > 0 %}
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>谱面</th>
+                        <th>难度</th>
+                        <th>定数</th>
+                        <th>谱师</th>
+                        <th>TOTAL</th>
+                        <th>TAP</th>
+                        <th>HOLD</th>
+                        <th>SLIDE</th>
+                        <th>AIR</th>
+                        <th>FLICK</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="vertical-align:middle;">
+                            {% if charts[0].regions %}
+                            <div class="region-tags-grid">
+                                <span class="region-tag{% if not charts[0].regions.jp %} unavailable{% endif %}">JP</span>
+                                <span class="region-tag{% if not charts[0].regions.intl %} unavailable{% endif %}">INTL</span>
+                                <span class="region-tag{% if not charts[0].regions.cn %} unavailable{% endif %}">CN</span>
+                            </div>
+                            {% endif %}
+                        </td>
+                        <td class="multi-row">
+                            {% for chart in charts %}
+                            <div class="row-item">{{ chuni_diff_badge(chart.difficulty) }}</div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row">
+                            {% for chart in charts %}
+                            <div class="row-item">
+                                <div class="level-display">{{ chart.internalLevelValue | default('-') }}</div>
+                                {% if chart.internalLevelValue is not none and chart.internalLevelValueNew is not none %}
+                                    {% set d = (chart.internalLevelValueNew | float) - (chart.internalLevelValue | float) %}
+                                    {% if d > 0 %}
+                                    <div class="level-delta level-delta-up">↑{{ '%.1f' | format(d) }}</div>
+                                    {% elif d < 0 %}
+                                    <div class="level-delta level-delta-down">↓{{ '%.1f' | format((0 - d)) }}</div>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row note-designer-cell">
+                            {% for chart in charts %}
+                            <div class="row-item">{{ chart.noteDesigner | default('-') }}</div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in charts %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['total'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in charts %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['tap'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in charts %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['hold'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in charts %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['slide'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in charts %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['air'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in charts %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['flick'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state"><p>暂无谱面数据</p></div>
+            {% endif %}
+        </div>
+
+        {# ── World's End 谱面 ──────────────────────────────────────────── #}
+        {% set we = we_charts | default([]) %}
+        {% if we | length > 0 %}
+        <div class="table-container" style="margin-top:12px;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>谱面</th>
+                        <th>难度</th>
+                        <th>谱师</th>
+                        <th>TOTAL</th>
+                        <th>TAP</th>
+                        <th>HOLD</th>
+                        <th>SLIDE</th>
+                        <th>AIR</th>
+                        <th>FLICK</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="vertical-align:middle;">
+                            <span class="type-badge-we">WORLD'S END</span>
+                        </td>
+                        <td class="multi-row">
+                            {% for chart in we %}
+                            <div class="row-item">
+                                {# WE 以星数显示，level 字段通常为 "☆N" 或整数星数 #}
+                                {% set lvl = chart.level | default(chart.difficulty) | default('?') %}
+                                <span style="font-size:16px;font-weight:bold;font-family:Inter,sans-serif;">{{ lvl }}</span>
+                            </div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row note-designer-cell">
+                            {% for chart in we %}
+                            <div class="row-item">{{ chart.noteDesigner | default('-') }}</div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in we %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['total'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in we %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['tap'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in we %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['hold'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in we %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['slide'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in we %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['air'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                            {% for chart in we %}
+                            {% set nc = chart.noteCounts or {} %}
+                            <div class="row-item"><strong>{{ nc['flick'] | default(0, true) }}</strong></div>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+    </div>
+    <p style="margin-top:8px;font-size:small;color:#fff;font-weight:600;font-family:'思源黑体','Microsoft YaHei',sans-serif;text-shadow:0 0 6px rgba(0,0,0,.8);">
+        定数以国服（LXNS）为准，箭头为 arcade-songs 相对变动；数据仅供参考。
+    </p>
+    <p style="margin-top:4px;font-size:medium;color:#fff;font-weight:600;font-family:Inter,sans-serif;text-shadow:0 0 6px rgba(0,0,0,.8);">
+        Powered By maimai.lxns.net &amp; arcade-songs / Generated By ChiffonBot
+    </p>
+</div>
+{% endblock %}

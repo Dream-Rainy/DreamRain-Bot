@@ -1,0 +1,1026 @@
+{% extends "bg_template.html" %}
+
+{% block additional_css %}
+<style>
+    .song-info-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 5%;
+        margin-top: -10px;
+        margin-bottom: 20px;
+    }
+
+    .song-info-content {
+        width: 100%;
+        height: 100%;
+        max-width: 90vw;
+        overflow-y: auto;
+        min-width: 1100px;
+    }
+
+    .info-section {
+        width: 93%;
+        max-width: 950px;
+        min-height: 256px;
+        margin: 10px auto;
+        padding: 20px 30px;
+        /* 半透明渐变背景 + 毛玻璃 */
+        background: linear-gradient(
+            135deg, 
+            rgba(255, 255, 255, 0.2) 0%, 
+            rgba(255, 255, 255, 0.6) 100%
+        );
+        backdrop-filter: blur(25px) saturate(180%);
+        -webkit-backdrop-filter: blur(25px) saturate(180%);
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        border-radius: 15px;
+        /* box-shadow: 
+            0 8px 32px rgba(0, 0, 0, 0.25),
+            inset 0 1px 0 rgba(255, 255, 255, 0.3); */
+        color: white;
+        display: flex;
+        flex-direction: row;
+        justify-content: space-between;
+        /* flex-wrap: wrap; */
+    }
+    
+    .info-section h2 {
+        margin: 0 0 15px 0;
+        font-size: 24px;
+        font-weight: 600;
+        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+    }
+    
+    .info-content {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+    }
+    
+    .info-item {
+        flex: 1;
+        min-width: 150px;
+        background-color: rgba(255, 255, 255, 0.1);
+        padding: 15px;
+        border-radius: 8px;
+        backdrop-filter: blur(10px);
+    }
+    
+    .info-item-label {
+        font-size: 12px;
+        font-family: 'Inter', 'NotoSansJP', sans-serif;
+        text-transform: uppercase;
+        opacity: 0.8;
+        margin-bottom: 5px;
+        letter-spacing: 0.5px;
+    }
+    
+    .info-item-value {
+        font-size: 20px;
+        font-weight: bold;
+        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+    }
+
+    .data-table {
+        max-width: 1000px;
+        min-width: 980px;
+        margin: 20px auto;
+        border-collapse: collapse;
+        background-color: rgba(255, 255, 255, 0.95);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        border-radius: 10px;
+        overflow: hidden;
+        table-layout: auto;
+    }
+    
+    .data-table thead {
+        background: cornflowerblue;
+        color: white;
+    }
+    
+    .data-table th,
+    .data-table td {
+        padding: 14px 18px;
+        text-align: center;
+        border-bottom: 1px solid #e0e0e0;
+        color: black;
+        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+    }
+    
+    .data-table th {
+        font-weight: 600;
+        font-family: '思源黑体', 'GenSenRounded2', 'NotoSansJP', sans-serif;
+        text-transform: uppercase;
+        font-size: 13px;
+        letter-spacing: 0.5px;
+    }
+    
+    /* 难度标签样式 */
+    .difficulty-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 15px;
+        font-weight: bold;
+        font-size: 12px;
+        text-transform: uppercase;
+    }
+    
+    /* 类型标签 */
+    .type-badge {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 5px;
+        font-weight: bold;
+        font-size: 11px;
+        margin-right: 8px;
+    }
+    
+    .type-dx { background-color: #FF9800; color: white; }
+    .type-std { background-color: #2196F3; color: white; }
+    
+    /* 等级显示：优先 Inter 保证小数点数字美观 */
+    .level-display {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;
+        color: #667eea;
+    }
+    
+    .level-delta {
+        margin-top: 2px;
+        font-size: 12px;
+        line-height: 1.1;
+        font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;
+    }
+    
+    .level-delta-up {
+        color: #e53935;
+    }
+    
+    .level-delta-down {
+        color: #2e7d32;
+    }
+    
+    .empty-state {
+        text-align: center;
+        padding: 40px;
+        color: #999;
+        font-style: italic;
+    }
+
+    .jacket-container {
+        position: relative;
+        display: inline-block;
+    }
+
+    .song-jacket {
+        height: 256px;
+        border-radius: 10px;
+        display: block;
+        /* box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2),
+                    0 0 0 1px rgba(255, 255, 255, 0.1); */
+    }
+
+    .lock-icon {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        width: 48px;
+        height: 48px;
+        pointer-events: none;
+        z-index: 1;
+    }
+
+    .new-song-icon {
+        position: absolute;
+        top: 8px;
+        right: -12px;
+        width: 110px;
+        height: auto;
+        pointer-events: none;
+        z-index: 1;
+    }
+
+    .song-details {
+        height: 256px; /* 与封面高度一致 */
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        min-width: 620px;
+        max-width: 640px;
+    }
+
+    .base-info {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+    }
+
+    .base-info .title {
+        order: 1;
+        flex: 1;
+        font-size: 26px;
+        font-weight: bold;
+        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        color: black;
+        
+        /* 最多显示 3 行，超出隐藏 */
+        display: -webkit-box;
+        -webkit-line-clamp: 5;
+        line-clamp: 5;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        word-wrap: break-word;
+        line-height: 1.3;
+        max-width: 500px;
+    }
+
+    .base-info .song-id {
+        order: 2;
+        margin-left: auto;
+        font-size: 16px;
+        color: black;
+    }
+
+    .base-info .artist {
+        order: 3;
+        flex-basis: 100%;   /* 强制换行，占一整行 */
+        
+        margin-top: 10px;
+        font-size: 18px;
+        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        color: black;
+        font-weight: 500;
+        word-wrap: break-word;
+        line-height: 1.3;
+    }
+
+
+    .extra-info {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap; /* 允许换行 */
+        justify-content: space-between;
+        font-weight: 600;
+    }
+
+    .extra-info .bpm {
+        order: 1;
+        color: black;
+    }
+
+    .extra-info .category {
+        order: 2;
+        color: black;
+    }
+
+    .extra-info .map {
+        order: 3;
+        color: black;
+    }
+
+    .region-tag {
+        display: inline-block;
+        padding: 2px 8px;
+        margin-right: 6px;
+        border-radius: 4px;
+        background-color: rgba(102, 126, 234, 0.15);
+        color: #667eea;
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+    }
+
+    .region-tag.unavailable {
+        background-color: rgba(128, 128, 128, 0.15);
+        color: #888;
+    }
+
+    /* 多行数据单元格样式 */
+    .multi-row {
+        padding: 0 ! important;
+        vertical-align: middle;
+        overflow: hidden;
+    }
+
+    .multi-row .row-item {
+        padding: 10px 15px;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        max-width: 190px;
+        box-sizing: border-box;
+    }
+
+    .multi-row .row-item:last-child {
+        border-bottom: none;
+    }
+
+    .multi-row .row-item.level-stack {
+        flex-direction: column;
+    }
+
+    /* 谱面设计列：过长时由脚本递减字号；折行与行高便于高度收敛到 90px 以下 */
+    .multi-row.note-designer-cell .row-item {
+        word-break: break-word;
+        line-height: 1.25;
+        text-align: center;
+    }
+
+    /* 类型列垂直居中 */
+    .data-table td:first-child {
+        vertical-align: middle;
+    }
+
+    /* 难度标签缩写样式 */
+    .difficulty-badge {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-weight: bold;
+        font-size: 11px;
+        text-transform: uppercase;
+        min-width: 40px;
+        text-align: center;
+    }
+
+    .diff-0 { background-color: #4CAF50; color: white; }
+    .diff-1 { background-color: #FFC107; color: white; }
+    .diff-2 { background-color: #FF5722; color: white; }
+    .diff-3 { background-color: #9C27B0; color: white; }
+    .diff-4 { background-color: #E1BEE7; color: #4A148C; }
+
+    /* 类型标签样式 */
+    .type-badge {
+        display: inline-block;
+        padding: 8px 15px;
+        border-radius: 8px;
+        font-weight: bold;
+        font-size: 14px;
+    }
+
+    .type-sd, .type-standard { background-color: #2196F3; color: white; }
+    .type-dx { background-color: #FF9800; color: white; }
+
+    /* 交替行背景色（针对每个 row-item） */
+    .multi-row .row-item:nth-child(odd) {
+        background-color: rgba(0, 0, 0, 0. 02);
+    }
+
+    .multi-row .row-item:nth-child(even) {
+        background-color: rgba(0, 0, 0, 0.05);
+    }
+
+    .table-divider td {
+        height: 4px;
+        padding: 0 ! important;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border: none;
+    }
+
+    .panel {
+        min-width: 1000px;
+        min-height: 100px;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        border-style: solid;
+        border-width: 23px 24px;               /* 实际边框宽度 */
+
+        border-image-source: url("assets/UI_MSS_UtageCommentBase.png");
+
+        /* 上 右 下 左 */
+        border-image-slice: 23 24 23 24 fill;
+
+        border-image-repeat: stretch;
+
+        padding: 12px 64px; /* 额外左右内边距，避免被两侧装饰遮挡 */
+        box-sizing: border-box;
+        z-index: 0;
+    }
+
+    .panel::before {
+        content: "";
+        position: absolute;
+
+        /* 横向：覆盖整个 panel 宽度 */
+        left: 0;
+        right: -10px;
+
+        /* 纵向：贴在上边框“中线” */
+        top: -22px;
+
+        height: 16px;
+
+        pointer-events: none;
+        z-index: 1;
+
+        /* 背景图横向平铺 */
+        background-image: url("assets/UI_MSS_UtageCommenParts_01.png");
+        background-repeat: repeat-x;
+        background-size: 16px 16px; /* 单个装饰点尺寸 */
+        background-position: left center;
+
+        /* 四个一组的明暗渐变遮罩：每64px为一组循环 */
+        mask-image: 
+            repeating-linear-gradient(
+                to right,
+                rgba(0,0,0,0) 0px,
+                rgba(0,0,0,0.3) 16px,
+                rgba(0,0,0,0.5) 32px,
+                rgba(0,0,0,0.7) 48px,
+                rgba(0,0,0,1) 64px
+            );
+        mask-size: 64px 100%;
+        mask-repeat: repeat-x;
+        
+        -webkit-mask-image: 
+            repeating-linear-gradient(
+                to right,
+                rgba(0,0,0,0) 0px,
+                rgba(0,0,0,0.3) 16px,
+                rgba(0,0,0,0.5) 32px,
+                rgba(0,0,0,0.7) 48px,
+                rgba(0,0,0,1) 64px
+            );
+        -webkit-mask-size: 64px 100%;
+        -webkit-mask-repeat: repeat-x;
+    }
+
+    /* 为第一个点使用指定的暗色 #e66400 */
+    .panel::after {
+        content: "";
+        position: absolute;
+
+        left: 0;
+        right: 0;
+        top: -22px;
+        height: 16px;
+
+        pointer-events: none;
+        z-index: 2;
+
+        /* 使用纯色作为背景 */
+        background-color: #e66400;
+        
+        /* 用装饰图片作为形状遮罩 */
+        mask-image: url("assets/UI_MSS_UtageCommenParts_01.png");
+        mask-repeat: repeat-x;
+        mask-size: 16px 16px;
+        mask-position: left center;
+        
+        -webkit-mask-image: url("assets/UI_MSS_UtageCommenParts_01.png");
+        -webkit-mask-repeat: repeat-x;
+        -webkit-mask-size: 16px 16px;
+        -webkit-mask-position: left center;
+
+        /* 复合遮罩：图片形状 + 只显示每组第一个点的位置遮罩 */
+        mask-composite: source-in;
+        -webkit-mask-composite: source-in;
+        
+        /* 叠加位置遮罩，只在每组第一个点显示 */
+        mask-image: 
+            url("assets/UI_MSS_UtageCommenParts_01.png"),
+            repeating-linear-gradient(
+                to right,
+                rgba(0,0,0,1) 0px,
+                rgba(0,0,0,1) 16px,
+                transparent 16px,
+                transparent 64px
+            );
+        mask-size: 16px 16px, 64px 100%;
+        mask-repeat: repeat-x, repeat-x;
+        mask-position: left center, left top;
+        mask-composite: intersect;
+        
+        -webkit-mask-image: 
+            url("assets/UI_MSS_UtageCommenParts_01.png"),
+            repeating-linear-gradient(
+                to right,
+                rgba(0,0,0,1) 0px,
+                rgba(0,0,0,1) 16px,
+                transparent 16px,
+                transparent 64px
+            );
+        -webkit-mask-size: 16px 16px, 64px 100%;
+        -webkit-mask-repeat: repeat-x, repeat-x;
+        -webkit-mask-position: left center, left top;
+        -webkit-mask-composite: source-in;
+    }
+
+
+
+    /* 下边框装饰条：基础层（渐变顺序翻转） */
+    .panel-decor-bottom {
+        position: absolute;
+
+        /* 横向：覆盖整个 panel 宽度 */
+        left: 0;
+        right: -10px;
+
+        /* 纵向：贴在下边框"中线" */
+        bottom: -17px;
+
+        height: 16px;
+
+        pointer-events: none;
+        z-index: 1;
+
+        /* 背景图横向平铺 */
+        background-image: url("assets/UI_MSS_UtageCommenParts_01.png");
+        background-repeat: repeat-x;
+        background-size: 16px 16px;
+        background-position: left center;
+
+        /* 四个一组的明暗渐变遮罩（翻转顺序：从亮到暗） */
+        mask-image: 
+            repeating-linear-gradient(
+                to right,
+                rgba(0,0,0,1) 0px,
+                rgba(0,0,0,0.7) 16px,
+                rgba(0,0,0,0.5) 32px,
+                rgba(0,0,0,0.3) 48px,
+                rgba(0,0,0,0) 64px
+            );
+        mask-size: 64px 100%;
+        mask-repeat: repeat-x;
+        
+        -webkit-mask-image: 
+            repeating-linear-gradient(
+                to right,
+                rgba(0,0,0,1) 0px,
+                rgba(0,0,0,0.7) 16px,
+                rgba(0,0,0,0.5) 32px,
+                rgba(0,0,0,0.3) 48px,
+                rgba(0,0,0,0) 64px
+            );
+        -webkit-mask-size: 64px 100%;
+        -webkit-mask-repeat: repeat-x;
+    }
+
+    /* 下边框：为最后一个点使用指定的暗色 #e66400 */
+    .panel-decor-bottom-dark {
+        position: absolute;
+
+        left: 0;
+        right: -25px;
+        bottom: -17px;
+        height: 16px;
+
+        pointer-events: none;
+        z-index: 1;
+
+        /* 使用纯色作为背景 */
+        background-color: #e66400;
+        
+        /* 复合遮罩：图片形状 + 只显示每组最后一个点的位置遮罩（48px-64px） */
+        mask-image: 
+            url("assets/UI_MSS_UtageCommenParts_01.png"),
+            repeating-linear-gradient(
+                to right,
+                transparent 0px,
+                transparent 48px,
+                rgba(0,0,0,1) 48px,
+                rgba(0,0,0,1) 64px
+            );
+        mask-size: 16px 16px, 64px 100%;
+        mask-repeat: repeat-x, repeat-x;
+        mask-position: left center, left top;
+        mask-composite: intersect;
+        
+        -webkit-mask-image: 
+            url("assets/UI_MSS_UtageCommenParts_01.png"),
+            repeating-linear-gradient(
+                to right,
+                transparent 0px,
+                transparent 48px,
+                rgba(0,0,0,1) 48px,
+                rgba(0,0,0,1) 64px
+            );
+        -webkit-mask-size: 16px 16px, 64px 100%;
+        -webkit-mask-repeat: repeat-x, repeat-x;
+        -webkit-mask-position: left center, left top;
+        -webkit-mask-composite: source-in;
+    }
+
+
+    /* 让两侧图片覆盖在面板左右 */
+    .panel .edge {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        /* height: 100%; */
+        pointer-events: none;
+        z-index: 2;
+    }
+
+    .panel .edge-left { left: -43px; }
+    .panel .edge-right { right: -40px; }
+
+    .panel p {
+        margin: 0;
+        width: 100%;
+        text-align: center;
+        line-height: 1.4;
+        color: #f5e79e;
+        font-weight: 600;
+        font-family: 'FOT-Seurat Pro', 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        z-index: 3;
+    }
+
+    .utage-comment {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 10px;
+    }
+</style>
+
+<script>
+    // 页面和所有资源加载完成后统一每个位置的row-item高度
+    window.addEventListener('load', function() {
+        const rows = document.querySelectorAll('.data-table tbody tr');
+        
+        rows.forEach(row => {
+            const multiRowCells = row.querySelectorAll('.multi-row');
+            if (multiRowCells.length === 0) return;
+            
+            // 获取最大的row-item数量
+            let maxRowItems = 0;
+            multiRowCells.forEach(cell => {
+                const items = cell.querySelectorAll('.row-item');
+                maxRowItems = Math.max(maxRowItems, items.length);
+            });
+            
+            // 对每个位置(索引)，找出该位置所有列中的最大高度
+            for (let i = 0; i < maxRowItems; i++) {
+                const noteCells = Array.from(multiRowCells).filter(c => c.classList.contains('note-designer-cell'));
+
+                multiRowCells.forEach(cell => {
+                    const item = cell.querySelectorAll('.row-item')[i];
+                    if (item) {
+                        item.style.height = 'auto';
+                        if (cell.classList.contains('note-designer-cell')) {
+                            item.style.fontSize = '';
+                        }
+                    }
+                });
+
+                let mh = 0;
+                multiRowCells.forEach(cell => {
+                    const item = cell.querySelectorAll('.row-item')[i];
+                    if (item) {
+                        mh = Math.max(mh, item.offsetHeight);
+                    }
+                });
+
+                // 仅谱面设计列：自然高度 > 90px 时递减字号直至全行该槽位 < 90px 或到达下限
+                if (mh > 90 && noteCells.length) {
+                    let fs = 14;
+                    const probe = noteCells[0].querySelectorAll('.row-item')[i];
+                    if (probe) {
+                        const p = parseFloat(getComputedStyle(probe).fontSize);
+                        if (!isNaN(p)) fs = p;
+                    }
+                    while (fs >= 8) {
+                        noteCells.forEach(cell => {
+                            const item = cell.querySelectorAll('.row-item')[i];
+                            if (item) item.style.fontSize = fs + 'px';
+                        });
+                        mh = 0;
+                        multiRowCells.forEach(cell => {
+                            const item = cell.querySelectorAll('.row-item')[i];
+                            if (item) {
+                                mh = Math.max(mh, item.offsetHeight);
+                            }
+                        });
+                        if (mh < 90) break;
+                        fs -= 1;
+                    }
+                } else {
+                    noteCells.forEach(cell => {
+                        const item = cell.querySelectorAll('.row-item')[i];
+                        if (item) item.style.fontSize = '';
+                    });
+                }
+
+                const maxHeight = Math.max(mh, 70);
+
+                multiRowCells.forEach(cell => {
+                    const item = cell.querySelectorAll('.row-item')[i];
+                    if (item) {
+                        item.style.height = maxHeight + 'px';
+                    }
+                });
+            }
+            
+            // 第二步：检查每个td，如果row-item总高度小于td高度，则平均分配
+            const firstTd = row.querySelector('td');
+            if (!firstTd) return;
+            const tdHeight = firstTd.offsetHeight;
+
+            multiRowCells.forEach(cell => {
+                const items = cell.querySelectorAll('.row-item');
+                if (items.length === 0) return;
+                
+                // 计算所有row-item的总高度
+                let totalHeight = 0;
+                items.forEach(item => {
+                    totalHeight += item.offsetHeight;
+                });
+                
+                // 如果总高度小于td高度，则平均分配
+                if (totalHeight < tdHeight) {
+                    const averageHeight = tdHeight / items.length;
+                    items.forEach(item => {
+                        item.style.height = averageHeight + 'px';
+                    });
+                }
+            });
+        });
+    });
+</script>
+{% endblock %}
+
+{# 定义难度标签渲染宏 #}
+{% macro difficulty_badge(difficulty) %}
+    {% if difficulty == 'basic' %}
+    <img src="assets/UI_PFC_MS_Info02_BSC.png">
+    {% elif difficulty == 'advanced' %}
+    <img src="assets/UI_PFC_MS_Info02_ADV.png">
+    {% elif difficulty == 'expert' %}
+    <img src="assets/UI_PFC_MS_Info02_EXP.png">
+    {% elif difficulty == 'master' %}
+    <img src="assets/UI_PFC_MS_Info02_MST.png">
+    {% elif difficulty == 'remaster' %}
+    <img src="assets/UI_PFC_MS_Info02_MST_Re.png">
+    {% endif %}
+{% endmacro %}
+
+{# 定义渲染分组行的宏 #}
+{% macro render_grouped_row(charts, type_name, version) %}
+{% if charts and charts|length > 0 %}
+<tr>
+    {% set chart_version =
+        charts
+        | selectattr("version")
+        | selectattr("version", "ne", "")
+        | map(attribute="version")
+        | first
+    %}
+
+    {% if not chart_version %}
+        {% set chart_version = version %}
+    {% endif %}
+
+    {% if chart_version not in ['maimai', 'maimai PLUS', 'maimaiでらっくす', 'maimaiでらっくす PLUS'] %}
+        {% set chart_version = 'maimai_' + chart_version %}
+    {% endif %}
+
+    {% if type_name != 'utage' %}
+    <td>
+        <img src="assets/UI_RSL_MBase_Parts_{{ type_name|upper }}.png"><br>
+        <img style="width: 110px;" src="assets/{{ chart_version | replace(" ", "_") }}.png">
+        {% if type_name == 'sd' %}
+        <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 120px; margin-left: auto; margin-right: auto; font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+            <span class="region-tag{% if not song_info.regions_sd or not song_info.regions_sd.jp %} unavailable{% endif %}">JP</span>
+            <span class="region-tag{% if not song_info.regions_sd or not song_info.regions_sd.intl %} unavailable{% endif %}">INTL</span>
+            <span class="region-tag{% if not song_info.regions_sd or not song_info.regions_sd.usa %} unavailable{% endif %}">USA</span>
+            <span class="region-tag{% if not song_info.regions_sd or not song_info.regions_sd.cn %} unavailable{% endif %}">CN</span>
+        </div>
+        {% elif type_name == 'dx' %}
+        <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 120px; margin-left: auto; margin-right: auto; font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+            <span class="region-tag{% if not song_info.regions_dx or not song_info.regions_dx.jp %} unavailable{% endif %}">JP</span>
+            <span class="region-tag{% if not song_info.regions_dx or not song_info.regions_dx.intl %} unavailable{% endif %}">INTL</span>
+            <span class="region-tag{% if not song_info.regions_dx or not song_info.regions_dx.usa %} unavailable{% endif %}">USA</span>
+            <span class="region-tag{% if not song_info.regions_dx or not song_info.regions_dx.cn %} unavailable{% endif %}">CN</span>
+        </div>
+        {% endif %}
+    </td>
+    <td class="multi-row">
+        {% for chart in charts %}
+        <div class="row-item">{{ difficulty_badge(chart.difficulty) }}</div>
+        {% endfor %}
+    </td>
+    <td class="multi-row">
+        {% for chart in charts %}
+        <div class="row-item level-stack">
+            <div class="level-display">{{ chart.internalLevelValue }}</div>
+            {% if chart.internalLevelValue is not none and chart.internalLevelValueNew is not none and chart.difficulty in ['expert', 'master', 'remaster'] %}
+                {% set delta = (chart.internalLevelValueNew|float) - (chart.internalLevelValue|float) %}
+                {% if delta > 0 %}
+                <div class="level-delta level-delta-up">↑{{ '%.1f'|format(delta) }}</div>
+                {% elif delta < 0 %}
+                <div class="level-delta level-delta-down">↓{{ '%.1f'|format(delta|abs) }}</div>
+                {% endif %}
+            {% endif %}
+        </div>
+        {% endfor %}
+    </td>
+    {% elif type_name == 'utage' %}
+    <td>
+        <img style="width: 130px;" src="assets/UI_CMN_TabTitle_Utage.png"><br>
+        <img style="width: 110px;" src="assets/{{ chart_version | replace(" ", "_") }}.png">
+        <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 120px; margin-left: auto; margin-right: auto; font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+            <span class="region-tag{% if not song_info.regions_utage or not song_info.regions_utage.jp %} unavailable{% endif %}">JP</span>
+            <span class="region-tag{% if not song_info.regions_utage or not song_info.regions_utage.intl %} unavailable{% endif %}">INTL</span>
+            <span class="region-tag{% if not song_info.regions_utage or not song_info.regions_utage.usa %} unavailable{% endif %}">USA</span>
+            <span class="region-tag{% if not song_info.regions_utage or not song_info.regions_utage.cn %} unavailable{% endif %}">CN</span>
+        </div>
+    </td>
+    <td class="multi-row">
+        {% for chart in charts %}
+        <div class="row-item" style="font-weight: 700;">
+            U·TA·GE<br>
+            {{ chart.difficulty }}
+        </div>
+        {% endfor %}
+    </td>
+    <td class="multi-row">
+        {% for chart in charts %}
+        <div class="row-item" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+            {{ chart.level }}
+        </div>
+        {% endfor %}
+    </td>
+    {% endif %}
+    <td class="multi-row note-designer-cell">
+        {% for chart in charts %}
+        <div class="row-item">{{ chart.noteDesigner or '-' }}</div>
+        {% endfor %}
+    </td>
+    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        {% for chart in charts %}
+            {% if chart.isBuddy %}
+                <div class="row-item"><strong>【1P】: {{ chart.noteCounts.left.total }}</strong></div>
+                <div class="row-item"><strong>【2P】: {{ chart.noteCounts.right.total }}</strong></div>
+            {% else %}
+                <div class="row-item"><strong>{{ chart.noteCounts.total }}</strong></div>
+            {% endif %}
+        {% endfor %}
+    </td>
+    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        {% for chart in charts %}
+            {% if chart.isBuddy %}
+                <div class="row-item"><strong>{{ chart.noteCounts.left.tap }}</strong></div>
+                <div class="row-item"><strong>{{ chart.noteCounts.right.tap }}</strong></div>
+            {% else %}
+                <div class="row-item"><strong>{{ chart.noteCounts.tap }}</strong></div>
+            {% endif %}
+        {% endfor %}
+    </td>
+    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        {% for chart in charts %}
+            {% if chart.isBuddy %}
+                <div class="row-item"><strong>{{ chart.noteCounts.left.hold }}</strong></div>
+                <div class="row-item"><strong>{{ chart.noteCounts.right.hold }}</strong></div>
+            {% else %}
+                <div class="row-item"><strong>{{ chart.noteCounts.hold }}</strong></div>
+            {% endif %}
+        {% endfor %}
+    </td>
+    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        {% for chart in charts %}
+            {% if chart.isBuddy %}
+                <div class="row-item"><strong>{{ chart.noteCounts.left.slide }}</strong></div>
+                <div class="row-item"><strong>{{ chart.noteCounts.right.slide }}</strong></div>
+            {% else %}
+                <div class="row-item"><strong>{{ chart.noteCounts.slide }}</strong></div>
+            {% endif %}
+        {% endfor %}
+    </td>
+    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        {% for chart in charts %}
+            {% if chart.isBuddy %}
+                <div class="row-item"><strong>{{ chart.noteCounts.left.touch }}</strong></div>
+                <div class="row-item"><strong>{{ chart.noteCounts.right.touch }}</strong></div>
+            {% else %}
+                <div class="row-item"><strong>{{ chart.noteCounts.touch }}</strong></div>
+            {% endif %}
+        {% endfor %}
+    </td>
+    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        {% for chart in charts %}
+            {% if chart.isBuddy %}
+                <div class="row-item"><strong>{{ chart.noteCounts.left.break }}</strong></div>
+                <div class="row-item"><strong>{{ chart.noteCounts.right.break }}</strong></div>
+            {% else %}
+                <div class="row-item"><strong>{{ chart.noteCounts.break }}</strong></div>
+            {% endif %}
+        {% endfor %}
+    </td>
+</tr>
+{% endif %}
+{% endmacro %}
+
+{% block overlay_content %}
+<div class="song-info-container">
+    <div class="song-info-content">
+        <!-- 额外信息展示区域 -->
+        {% if song_info %}
+        <div class="info-section">
+            {% if song_info.id < 10000000 %}
+            <div class="jacket-container">
+                <img class="song-jacket"
+                     src="jacket/UI_Jacket_{{ '{:0>6}'.format(song_info.id % 10000 if song_info.id > 10000 else song_info.id) }}.png"
+                     onerror="this.onerror=null; this.src='jacket/UI_Jacket_000000.png';"
+                     >
+                {% if song_info.isLocked %}
+                <img class="lock-icon" src="assets/UI_PFC_Icon_Lock_02.png" alt="Locked">
+                {% endif %}
+                {% if song_info.isNew %}
+                <img class="new-song-icon" src="assets/UI_CMN_TabTitle_NewSong.png" alt="New Song">
+                {% endif %}
+            </div>
+            {% else %}
+            <div class="jacket-container">
+                <img 
+                    class="song-jacket" 
+                    src="https://shama.dxrating.net/images/cover/v2/{{ song_info.image_name | replace('png', 'jpg') }}"
+                    onerror="this.onerror=null; this.src='jacket/UI_Jacket_000000.png';"
+                    >
+                {% if song_info.isLocked %}
+                <img class="lock-icon" src="assets/UI_PFC_Icon_Lock_02.png" alt="Locked">
+                {% endif %}
+                {% if song_info.isNew %}
+                <img class="new-song-icon" src="assets/UI_CMN_TabTitle_NewSong.png" alt="New Song">
+                {% endif %}
+            </div>
+            {% endif %}
+            <div class="song-details">
+                <div class="base-info">
+                    <span class="title">{{ song_info.title|default("???") }}</span>
+                    {% if song_info.id < 10000000 %}
+                    <span class="song-id" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">#{{ song_info.id|default("-") }}</span>
+                    {% else %}
+                    <span class="song-id" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">#?</span>
+                    {% endif %}
+                    <span class="artist">{{ song_info.artist|default("-") }}</span>
+                </div>
+                <div class="extra-info">
+                    <span class="bpm">BPM: {{ song_info.bpm|default("-") }}</span>
+                    <span class="category">{{ song_info.category|default("-") }}</span>
+                    <span class="map">{{ song_info.mai_map|default("-") }}</span>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- 数据表格 -->
+        {% set has_sd = sd_charts and sd_charts|length > 0 %}
+        {% set has_dx = dx_charts and dx_charts|length > 0 %}
+        {% set has_utage = utage_charts and utage_charts|length > 0 %}
+        <div class="table-container">
+            {% if has_sd or has_dx or has_utage %}
+            {% if has_utage %}
+            <div class="utage-comment">
+                <div class="panel">
+                    <img class="edge edge-left" src="assets/UI_MSS_UtageCommenParts_03.png" alt="">
+                    <p style="text-align: center; color: #f5e79e;">{{ song_info.comment }}</p>
+                    <img class="edge edge-right" src="assets/UI_MSS_UtageCommenParts_02.png" alt="">
+                    <div class="panel-decor-bottom"></div>
+                    <div class="panel-decor-bottom-dark"></div>
+                </div>
+            </div>
+            {% endif %}
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th style="background-color: white;">歌曲信息</th>
+                        <th>难度</th>
+                        <th>定数</th>
+                        <th>谱师</th>
+                        <th>总物量</th>
+                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">TAP</th>
+                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">HOLD</th>
+                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">SLIDE</th>
+                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">TOUCH</th>
+                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">BREAK</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ render_grouped_row(sd_charts, 'sd', song_info.version) }}
+                    {% if sd_charts and sd_charts|length > 0 and dx_charts and dx_charts|length > 0 %}
+                    <tr class="table-divider">
+                        <td colspan="10"></td>
+                    </tr>
+                    {% endif %}
+                    {{ render_grouped_row(dx_charts, 'dx', song_info.version) }}
+                    {{ render_grouped_row(utage_charts, 'utage', song_info.version) }}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">
+                <p>暂无谱面数据</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    <p style="margin-top: -2px; font-size: small; color: white; font-weight: 600; font-family: '思源黑体', 'arial', sans-serif; text-shadow: -1px -1px 0 rgba(0, 0, 0, 0.8), 1px -1px 0 rgba(0, 0, 0, 0.8), -1px 1px 0 rgba(0, 0, 0, 0.8), 1px 1px 0 rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.8);">定数数据以国服为准，下方箭头为日服最新变化。数据仅供参考，可能存在纰漏。</p>
+    <p style="margin-top: -2px; font-size: medium; color: white; font-weight: 600; font-family: 'Inter', 'arial', sans-serif; text-shadow: -1px -1px 0 rgba(0, 0, 0, 0.8), 1px -1px 0 rgba(0, 0, 0, 0.8), -1px 1px 0 rgba(0, 0, 0, 0.8), 1px 1px 0 rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.8);">Powered By maimai.lxns.net & dxrating.net / Generated By ChiffonBot / Developed By DreamRain</p>
+</div>
+{% endblock %}
