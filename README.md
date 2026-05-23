@@ -26,7 +26,7 @@
 
 3. **permission_admin**
    - SuperUser 群级插件开关控制（`perm` 指令）
-   - 支持当前群开关、跨控制群远程开关、禁用白名单查看与清理
+   - 支持当前群开关、跨控制群远程开关、禁用列表查看与清理
 
 4. **nonebot_plugin_pcrjjc（本地拷贝版）**
    - PCR 竞技场查询、绑定、推送与管理指令
@@ -69,12 +69,18 @@
 
 ## 常用命令示例
 
-- `/mai.help`、`/mai.song 1`、`/mai.b50`
-- `/chuni.help`、`/chuni.song 1`
-- `/acc.help`、`/acc.bind <friend_code>`
-- `/event.help`
-- `/perm`
-- `/今日运势`、`/占卜`、`/猜单词`
+- maimai：`/mai.song テオ`、`/mai.b50`
+- CHUNITHM：`/chuni.song 1`
+- 账号系统：`/acc help`、`/acc.bind 123456789012345`
+- 活动系统：`/event.help`
+- 权限管理：`/perm`
+- 公主连结：`/猜头像`
+- 今日运势：`/今日运势`
+- 塔罗占卜：`/占卜`
+- 猜单词：`/猜单词`
+- B 站解析：直接发送 B 站视频链接（如 `https://www.bilibili.com/video/BV1xx411c7mD`）
+- GitHub 卡片：直接发送 GitHub 仓库链接（如 `https://github.com/Dream-Rainy/DreamRain-Bot`）
+- 戳一戳回复：在群里戳机器人
 
 ## 运行（简要）
 
