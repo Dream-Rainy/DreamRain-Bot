@@ -37,6 +37,21 @@
 
 > 标注 **（改）** 的为基于社区插件修改，已合入本仓库源码。其余为 pip 依赖，开箱即用。
 
+## 常用命令示例
+
+- maimai：`/mai.song テオ`、`/mai.b50`
+- CHUNITHM：`/chuni.song 1`
+- 账号系统：`/acc help`、`/acc.bind 123456789012345`
+- 活动系统：`/event.help`
+- 权限管理：`/perm`
+- 公主连结：`/猜头像`
+- 今日运势：`/今日运势`
+- 塔罗占卜：`/占卜`
+- 猜单词：`/猜单词`
+- B 站解析：直接发送 B 站视频链接（如 `https://www.bilibili.com/video/BV1xx411c7mD`）
+- GitHub 卡片：直接发送 GitHub 仓库链接（如 `https://github.com/Dream-Rainy/DreamRain-Bot`）
+- 戳一戳回复：在群里戳机器人
+
 ## 快速开始
 
 ### 前置依赖
