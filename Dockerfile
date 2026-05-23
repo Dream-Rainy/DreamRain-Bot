@@ -57,8 +57,11 @@ WORKDIR /app
 # 复制文件
 COPY --from=builder --chown=${UID}:${GID} /build/.venv /app/.venv
 
-RUN mkdir -p /app/src /app/config /app/data /app/logs /app/.cache && \
-    chown -R ${UID}:${GID} /app/src /app/config /app/data /app/logs /app/.cache
+RUN mkdir -p /app/config /app/data /app/logs /app/.cache && \
+    chown -R ${UID}:${GID} /app/config /app/data /app/logs /app/.cache
+
+COPY --chown=${UID}:${GID} src /app/src
+COPY --chown=${UID}:${GID} bot.py /app/bot.py
 
 # 复制并设置入口脚本
 COPY entrypoint.sh /app/entrypoint.sh
