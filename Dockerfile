@@ -1,7 +1,7 @@
 FROM astral/uv:python3.12-bookworm-slim AS builder
 WORKDIR /build
 ENV UV_PROJECT_ENVIRONMENT=/build/.venv \
-    UV_DEFAULT_INDEX="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" \
+    UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple" \
     UV_COMPILE_BYTECODE=1 \
     UV_CACHE_DIR=/build/.cache/uv \
     LANG=C.UTF-8 \
