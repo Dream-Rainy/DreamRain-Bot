@@ -1,0 +1,65 @@
+version = 1
+
+[[annotations]]
+path = [
+    "REUSE.toml",
+    "THIRD_PARTY_NOTICES.md",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 DreamRain"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = [
+    "src/plugins/nonebot_plugin_crazy_thursday/**",
+    "src/plugins/nonebot_plugin_fortune/**",
+    "src/plugins/nonebot_plugin_tarot/**",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "KafCoppelia <k740677208@gmail.com>"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "src/plugins/nonebot_plugin_githubcard/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Nanako <demo0929@vip.qq.com>"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "src/plugins/nonebot_plugin_picstatus/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "student_2333"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "src/plugins/nonebot_plugin_wordle/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "noneplugin/nonebot-plugin-wordle contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "src/plugins/pokepoke_miss/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "pokepoke_miss contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = [
+    "src/plugins/priconne/games/avatar_guess.py",
+    "src/plugins/priconne/games/desc_guess.py",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "GWYOG-Hoshino-plugins contributors"
+SPDX-License-Identifier = "GPL-3.0-only"
+
+[[annotations]]
+path = "src/submodule/autopcr/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "cc004/autopcr contributors"
+SPDX-License-Identifier = "CC-BY-NC-SA-4.0"
+
+# Known included third-party directories that still need exact upstream license
+# confirmation before machine-readable annotation:
+# - src/plugins/nonebot_plugin_pcrjjc/ (AGPL-3.0, only/or-later unspecified)
+# - src/plugins/nonebot_plugin_repeater/ (GPL-3.0, only/or-later unspecified)
+# - src/plugins/priconne/ except the specifically annotated GPL-3.0 files above

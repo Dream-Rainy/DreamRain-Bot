@@ -32,17 +32,17 @@ async def test_filter_songs_by_difficulty_range(loaded_chiffon_bot):
             title="Song A",
             difficulties={
                 "standard": [
-                    {"level": "12", "internalLevelValue": 12.4},
-                    {"level": "13", "internalLevelValue": 13.2},
+                    {"type": "std", "difficulty": "BASIC", "level": "12", "internalLevelValue": 12.4},
+                    {"type": "std", "difficulty": "ADVANCED", "level": "13", "internalLevelValue": 13.2},
                 ],
-                "dx": [{"level": "14", "levelValue": 14.0}],
+                "dx": [{"type": "dx", "difficulty": "EXPERT", "level": "14", "levelValue": 14.0}],
             },
         ),
         2: SongData(
             id=2,
             title="Song B",
             difficulties={
-                "standard": [{"level": "13+", "internalLevelValue": 13.8}]
+                "standard": [{"type": "std", "difficulty": "MASTER", "level": "13+", "internalLevelValue": 13.8}]
             },
         ),
     }

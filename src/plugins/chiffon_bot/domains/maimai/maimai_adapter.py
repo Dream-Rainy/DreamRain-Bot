@@ -33,6 +33,7 @@ class MaimaiDomainAdapter(MaimaiSongQueryAdapter, DomainAdapter):
         return MaiSongAlias
 
     def song_to_db_defaults(self, song: SongData) -> dict[str, Any]:
+        diffs = getattr(song, "difficulties", None) or {}
         return {
             "title": song.title,
             "artist": getattr(song, "artist", None),
@@ -45,7 +46,10 @@ class MaimaiDomainAdapter(MaimaiSongQueryAdapter, DomainAdapter):
             "is_new": getattr(song, "is_new", False),
             "is_locked": getattr(song, "is_locked", False),
             "comment": getattr(song, "comment", None),
-            "difficulties": getattr(song, "difficulties", []),
+            "difficulties": {
+                t: [s.model_dump(mode="json", by_alias=True, exclude_none=True) for s in sheets]
+                for t, sheets in diffs.items()
+            },
         }
 
     def song_from_db_row(self, row: Any, aliases: list[str]) -> SongData:

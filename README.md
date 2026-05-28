@@ -177,4 +177,15 @@ docker compose -f docker-compose-dev.yml restart dreamrain-bot
 
 ## 许可
 
-MIT
+本项目原创代码以 MIT License 开源，详见 [LICENSE](LICENSE)。
+
+本仓库包含或改造了部分第三方插件、子模块和资源；这些内容仍遵循其各自的原始许可证，而不一定适用本项目的 MIT License。完整来源、路径与许可证说明请参见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [REUSE.toml](REUSE.toml)。
+
+需要特别注意的第三方内容包括：
+
+- `src/plugins/nonebot_plugin_pcrjjc/`：AGPL-3.0
+- `src/plugins/nonebot_plugin_repeater/`：GPL-3.0
+- `src/submodule/autopcr/`：CC-BY-NC-SA-4.0
+- `src/plugins/priconne/`：未识别到明确的仓库级许可证，部分文件另有单独许可证说明
+
+如果你计划分发本项目、发布 Docker 镜像，或部署为公开网络服务，请先核对上述第三方许可证义务，尤其是 GPL / AGPL 相关条款。

@@ -28,6 +28,14 @@ class OauthClient:
         self.bind_results_by_state: dict[str, dict[str, Any]] = {}
         self.bind_results_by_user: dict[str, dict[str, Any]] = {}
 
+        # Relay 模式的 redirect_uri 从 relay_url 自动推导
+        relay_url = getattr(plugin_config, "lxns_oauth_relay_url", "")
+        if not self.redirect_uri and relay_url:
+            self.redirect_uri = f"{relay_url.rstrip('/')}/callback"
+            self._using_relay = True
+        else:
+            self._using_relay = False
+
     def _now(self) -> datetime:
         return datetime.utcnow()
 

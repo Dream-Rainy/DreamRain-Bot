@@ -1,6 +1,5 @@
 from enum import Enum
 from io import BytesIO
-from typing import Optional
 
 from PIL import Image, ImageDraw
 from PIL.Image import Image as IMG
@@ -39,7 +38,7 @@ class Wordle:
         self.bg_color = (255, 255, 255)  # 背景颜色
         self.font_color = (255, 255, 255)  # 文字颜色
 
-    def guess(self, word: str) -> Optional[GuessResult]:
+    def guess(self, word: str) -> GuessResult | None:
         word = word.lower()
         if word == self.word_lower:
             self.guessed_words.append(word)

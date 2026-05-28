@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 from nonebot.log import logger
@@ -16,7 +16,7 @@ class ResourceError(Exception):
     __repr__ = __str__
 
 
-async def download_url(url: str) -> Optional[Dict[str, Any]]:
+async def download_url(url: str) -> dict[str, Any] | None:
     async with httpx.AsyncClient() as client:
         for i in range(3):
             try:
@@ -34,7 +34,7 @@ async def download_url(url: str) -> Optional[Dict[str, Any]]:
 
 
 async def download_resource(
-    resource_dir: Path, name: str, _type: Optional[str] = None
+    resource_dir: Path, name: str, _type: str | None = None
 ) -> bool:
     """
     Try to download resources, json but not images.
@@ -61,6 +61,6 @@ async def download_resource(
     return False
 
 
-def save_json(_file: Path, _data: Dict[str, Any]) -> None:
+def save_json(_file: Path, _data: dict[str, Any]) -> None:
     with open(_file, "w", encoding="utf-8") as f:
         json.dump(_data, f, ensure_ascii=False, indent=4)

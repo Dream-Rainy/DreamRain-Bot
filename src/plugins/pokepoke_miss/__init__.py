@@ -1,7 +1,4 @@
-import nonebot
-
 from nonebot.plugin import PluginMetadata
-from pathlib import Path
 
 from . import __main__
 

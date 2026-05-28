@@ -27,46 +27,52 @@ def _extract_name_and_code(response: dict) -> tuple[str, str]:
     return name or "", friend_code or ""
 
 
+async def _do_bind(*, qq: str, token_data: dict) -> OAuthBindResult:
+    access_token = token_data["access_token"]
+    refresh_token = token_data["refresh_token"]
+    token_expiry = token_data["token_expiry"]
+    refresh_expiry = token_data["refresh_expiry"]
+
+    player_headers = {"Authorization": f"Bearer {access_token}"}
+    maimai_response = await http_client.get_json(user_maimai_player_url(), headers=player_headers)
+    chuni_response = await http_client.get_json(user_chunithm_player_url(), headers=player_headers)
+
+    maimai_name, maimai_friend_code = _extract_name_and_code(maimai_response)
+    chuni_name, chuni_friend_code = _extract_name_and_code(chuni_response)
+
+    credential = LxnsOAuthCredential(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_expiry=token_expiry,
+        refresh_expiry=refresh_expiry,
+    )
+    req = LxnsBindRequest(qq=qq, credential=credential)
+    result = await bind_upsert(req, account_name=maimai_name or chuni_name or f"lxns_user_{qq}")
+
+    lxns_account = await UserAccount.get(platform="lxns", account_key=result.account_key)
+    game_profile = await GameProfile.get_or_none(account=lxns_account)
+    if game_profile is None:
+        game_profile = await GameProfile.create(account=lxns_account, platform="lxns")
+
+    if maimai_name:
+        game_profile.maimai_name = maimai_name
+    if maimai_friend_code:
+        game_profile.maimai_friend_code = maimai_friend_code
+    if chuni_name:
+        game_profile.chunithm_name = chuni_name
+    if chuni_friend_code:
+        game_profile.chunithm_friend_code = chuni_friend_code
+    await game_profile.save()
+
+    return OAuthBindResult(status="bound", message="OAuth 绑定成功", account_key=result.account_key)
+
+
 async def bind_by_oauth_code(*, qq: str, code: str, state: str) -> OAuthBindResult:
+    """通过 OAuth 回调完成绑定（方案 A：校验 state）。"""
     try:
-        wait_bind_user = oa_client.validate_wait_bind_user(state, user_id_hash=qq)
+        oa_client.validate_wait_bind_user(state, user_id_hash=qq)
         token_data = await oa_client.get_token(code)
-
-        access_token = token_data["access_token"]
-        refresh_token = token_data["refresh_token"]
-        token_expiry = token_data["token_expiry"]
-        refresh_expiry = token_data["refresh_expiry"]
-
-        player_headers = {"Authorization": f"Bearer {access_token}"}
-        maimai_response = await http_client.get_json(user_maimai_player_url(), headers=player_headers)
-        chuni_response = await http_client.get_json(user_chunithm_player_url(), headers=player_headers)
-
-        maimai_name, maimai_friend_code = _extract_name_and_code(maimai_response)
-        chuni_name, chuni_friend_code = _extract_name_and_code(chuni_response)
-
-        credential = LxnsOAuthCredential(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_expiry=token_expiry,
-            refresh_expiry=refresh_expiry,
-        )
-        req = LxnsBindRequest(qq=qq, credential=credential)
-        result = await bind_upsert(req, account_name=maimai_name or chuni_name or f"lxns_user_{qq}")
-
-        lxns_account = await UserAccount.get(platform="lxns", account_key=result.account_key)
-        game_profile = await GameProfile.get_or_none(account=lxns_account)
-        if game_profile is None:
-            game_profile = await GameProfile.create(account=lxns_account, platform="lxns")
-
-        if maimai_name:
-            game_profile.maimai_name = maimai_name
-        if maimai_friend_code:
-            game_profile.maimai_friend_code = maimai_friend_code
-        if chuni_name:
-            game_profile.chunithm_name = chuni_name
-        if chuni_friend_code:
-            game_profile.chunithm_friend_code = chuni_friend_code
-        await game_profile.save()
+        result = await _do_bind(qq=qq, token_data=token_data)
 
         oa_client.remove_wait_bind_user(state)
         oa_client.mark_bind_result(
@@ -76,8 +82,7 @@ async def bind_by_oauth_code(*, qq: str, code: str, state: str) -> OAuthBindResu
             message="OAuth 绑定成功",
             account_key=result.account_key,
         )
-
-        return OAuthBindResult(status="bound", message="OAuth 绑定成功", account_key=result.account_key)
+        return result
     except Exception as e:
         traceback.print_exc()
         oa_client.mark_bind_result(

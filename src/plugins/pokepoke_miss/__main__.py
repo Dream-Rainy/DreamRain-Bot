@@ -1,5 +1,5 @@
 from nonebot import on_notice, on_command
-from nonebot.adapters.onebot.v11 import PokeNotifyEvent, Bot, Event
+from nonebot.adapters.onebot.v11 import PokeNotifyEvent, Bot
 
 import random
 

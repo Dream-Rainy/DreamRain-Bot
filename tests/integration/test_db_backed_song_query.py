@@ -75,7 +75,7 @@ async def test_search_uses_index_and_loads_full_song_on_demand(seeded_song_db, s
     )
     assert diff is not None
     assert diff["song_data"].id == MAI_SONG_ID
-    assert diff["target_difficulty"]["level"] == "13+"
+    assert diff["target_difficulty"].level == "13+"
 
     chuni_result = await search_song(CHUNI_SONG_TITLE, game_code="chunithm")
     assert chuni_result

@@ -1,14 +1,13 @@
 import json
 import random
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
 from .config import fortune_config, themes_flag_config
 
 
-def get_copywriting() -> Tuple[str, str]:
+def get_copywriting() -> tuple[str, str]:
     """
     Read the copywriting.json, choice a luck with a random content
     """
@@ -23,7 +22,7 @@ def get_copywriting() -> Tuple[str, str]:
         return title, text
 
 
-def random_basemap(theme: str, spec_path: Optional[str] = None) -> Path:
+def random_basemap(theme: str, spec_path: str | None = None) -> Path:
     if isinstance(spec_path, str):
         p: Path = fortune_config.fortune_path / "img" / spec_path
         return p
@@ -32,7 +31,7 @@ def random_basemap(theme: str, spec_path: Optional[str] = None) -> Path:
         __p: Path = fortune_config.fortune_path / "img"
 
         # Each dir is a theme.
-        themes: List[str] = [
+        themes: list[str] = [
             f.name for f in __p.iterdir() if f.is_dir() and theme_flag_check(f.name)
         ]
         picked: str = random.choice(themes)
@@ -40,22 +39,19 @@ def random_basemap(theme: str, spec_path: Optional[str] = None) -> Path:
         _p: Path = __p / picked
 
         # Each file is a posix path of images directory
-        images_dir: List[Path] = [i for i in _p.iterdir() if i.is_file()]
+        images_dir: list[Path] = [i for i in _p.iterdir() if i.is_file()]
         p: Path = random.choice(images_dir)
     else:
         _p: Path = fortune_config.fortune_path / "img" / theme
-        images_dir: List[Path] = [i for i in _p.iterdir() if i.is_file()]
+        images_dir: list[Path] = [i for i in _p.iterdir() if i.is_file()]
         p: Path = random.choice(images_dir)
 
     return p
 
 
-def drawing(gid: str, uid: str, theme: str, spec_path: Optional[str] = None) -> Path:
+def drawing(gid: str, uid: str, theme: str, spec_path: str | None = None) -> Path:
     # 1. Random choice a base image
-    if gid == "785276208" and uid == "2289533715" and theme == "pcr":
-        imgPath: Path = fortune_config.fortune_path / "img" / theme / random.choice(["frame_3.jpg", "frame_23.jpg", "frame_24.jpg", "frame_27.jpg", "frame_28.jpg", "frame_41.jpg", "frame_29.jpg", "frame_30.jpg"])
-    else:
-        imgPath: Path = random_basemap(theme, spec_path)
+    imgPath: Path = random_basemap(theme, spec_path)
     img: Image.Image = Image.open(imgPath).convert("RGB")
     draw = ImageDraw.Draw(img)
 
@@ -112,13 +108,13 @@ def drawing(gid: str, uid: str, theme: str, spec_path: Optional[str] = None) -> 
     return outPath
 
 
-def decrement(text: str) -> Tuple[int, List[str]]:
+def decrement(text: str) -> tuple[int, list[str]]:
     """
     Split the text, return the number of columns and text list
     TODO: Now, it ONLY fit with 2 columns of text
     """
     length: int = len(text)
-    result: List[str] = []
+    result: list[str] = []
     cardinality = 9
     if length > 4 * cardinality:
         raise Exception

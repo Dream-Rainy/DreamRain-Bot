@@ -1,11 +1,11 @@
 from pathlib import Path
-from typing import Any, Dict, List, Set, Union
+from typing import Any
 
 import httpx
 import nonebot
 from aiocache import cached
 from nonebot import logger
-from pydantic import BaseModel, Extra
+from pydantic import BaseModel
 
 try:
     import ujson as json
@@ -13,24 +13,24 @@ except ModuleNotFoundError:
     import json
 
 
-class PluginConfig(BaseModel, extra=Extra.ignore):
+class PluginConfig(BaseModel, extra='allow'):
     '''
         Path of tarot images resource
     '''
     tarot_path: Path = Path(__file__).parent / "resource"
     chain_reply: bool = True
     tarot_auto_update: bool = False
-    nickname: Set[str] = {"Bot"}
+    nickname: set[str] = {"Bot"}
 
     '''
         DO NOT CHANGE THIS VALUE IN ANY .ENV FILES
     '''
-    tarot_official_themes: List[str] = ["BilibiliTarot", "TouhouTarot"]
+    tarot_official_themes: list[str] = ["BilibiliTarot", "TouhouTarot"]
 
 
 driver = nonebot.get_driver()
-tarot_config: PluginConfig = PluginConfig.parse_obj(
-    driver.config.dict(exclude_unset=True))
+tarot_config: PluginConfig = PluginConfig.model_validate(
+    driver.config.model_dump(exclude_unset=True))
 
 
 class DownloadError(Exception):
@@ -52,7 +52,7 @@ class EventNotSupport(Exception):
     pass
 
 
-async def download_url(name: str, is_json: bool = False) -> Union[Dict[str, Any], bytes, None]:
+async def download_url(name: str, is_json: bool = False) -> dict[str, Any] | bytes | None:
     url: str = "https://raw.fgit.ml/MinatoAquaCrews/nonebot_plugin_tarot/master/nonebot_plugin_tarot/" + name
 
     async with httpx.AsyncClient() as client:
@@ -90,9 +90,9 @@ async def tarot_version_check() -> None:
 
     # Auto update check on startup if TAROT_AUTO_UPDATE
     if tarot_config.tarot_auto_update:
-        response: Dict[str, Any] = await download_url("tarot.json", is_json=True)
+        response: dict[str, Any] = await download_url("tarot.json", is_json=True) # type: ignore
     else:
-        response = None
+        response = None # type: ignore
 
     if response is None:
         if not tarot_json_path.exists():
@@ -115,7 +115,7 @@ async def tarot_version_check() -> None:
 
 
 @cached(ttl=180)
-async def get_tarot(_theme: str, _type: str, _name: str) -> Union[bytes, None]:
+async def get_tarot(_theme: str, _type: str, _name: str) -> bytes | None:
     '''
         Downloads tarot image and stores cache temporarily
         if downloading failed, return None

@@ -1,6 +1,6 @@
 from nonebot import get_driver, logger
 
-config = get_driver().config.dict()
+config = get_driver().config.model_dump()
 
 if 'repeater_group' not in config:
     logger.warning('[复读姬] 未发现配置项 `repeater_group` , 采用默认值: []')

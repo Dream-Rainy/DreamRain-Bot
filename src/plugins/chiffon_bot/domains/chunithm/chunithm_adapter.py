@@ -35,6 +35,7 @@ class ChunithmDomainAdapter(ChunithmSongQueryAdapter, DomainAdapter):
 
     def song_to_db_defaults(self, song: SongData) -> dict[str, Any]:
         genre = getattr(song, "genre", "") or ""
+        diffs = getattr(song, "difficulties", None) or {}
         return {
             "title": song.title or "",
             "artist": getattr(song, "artist", None),
@@ -42,7 +43,10 @@ class ChunithmDomainAdapter(ChunithmSongQueryAdapter, DomainAdapter):
             "bpm": getattr(song, "bpm", None),
             "version": getattr(song, "version", None),
             "rights": getattr(song, "rights", None),
-            "difficulties": getattr(song, "difficulties", None) or {},
+            "difficulties": {
+                t: [s.model_dump(mode="json", by_alias=True, exclude_none=True) for s in sheets]
+                for t, sheets in diffs.items()
+            },
         }
 
     def song_from_db_row(self, row: Any, aliases: list[str]) -> SongData:

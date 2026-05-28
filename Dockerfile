@@ -7,7 +7,14 @@ ENV UV_PROJECT_ENVIRONMENT=/build/.venv \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --no-dev
+RUN uv sync --locked --no-dev && \
+    uvx pip-licenses \
+        --python /build/.venv/bin/python \
+        --format=json \
+        --with-urls \
+        --with-authors \
+        --with-description \
+        --output-file /build/DEPENDENCY_LICENSES.json
 
 FROM astral/uv:python3.12-bookworm-slim
 
@@ -36,6 +43,12 @@ RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.li
 # 使用 ARG 让 UID/GID 可配置
 ARG UID=1000
 ARG GID=1001
+ARG IMAGE_SOURCE=""
+ARG VCS_REF=""
+
+LABEL org.opencontainers.image.source="${IMAGE_SOURCE}" \
+      org.opencontainers.image.description="DreamRain-Bot NoneBot2 container image" \
+      org.opencontainers.image.revision="${VCS_REF}"
 
 ENV UID=${UID} \
     GID=${GID} \
@@ -62,6 +75,8 @@ RUN mkdir -p /app/config /app/data /app/logs /app/.cache && \
 
 COPY --chown=${UID}:${GID} src /app/src
 COPY --chown=${UID}:${GID} bot.py /app/bot.py
+COPY --chown=${UID}:${GID} LICENSE README.md THIRD_PARTY_NOTICES.md REUSE.toml /usr/share/doc/dreamrain-bot/
+COPY --from=builder --chown=${UID}:${GID} /build/DEPENDENCY_LICENSES.json /usr/share/doc/dreamrain-bot/DEPENDENCY_LICENSES.json
 
 # 复制并设置入口脚本
 COPY entrypoint.sh /app/entrypoint.sh

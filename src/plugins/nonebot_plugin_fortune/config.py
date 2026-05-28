@@ -1,12 +1,11 @@
 import json
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any
 
 from nonebot import get_driver
 from nonebot.log import logger
 from pydantic import BaseModel, model_validator
-from pydantic import types
 
 from .download import ResourceError, download_resource
 
@@ -14,7 +13,7 @@ from .download import ResourceError, download_resource
 	抽签主题对应表，第一键值为“抽签设置”或“主题列表”展示的主题名称
 	Key-Value: 主题资源文件夹名-主题别名
 """
-FortuneThemesDict: Dict[str, List[str]] = {
+FortuneThemesDict: dict[str, list[str]] = {
     "random": ["随机"],
     "amazing_grace": ["奇异恩典"],
     "arknights": ["明日方舟", "方舟", "arknights", "鹰角", "Arknights", "舟游"],
@@ -95,18 +94,18 @@ class FortuneConfig(PluginConfig, ThemesFlagConfig):
 
 
 class DateTimeEncoder(json.JSONEncoder):
-    def default(self, obj) -> Union[str, Any]:
-        if isinstance(obj, datetime):
-            return obj.strftime("%Y-%m-%d %H:%M:%S")
-        if isinstance(obj, date):
-            return obj.strftime("%Y-%m-%d")
+    def default(self, o) -> str | Any:
+        if isinstance(o, datetime):
+            return o.strftime("%Y-%m-%d %H:%M:%S")
+        if isinstance(o, date):
+            return o.strftime("%Y-%m-%d")
 
-        return json.JSONEncoder.default(self, obj)
+        return json.JSONEncoder.default(self, o)
 
 
 driver = get_driver()
-fortune_config: PluginConfig = PluginConfig.parse_obj(driver.config.dict())
-themes_flag_config: ThemesFlagConfig = ThemesFlagConfig.parse_obj(driver.config.dict())
+fortune_config: PluginConfig = PluginConfig.model_validate(driver.config.model_dump())
+themes_flag_config: ThemesFlagConfig = ThemesFlagConfig.model_validate(driver.config.model_dump())
 
 
 @driver.on_startup
@@ -158,8 +157,8 @@ async def fortune_check() -> None:
         2. Transfer the key "is_divined" to "last_sign_date"
         """
         with open(fortune_data_path, "r", encoding="utf-8") as f:
-            _data: Dict[
-                str, Dict[str, Dict[str, Union[str, bool, int, date]]]
+            _data: dict[
+                str, dict[str, dict[str, str | bool | int | date]]
             ] = json.load(f)
 
         for gid in _data:
@@ -250,7 +249,7 @@ def group_rules_transfer(fortune_setting_dir: Path, group_rules_dir: Path) -> bo
     Transfer the group_rule in fortune_setting.json to group_rules.json
     """
     with open(fortune_setting_dir, "r", encoding="utf-8") as f:
-        _setting: Dict[str, Dict[str, Union[str, List[str]]]] = json.load(f)
+        _setting: dict[str, dict[str, str | list[str]]] = json.load(f)
 
     group_rules = _setting.get("group_rule", None)  # Old key is group_rule
 
@@ -270,7 +269,7 @@ def specific_rules_transfer(
     Transfer the specific_rule in fortune_setting.json to specific_rules.json
     """
     with open(fortune_setting_dir, "r", encoding="utf-8") as f:
-        _setting: Dict[str, Dict[str, Union[str, List[str]]]] = json.load(f)
+        _setting: dict[str, dict[str, str | list[str]]] = json.load(f)
 
     specific_rules = _setting.get("specific_rule", None)  # Old key is specific_rule
 

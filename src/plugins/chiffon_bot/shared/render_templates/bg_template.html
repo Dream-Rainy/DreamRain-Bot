@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        /* 字体在 shared/render_templates/fonts/；Playwright base_url 仍为 maimai 模板根，故使用相对路径 ../../../shared/render_templates/fonts/... */
+        /* 字体路径通过 Jinja2 变量 fonts_dir（file:// URI）注入，指向 shared/render_templates/fonts/ */
         /* ── 西文/通用 ── */
         @font-face {
             font-family: "Inter";
-            src: url("../../../shared/render_templates/fonts/Inter-VariableFont_opsz,wght.ttf") format("truetype");
+            src: url("{{ fonts_dir }}/Inter-VariableFont_opsz,wght.ttf") format("truetype");
             font-weight: 100 900;   /* 可变字体：声明完整字重范围 */
             font-style: normal;
             font-display: swap;
@@ -17,7 +17,7 @@
         /* ── 日文 ── */
         @font-face {
             font-family: "NotoSansJP";
-            src: url("../../../shared/render_templates/fonts/NotoSansJP-VariableFont_wght.ttf") format("truetype");
+            src: url("{{ fonts_dir }}/NotoSansJP-VariableFont_wght.ttf") format("truetype");
             font-weight: 100 900;   /* 可变字体 */
             font-style: normal;
             font-display: swap;
@@ -25,7 +25,7 @@
 
         @font-face {
             font-family: "ヒラギノ角ゴ Pro W3";
-            src: url("../../../shared/render_templates/fonts/ヒラギノ角ゴ Pro W3.otf") format("opentype");
+            src: url("{{ fonts_dir }}/ヒラギノ角ゴ Pro W3.otf") format("opentype");
             font-weight: 300;       /* W3 对应 Light/300 */
             font-style: normal;
             font-display: swap;
@@ -34,7 +34,7 @@
         /* FOT-Seurat Pro：maimai 常用圆黑体（DemiBold） */
         @font-face {
             font-family: "FOT-Seurat Pro";
-            src: url("../../../shared/render_templates/fonts/FOT-Seurat Pro DB.otf") format("opentype");
+            src: url("{{ fonts_dir }}/FOT-Seurat Pro DB.otf") format("opentype");
             font-weight: 600;
             font-style: normal;
             font-display: swap;
@@ -43,7 +43,7 @@
         /* FOT-RaglanPunchStd：冲压风格展示字体（UltraBold），适用于评级/大标题 */
         @font-face {
             font-family: "FOT-RaglanPunchStd";
-            src: url("../../../shared/render_templates/fonts/FOT-RaglanPunchStd-UB.otf") format("opentype");
+            src: url("{{ fonts_dir }}/FOT-RaglanPunchStd-UB.otf") format("opentype");
             font-weight: 900;
             font-style: normal;
             font-display: swap;
@@ -53,35 +53,35 @@
            通过 font-weight 区分，CSS 会自动选择最接近的字重文件 */
         @font-face {
             font-family: "FOT-NewRodinPro";
-            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-M.otf") format("opentype");
+            src: url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-M.otf") format("opentype");
             font-weight: 500;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "FOT-NewRodinPro";
-            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-DB.otf") format("opentype");
+            src: url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-DB.otf") format("opentype");
             font-weight: 600;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "FOT-NewRodinPro";
-            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-B.otf") format("opentype");
+            src: url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-B.otf") format("opentype");
             font-weight: 700;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "FOT-NewRodinPro";
-            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-EB.otf") format("opentype");
+            src: url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-EB.otf") format("opentype");
             font-weight: 800;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "FOT-NewRodinPro";
-            src: url("../../../shared/render_templates/fonts/FOT-NewRodinPro/FOT-NewRodinProN-UB.otf") format("opentype");
+            src: url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-UB.otf") format("opentype");
             font-weight: 900;
             font-style: normal;
             font-display: swap;
@@ -92,42 +92,42 @@
            Firefox 不支持 .ttc，但本项目使用 Playwright/Chromium 渲染，无需担心。 */
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-EL.ttc") format("collection");
+            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-EL.ttc") format("collection");
             font-weight: 200;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-L.ttc") format("collection");
+            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-L.ttc") format("collection");
             font-weight: 300;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-R.ttc") format("collection");
+            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-R.ttc") format("collection");
             font-weight: 400;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-M.ttc") format("collection");
+            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-M.ttc") format("collection");
             font-weight: 500;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-B.ttc") format("collection");
+            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-B.ttc") format("collection");
             font-weight: 700;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("../../../shared/render_templates/fonts/GenSenRounded2-ttc/GenSenRounded2-H.ttc") format("collection");
+            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-H.ttc") format("collection");
             font-weight: 800;
             font-style: normal;
             font-display: swap;
@@ -136,7 +136,7 @@
         /* ── 中文 ── */
         @font-face {
             font-family: "思源黑体";
-            src: url("../../../shared/render_templates/fonts/思源黑体CN-Bold.otf") format("opentype");
+            src: url("{{ fonts_dir }}/思源黑体CN-Bold.otf") format("opentype");
             font-weight: 700;       /* 仅有 Bold 字重 */
             font-style: normal;
             font-display: swap;
@@ -145,7 +145,7 @@
         /* ── 后备 Arial Bold ── */
         @font-face {
             font-family: "arial";
-            src: url("../../../shared/render_templates/fonts/arialbd.ttf") format("truetype");
+            src: url("{{ fonts_dir }}/arialbd.ttf") format("truetype");
             font-weight: 700;
             font-style: normal;
             font-display: swap;

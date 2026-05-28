@@ -20,17 +20,14 @@ def message_preprocess(message: str):
     raw_message = message
     contained_images = {}
     images = re.findall(r'\[CQ:image.*?]', message)
-    pattern = r'file=http://gchat.qpic.cn/gchatpic_new/\d+/\d+-\d+-(.*?)/.*?[,\]]'
     for i in images:
-        url_match = re.findall(r'url=(.*?)[,\]]', i)
-        file_match = re.findall(pattern, i)
-        # 确保两个匹配都成功才添加到字典
-        if url_match and file_match:
-            contained_images.update({i: [url_match[0], file_match[0]]})
+        file_match = re.findall(r'file=([^,\]]+)', i)
+        if file_match:
+            contained_images[i] = file_match[0]
         else:
             logger.warning(f'[复读姬] 图片消息解析失败: {i}')
-    for i in contained_images:
-        message = message.replace(i, f'[{contained_images[i][1]}]')
+    for i, file_value in contained_images.items():
+        message = message.replace(i, f'[{file_value}]')
     return message, raw_message
 
 

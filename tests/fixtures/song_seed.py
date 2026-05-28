@@ -12,49 +12,59 @@ CHUNI_ALIAS = "えーりん"
 MAI_DIFFICULTIES = {
     "standard": [
         {
+            "type": "std",
+            "difficulty": "basic",
             "level": "3",
             "levelValue": 3.0,
             "internalLevelValue": 3.0,
-            "notes": {"total": 120},
+            "noteCounts": {"total": 120},
         },
         {
+            "type": "std",
+            "difficulty": "advanced",
             "level": "7",
             "levelValue": 7.2,
             "internalLevelValue": 7.2,
-            "notes": {"total": 240},
+            "noteCounts": {"total": 240},
         },
         {
+            "type": "std",
+            "difficulty": "expert",
             "level": "10",
             "levelValue": 10.1,
             "internalLevelValue": 10.1,
-            "notes": {"total": 420},
+            "noteCounts": {"total": 420},
         },
         {
+            "type": "std",
+            "difficulty": "master",
             "level": "13",
             "levelValue": 13.2,
             "internalLevelValue": 13.2,
-            "notes": {"total": 700},
+            "noteCounts": {"total": 700},
         },
     ],
     "dx": [
         {
+            "type": "dx",
+            "difficulty": "master",
             "level": "13+",
             "levelValue": 13.7,
             "internalLevelValue": 13.7,
-            "notes": {"total": 800},
+            "noteCounts": {"total": 800},
         }
     ],
 }
 
 CHUNI_DIFFICULTIES = {
     "standard": [
-        {"level": "4", "levelValue": 4.0, "internalLevelValue": 4.0},
-        {"level": "8", "levelValue": 8.4, "internalLevelValue": 8.4},
-        {"level": "11", "levelValue": 11.2, "internalLevelValue": 11.2},
-        {"level": "13", "levelValue": 13.3, "internalLevelValue": 13.3},
+        {"type": "std", "difficulty": "BASIC", "level": "4", "levelValue": 4.0, "internalLevelValue": 4.0},
+        {"type": "std", "difficulty": "ADVANCED", "level": "8", "levelValue": 8.4, "internalLevelValue": 8.4},
+        {"type": "std", "difficulty": "EXPERT", "level": "11", "levelValue": 11.2, "internalLevelValue": 11.2},
+        {"type": "std", "difficulty": "MASTER", "level": "13", "levelValue": 13.3, "internalLevelValue": 13.3},
     ],
     "ultima": [
-        {"level": "14", "levelValue": 14.1, "internalLevelValue": 14.1}
+        {"type": "std", "difficulty": "ULTIMA", "level": "14", "levelValue": 14.1, "internalLevelValue": 14.1}
     ],
 }
 

@@ -23,14 +23,6 @@ def main():
     nonebot.load_plugin("nonebot_plugin_guess_song")
     nonebot.load_plugins("src/plugins")
 
-    from src.plugins.permission_admin.core import (
-        install_global_matcher_guard,
-        load_permission_store,
-    )
-
-    load_permission_store()
-    install_global_matcher_guard()
-
     # ── 本地调试模式 ─────────────────────────────────────────────────────
     if os.getenv("ENABLE_CONSOLE_DEBUG"):
         _register_console_debug()

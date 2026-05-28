@@ -3,7 +3,7 @@
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...shared.song_data import SongData
+from ...shared.song_data import SongData, SongSheet
 
 
 class MapTreasureExData(BaseModel):
@@ -90,45 +90,33 @@ class MapTreasureData(BaseModel):
         populate_by_name = True
 
 
-class MaiSongSheet(BaseModel):
+class MaiSongSheet(SongSheet):
     """Maimai 乐曲谱面信息（来自 dxrating）。"""
-    
+
     type: str  # dx, std, utage
     difficulty: str  # basic, advanced, expert, master, remaster
     level: str  # 显示等级，如 "13+"
-    level_value: float = Field(alias="levelValue")  # 数值等级，如 13.7
-    internal_level: str | None = Field(None, alias="internalLevel")  # 内部等级
-    internal_level_value: float | None = Field(None, alias="internalLevelValue")  # 内部等级数值
-    internal_level_value_new: float | None = Field(None, alias="internalLevelValueNew")  # 最新内部等级数值（dxrating）
-    note_designer: str | None = Field(None, alias="noteDesigner")  # 谱师
-    note_counts: dict | None = Field(None, alias="noteCounts")  # note 数量统计
-    regions: dict[str, bool] | None = None  # 地区可用性
-    region_overrides: dict[str, Any] | None = Field(None, alias="regionOverrides")  # 地区覆盖
-    is_special: bool = Field(False, alias="isSpecial")  # 是否特殊谱面
+    internal_level: str | None = Field(None, alias="internalLevel")
+    region_overrides: dict[str, Any] | None = Field(None, alias="regionOverrides")
+    is_special: bool = Field(False, alias="isSpecial")
     is_buddy: bool | None = Field(False, alias="isBuddy")
-    version: str | None = None  # 版本
-    internal_id: int | None = Field(None, alias="internalId")  # 内部 ID
-    
-    class Config:
-        populate_by_name = True  # 允许使用字段名或别名
+    version: str | None = None
+    internal_id: int | None = Field(None, alias="internalId")
 
 
-class MaiSongData(SongData):
+class MaiSongData(SongData[MaiSongSheet]):
     """Maimai 乐曲完整数据模型（合并 dxrating 和 LXNS 数据）。"""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    # dxrating 特有字段
-    category: str | None = None  # 分类
-    version: str | None = None  # 版本号
-    release_date: str | None = Field(None, alias="releaseDate")  # 发布日期
-    is_new: bool = Field(False, alias="isNew")  # 是否新曲
-    is_locked: bool = Field(False, alias="isLocked")  # 是否锁定
-    comment: str | None = None  # 备注
+    category: str | None = None
+    version: str | None = None
+    release_date: str | None = Field(None, alias="releaseDate")
+    comment: str | None = None
 
-    # LXNS 补充字段
-    rights: str | None = None  # 版权信息
-    mai_map: str | None = Field(None, alias="maiMap")  # 地图信息
+    mai_map: str | None = Field(None, alias="maiMap")
+
+    difficulties: dict[str, list[MaiSongSheet]] = Field(default_factory=dict)
 
     # 收藏信息（奖杯、称号等）
     collections: list[dict[str, Any]] = Field(default_factory=list)

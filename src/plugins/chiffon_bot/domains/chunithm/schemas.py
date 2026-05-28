@@ -6,21 +6,27 @@ from typing import Any
 
 from pydantic import Field
 
-from ...shared.song_data import SongData
+from ...shared.song_data import SongData, SongSheet
 
 
-class ChuniSongData(SongData):
+class ChuniSongSheet(SongSheet):
+    """CHUNITHM 乐曲谱面信息（合并 LXNS 和 arcade-songs 数据）。"""
+
+    type: str  # std, we
+    difficulty: str  # BASIC, ADVANCED, EXPERT, MASTER, ULTIMA, WE 汉字
+    level: str  # 显示等级
+
+
+class ChuniSongData(SongData[ChuniSongSheet]):
     """CHUNITHM 乐曲完整数据模型（合并 arcade-songs 和 LXNS 数据）。"""
 
-    # CHUNITHM 特有字段
-    genre: str = ""  # 曲风分类
-    version: int | None = None  # 版本号（LXNS int）
-    release_date: str = ""  # 发布日期
-    is_new: bool = False  # 是否新曲
-    is_locked: bool = False  # 是否锁定
-    comment: str = ""  # 备注
-    rights: str | None = None  # 版权信息
-    song_id: str | None = Field(None, alias="songId")  # arcade 内部 songId
+    genre: str = ""
+    version: int | None = None
+    release_date: str = ""
+    comment: str = ""
+    song_id: str | None = Field(None, alias="songId")
+
+    difficulties: dict[str, list[ChuniSongSheet]] = Field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChuniSongData":

@@ -14,8 +14,12 @@ class Config(BaseModel):
     lxns_base_url: str = "https://maimai.lxns.net"
     # CHUNITHM 静态资源根（曲绘 /jacket/{id}.png 等），见 LXNS API 文档「游戏资源」
     chunithm_assets_base_url: str = "https://assets2.lxns.net/chunithm"
-    # OAuth 回调地址（需与 LXNS 后台配置一致）
+    # OAuth 回调地址（需与 LXNS 后台配置一致）；留空则从 relay redirect_uri 自动推导
     lxns_oauth_redirect_uri: str = ""
+    # OAuth 中继服务地址（SSE Relay），如 https://relay.example.com
+    lxns_oauth_relay_url: str = ""
+    # OAuth 中继服务共享令牌，Bot ↔ Relay 鉴权
+    lxns_oauth_relay_token: str = ""
     # OAuth scope（按 LXNS 实际支持调整）
     lxns_oauth_scope: str = ""
     # OAuth state 的有效期（秒）
@@ -46,7 +50,6 @@ class Config(BaseModel):
     # 时区设置，用于赛事时间的显示和解析
     # 默认使用 Asia/Shanghai，可设置为任何有效的时区名称（如 UTC、America/New_York 等）
     timezone: str = "Asia/Shanghai"
-    dxrating_api_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxidHBubWRmZnVpbWlra3Nydm5zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDYwMzMxNzAsImV4cCI6MjAyMTYwOTE3MH0.rrzOisCZGz2gkp-yh61-_HDY7YqL3lTc4XsOPzuAVDU"
     
     # ingame_data 基础路径
     # 子目录按约定自动推导：{base_dir}/{domain_name}/{data_type}/

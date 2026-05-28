@@ -58,11 +58,16 @@ def parse_difficulty_range(range_str: str) -> tuple[float, float] | None:
     return _parse_single(range_str)
 
 
-def _pick_level_value(sheet: dict) -> float | None:
-    """从谱面 dict 中提取定数值（兼容 internalLevelValue / levelValue）。"""
-    lv = sheet.get("internalLevelValue")
-    if lv is None:
-        lv = sheet.get("levelValue")
+def _pick_level_value(sheet: dict | object) -> float | None:
+    """从谱面中提取定数值（兼容 dict 和 Pydantic 模型）。"""
+    if isinstance(sheet, dict):
+        lv = sheet.get("internalLevelValue")
+        if lv is None:
+            lv = sheet.get("levelValue")
+    else:
+        lv = getattr(sheet, "internal_level_value", None)
+        if lv is None:
+            lv = getattr(sheet, "level_value", None)
     if lv is not None:
         try:
             return float(lv)
@@ -99,8 +104,6 @@ def get_songs_by_difficulty_range(
         for song_type in difficulty_types:
             sheets = difficulties.get(song_type) or []
             for idx, sheet in enumerate(sheets):
-                if not isinstance(sheet, dict):
-                    continue
                 lv = _pick_level_value(sheet)
                 if lv is None:
                     continue
@@ -183,7 +186,7 @@ async def generic_random_song(
 
         range_text = f" (定数: {selected['level_value']})" if range_str else ""
         sheet = selected["sheet"]
-        level_display = sheet.get("level", str(selected["level_value"]))
+        level_display = str(sheet["level"] or selected["level_value"])
         description = (
             f"\n随机到的 {adapter.display_name} 乐曲{range_text}：\n"
             f"[{song_id}] {song_data.title}\n"

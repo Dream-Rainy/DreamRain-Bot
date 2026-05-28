@@ -13,7 +13,7 @@ from .app.commands.maimai import register_maimai_commands
 from .app.commands.chunithm import register_chunithm_commands
 from .app.commands.event import register_event_commands, register_event_rank_matcher
 from .app.commands.natural_language import register_natural_language_commands
-from .app.http.oauth_callback import register_oauth_callback_route
+from .integrations.lxns.sse_client import sse_client
 
 from .infra.db.connect import init as init_db, close as close_db
 from .domains.maimai.services import refresh_song_data
@@ -45,14 +45,13 @@ register_event_commands(event_group)
 register_event_rank_matcher()
 
 register_natural_language_commands()
-register_oauth_callback_route()
-
 driver = get_driver()
 
 
 @driver.on_startup
 async def init():
     await init_db()
+    await sse_client.start()
     logger.info("开始初始化乐曲数据...")
     is_updated, msg = await refresh_song_data()
     if is_updated:
@@ -63,4 +62,5 @@ async def init():
 
 @driver.on_shutdown
 async def close():
+    await sse_client.stop()
     await close_db()

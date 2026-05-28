@@ -23,15 +23,6 @@ run/
 stubs/
 
 *.ipynb
-**/template/assets
-**/template/bg_html
-**/template/icon
-**/template/info_img
-**/template/jacket
-**/template/plate
-**/template/frame
-**/template/*.png
-**/template/*.dds
 **/resource/
 .env.prod
 *data/
@@ -40,6 +31,7 @@ docker-compose*.yml
 !docker-compose*.example.yml
 .fnsync_temp_dir
 dev_run/
+Dockerfile.dev
 
 .cursor
 alembic.ini

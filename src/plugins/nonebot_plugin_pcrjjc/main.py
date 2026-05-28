@@ -1026,7 +1026,10 @@ async def send_notice(
     new: int, old: int, pcrid: int, notice_type: int
 ):  # noticeType：1:jjc排名变动   2:pjjc排名变动  3:登录时间刷新
     global bind_cache, timeStamp, jjc_log, today_notice, NOTICE_CD_MIN
+    if not get_bots():
+        return
     bot = get_bot()
+    change: str = ""
     if notice_type == 3:
         change = f"""上线了！[{time.strftime("%H:%M", time.localtime(new))}]"""
     else:
@@ -1106,16 +1109,43 @@ async def send_notice(
 
 @driver.on_bot_connect
 async def _():
-    scheduler.add_job(renew_friend_list, "interval", hours=5)
-    scheduler.add_job(on_arena_schedule, "interval", seconds=REFRESH_SECOND)
-    scheduler.add_job(clear_ranking_rise_time, "cron", hour="5")
+    scheduler.add_job(
+        renew_friend_list,
+        "interval",
+        hours=5,
+        id="pcrjjc_renew_friend_list",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        on_arena_schedule,
+        "interval",
+        seconds=REFRESH_SECOND,
+        id="pcrjjc_arena_schedule",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        clear_ranking_rise_time,
+        "cron",
+        hour="5",
+        id="pcrjjc_clear_ranking_rise_time",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
 
 
 async def renew_friend_list():
     global friend_list, lck_friend_list
+    bots = get_bots()
+    if not bots:
+        return
     bot = get_bot()
     old_friendList = friend_list
-    for sid in get_bots():
+    for sid in bots:
         flist = await bot.get_friend_list(self_id=int(sid))
         async with lck_friend_list:
             friend_list = []
@@ -1126,6 +1156,8 @@ async def renew_friend_list():
 
 
 async def on_arena_schedule():
+    if not get_bots():
+        return
     await renew_pcrid_list()
     await queue.join()
     await gather(

@@ -1,6 +1,5 @@
-from nonebot.rule import T_State
+from nonebot.typing import T_State
 from nonebot import get_driver
-from nonebot.log import logger
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from .config import Config
 from .data_source import get_github_reposity_information
@@ -23,7 +22,7 @@ __plugin_meta__ = PluginMetadata(
 )
 
 global_config = get_driver().config
-config = Config(**global_config.dict())
+config = Config(**global_config.model_dump())
 github = on_regex(r"https?://github\.com/([^/]+/[^/]+)", priority=10, block=False)
 
 def match_link_parts(link):
@@ -37,6 +36,8 @@ def match_link_parts(link):
 @github.handle()
 async def github_handle(bot: Bot, event: GroupMessageEvent, state: T_State):
     url = match_link_parts(event.get_plaintext())
+    if url is None:
+        await github.finish()
     imageUrl = await get_github_reposity_information(url)
     assert(imageUrl != "获取信息失败")
     await github.send(MessageSegment.image(imageUrl))

@@ -2,7 +2,6 @@ import asyncio
 import random
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
 
 from nonebot.adapters.onebot.v11 import Bot, MessageSegment
 from nonebot.adapters.onebot.v11.event import (GroupMessageEvent, MessageEvent,
@@ -19,9 +18,9 @@ except ModuleNotFoundError:
 
 
 def chain_reply(bot: Bot,
-                chain: List[Dict[str, Union[str, Dict[str, Union[str, MessageSegment]]]]],
+                chain: list[dict[str, str | dict[str, str | MessageSegment]]],
                 msg: MessageSegment
-                ) -> List[Dict[str, Union[str, Dict[str, Union[str, MessageSegment]]]]]:
+                ) -> list[dict[str, str | dict[str, str | MessageSegment]]]:
     data = {
         "type": "node",
         "data": {
@@ -38,7 +37,7 @@ def pick_theme() -> str:
     '''
         Random choose a theme from the union of local & official themes
     '''
-    sub_themes_dir: List[str] = [
+    sub_themes_dir: list[str] = [
         f.name for f in tarot_config.tarot_path.iterdir() if f.is_dir()]
 
     if len(sub_themes_dir) > 0:
@@ -47,12 +46,12 @@ def pick_theme() -> str:
     return random.choice(tarot_config.tarot_official_themes)
 
 
-def pick_sub_types(theme: str) -> List[str]:
+def pick_sub_types(theme: str) -> list[str]:
     '''
         Random choose a sub type of the "theme".
         If it is in official themes, all the sub types are available.
     '''
-    all_sub_types: List[str] = ["MajorArcana",
+    all_sub_types: list[str] = ["MajorArcana",
                                 "Cups", "Pentacles", "Sowrds", "Wands"]
 
     if theme == "BilibiliTarot":
@@ -61,7 +60,7 @@ def pick_sub_types(theme: str) -> List[str]:
     if theme == "TouhouTarot":
         return ["MajorArcana"]
 
-    sub_types: List[str] = [f.name for f in (
+    sub_types: list[str] = [f.name for f in (
         tarot_config.tarot_path / theme).iterdir() if f.is_dir() and f.name in all_sub_types]
 
     return sub_types
@@ -99,7 +98,7 @@ class Tarot:
 
         # 3. Get the text of representations
         is_cut: bool = formation.get("is_cut")
-        representations: List[Union[str, List[str]]] = random.choice(
+        representations: list[str | list[str]] = random.choice(
             formation.get("representations"))
 
         # 4. Genrate message
@@ -162,34 +161,33 @@ class Tarot:
         self.is_chain_reply = new_state
 
     def _random_cards(self,
-                      all_cards: Dict[str, Dict[str, Dict[str, Union[str, Dict[str, str]]]]],
+                      all_cards: dict[str, dict[str, dict[str, str | dict[str, str]]]],
                       theme: str,
                       num: int = 1
-                      ) -> List[Dict[str, Union[str, Dict[str, str]]]]:
+                      ) -> list[dict[str, dict[str, str | dict[str, str]]]]:
         '''
             Iterate the sub directory, get the subset of cards
         '''
-        sub_types: List[str] = pick_sub_types(theme)
+        sub_types: list[str] = pick_sub_types(theme)
 
         if len(sub_types) < 1:
             raise ResourceError(f"本地塔罗牌主题 {theme} 为空！请检查资源！")
 
-        subset: Dict[str, Dict[str, Union[str, Dict[str, str]]]] = {
+        subset: dict[str, dict[str, dict[str, str | dict[str, str]]]] = {
             k: v for k, v in all_cards.items() if v.get("type") in sub_types
         }
 
         # 2. Random sample the cards according to the num
-        cards_index: List[str] = random.sample(list(subset), num)
-        cards_info: List[Dict[str, Union[str, Dict[str, str]]]] = [
+        cards_index: list[str] = random.sample(list(subset), num)
+        cards_info: list[dict[str, dict[str, str | dict[str, str]]]] = [
             v for k, v in subset.items() if k in cards_index]
 
         return cards_info
 
     async def _get_text_and_image(self,
                                   theme: str,
-                                  card_info: Dict[str,
-                                                  Union[str, Dict[str, str]]]
-                                  ) -> Tuple[bool, MessageSegment]:
+                                  card_info: dict[str, str | dict[str, str]]
+                                  ) -> tuple    [bool, MessageSegment]:
         '''
             Get a tarot image & text arrcording to the "card_info"
         '''

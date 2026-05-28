@@ -243,7 +243,10 @@ async def sync_chuni_song_data(song_data: dict[int, ChuniSongData]) -> None:
                 "bpm": song.bpm,
                 "version": version_int,
                 "rights": song.rights,
-                "difficulties": song.difficulties or {},
+                "difficulties": {
+                    t: [s.model_dump(mode="json", by_alias=True, exclude_none=True) for s in sheets]
+                    for t, sheets in (song.difficulties or {}).items()
+                },
             },
         )
         synced_count += 1

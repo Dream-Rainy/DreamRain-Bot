@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+
 from nonebot.adapters import Event, Message
 from nonebot.log import logger
 from nonebot.params import CommandArg
 
 from ...integrations.lxns.use_cases.bind import bind_by_friend_code
 from ...integrations.lxns.oauth_client import oa_client
+from ...integrations.lxns.sse_client import sse_client
+from ...integrations.lxns.use_cases.bind_oauth import bind_by_oauth_code
 from ...integrations.lxns.use_cases.default_account import (
     get_default_lxns_game_profile_by_qq,
     set_default_lxns_account_for_qq,
@@ -13,7 +17,7 @@ from ...integrations.lxns.use_cases.default_account import (
 from ...integrations.lxns.use_cases.unbind import unbind_lxns_for_qq
 from ...infra.db.models import GameProfile, QQ_PLATFORM, UserAccount
 from ...shared.bot_response import BotResponse
-from ._response import finish_with
+from ._response import finish_with, send_with
 
 
 def register_account_commands(acc_group):
@@ -24,7 +28,7 @@ def register_account_commands(acc_group):
         await help_command.finish(
             "[account] 帮助\n"
             + "绑定（friend_code）：/acc.bind <friend_code>\n"
-            + "OAuth 授权链接：/acc.oauth-url\n"
+            + "OAuth 绑定：/acc.bind\n"
             + "OAuth 绑定状态：/acc.oauth-status\n"
             + "解绑 LXNS：/acc.unbind\n"
             + "查看默认账号：/acc.default show\n"
@@ -38,27 +42,46 @@ def register_account_commands(acc_group):
     async def handle_bind(event: Event, args: Message = CommandArg()):
         user_id = event.get_user_id()
         friend_code = args.extract_plain_text().strip()
-        if not friend_code:
-            await bind_command.finish("用法：/acc.bind <friend_code>")
 
-        result = await bind_by_friend_code(qq=user_id, friend_code=friend_code)
+        # 有 friend_code → 传统绑定
+        if friend_code:
+            result = await bind_by_friend_code(qq=user_id, friend_code=friend_code)
+            await finish_with(BotResponse(text=result.message, reply_to=event.message_id))
 
-        await finish_with(BotResponse(text=result.message, reply_to=event.message_id))
-
-    oauth_url_command = acc_group.command("oauth-url", force_whitespace=True)
-
-    @oauth_url_command.handle()
-    async def handle_oauth_url(event: Event):
-        user_id = event.get_user_id()
+        # 无参数 → OAuth 流程
         if not oa_client.redirect_uri:
-            await oauth_url_command.finish("OAuth 回调地址未配置，暂不可用")
+            await bind_command.finish(
+                "OAuth 未配置 redirect_uri 或 relay_url，暂不可用"
+            )
 
         state = oa_client.add_wait_bind_user(user_id)
         bind_uri = oa_client.get_bind_uri(state)
-        await finish_with(BotResponse(
-            text=f"已生成 OAuth 授权链接，请在浏览器中打开完成授权：\n{bind_uri}\nstate: {state}",
+        await send_with(BotResponse(
+            text=f"已生成 OAuth 授权链接，请在浏览器中打开完成授权：\n{bind_uri}",
             reply_to=event.message_id,
         ))
+
+        future = sse_client.register(state)
+        try:
+            code = await asyncio.wait_for(future, timeout=oa_client.state_ttl_seconds)
+        except asyncio.TimeoutError:
+            await finish_with(BotResponse(text="OAuth 绑定超时，请重试", reply_to=event.message_id))
+        finally:
+            sse_client.unregister(state)
+
+        result = await bind_by_oauth_code(qq=user_id, code=code, state=state)
+
+        if result.status == "bound":
+            account_key = result.account_key
+            await finish_with(BotResponse(
+                text=f"OAuth 绑定成功！你现在可以使用相关功能。\naccount_key: {account_key}",
+                reply_to=event.message_id,
+            ))
+        else:
+            await finish_with(BotResponse(
+                text=f"OAuth 绑定失败：{result.message}",
+                reply_to=event.message_id,
+            ))
 
     oauth_status_command = acc_group.command("oauth-status", force_whitespace=True)
 

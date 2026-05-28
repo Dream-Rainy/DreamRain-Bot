@@ -10,7 +10,6 @@ from .mai_bg_draw import (
 	clear_b50_img_cache,
 	clear_all_img_cache,
 	shadows,
-	template_path,
 	template_search_paths,
 )
 
@@ -26,7 +25,6 @@ __all__ = [
 	"clear_b50_img_cache",
 	"clear_all_img_cache",
 	"shadows",
-	"template_path",
 	"template_search_paths",
 	"template_to_pic",
 ]

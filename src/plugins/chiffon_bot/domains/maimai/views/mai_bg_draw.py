@@ -29,18 +29,29 @@ _b50_cache_dir = Path(tempfile.gettempdir()) / "dreamrain_bot" / "b50_imgs"
 _b50_cache_dir.mkdir(parents=True, exist_ok=True)
 _b50_img_cache = diskcache.Cache(str(_b50_cache_dir))
 
-template_path = str(_CHIFFON_BOT_ROOT / "domains/maimai/template")
-_shared_render_templates = str(_CHIFFON_BOT_ROOT / "shared/render_templates")
-_chuni_templates_dir = str(_CHIFFON_BOT_ROOT / "domains/chunithm/template")
+# HTML 模板（Jinja2 搜索路径，HTML 文件在 src/ 中，受 git 追踪）
+_MAIMAI_HTML_TEMPLATE_DIR = str(_CHIFFON_BOT_ROOT / "domains/maimai/template")
+_SHARED_RENDER_TEMPLATES = str(_CHIFFON_BOT_ROOT / "shared/render_templates")
+_CHUNI_HTML_TEMPLATE_DIR = str(_CHIFFON_BOT_ROOT / "domains/chunithm/template")
 template_search_paths = (
-    template_path,
-    _shared_render_templates,
-    _chuni_templates_dir,
+    _MAIMAI_HTML_TEMPLATE_DIR,
+    _SHARED_RENDER_TEMPLATES,
+    _CHUNI_HTML_TEMPLATE_DIR,
 )
-_template_base_uri = Path(template_path).resolve().as_uri()
+
+# 素材/外部数据（data/ 目录，不在 git 中）
+_DATA_DIR = Path(os.getcwd()) / "data" / "chiffon_bot"
+_MAIMAI_ASSETS_DIR = _DATA_DIR / "template" / "maimai"
+_MAIMAI_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+_template_base_uri = _MAIMAI_ASSETS_DIR.resolve().as_uri()
+
+# 字体目录（file:// URI，供模板中 @font-face 引用）
+_FONTS_DIR_URI = (
+    (_CHIFFON_BOT_ROOT / "shared" / "render_templates" / "fonts").resolve().as_uri()
+)
 
 # API 背景图缓存
-_BG_API_CACHE_DIR = Path(os.getcwd()) / "data" / "chiffon_bot" /"bg_api_cache"
+_BG_API_CACHE_DIR = _DATA_DIR / "bg_api_cache"
 _BG_API_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # 需从外部 API 获取背景的版本映射表
@@ -161,7 +172,8 @@ async def render_b50_img(
 	_b50_bg_page = "bg_html/prism_plus/prism_plus.html"
 
 	templates = {
-		"base_url": template_path,
+		"base_url": str(_MAIMAI_ASSETS_DIR),
+		"fonts_dir": _FONTS_DIR_URI,
 		"bg_page_url": _b50_bg_page,
 		"bg_image_url": None,
 		"title_img": "assets/title_bg_prism.png",
@@ -356,7 +368,8 @@ async def render_song_info_img(song_data: MaiSongData) -> bytes:
 			song_version_formatted = "buddies"
 
 	templates = {
-		"base_url": template_path,
+		"base_url": str(_MAIMAI_ASSETS_DIR),
+		"fonts_dir": _FONTS_DIR_URI,
 		"bg_page_url": f"bg_html/{song_version_formatted}/{song_version_formatted}.html",
 		"bg_image_url": bg_image_url,
 		"song_info": song_info,
