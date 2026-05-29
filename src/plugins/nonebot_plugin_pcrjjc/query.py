@@ -1,6 +1,7 @@
 import asyncio
 import traceback
 import types
+import time
 from asyncio import Lock
 from json import load, loads
 from os.path import join, exists
@@ -206,6 +207,8 @@ async def query(pcr_client):
     while True:
         if queue is None:
             break
+        data = None
+        started_at = None
         try:
             DA = await queue.get()
             data = DA[1]
@@ -213,6 +216,8 @@ async def query(pcr_client):
             await asyncio.sleep(1)
             continue
         try:
+            if data[2].get("_auto_query_done") is not None:
+                started_at = time.monotonic()
             if validating:
                 await asyncio.sleep(1)
                 raise ApiException('账号被风控，请联系管理员输入验证码并重新登录', -1)
@@ -227,5 +232,13 @@ async def query(pcr_client):
         except:
             traceback.print_exc()
         finally:
+            if data is not None:
+                task_data = data[2]
+                auto_query_done = task_data.get("_auto_query_done")
+                if auto_query_done is not None:
+                    duration = 0.0
+                    if started_at is not None:
+                        duration = time.monotonic() - started_at
+                    auto_query_done(task_data.get("uid"), duration)
             if queue is not None:
                 queue.task_done()

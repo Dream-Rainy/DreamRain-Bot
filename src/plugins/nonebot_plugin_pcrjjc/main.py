@@ -1,6 +1,7 @@
 import time
 from asyncio import Lock, gather
 from copy import deepcopy
+from heapq import heappop, heappush
 from json import load, dump
 from os.path import join, exists
 
@@ -56,6 +57,7 @@ MAX_PCRID = config.max_pcrid
 MAX_HISTORY = config.max_history
 NOTICE_CD_MIN = config.notice_cd_min
 REFRESH_SECOND = config.refresh_second
+PCRJJC_ACCOUNT_COUNT = max(1, len(config.pcrjjc_accounts))
 sv_help = f"""\t\t\t\t【竞技场帮助】
 可以添加的订阅：[jjc][pjjc][排名上升][at][上线提醒]
 #排名上升提醒对jjc和pjjc同时生效
@@ -112,6 +114,13 @@ bind_cache = root["arena_bind"]
 cache = {}
 jjc_log = {}
 query_cache = {}
+pcrid_subscribers: dict[int, list[tuple[str, int]]] = {}
+pcrid_query_intervals: dict[int, float] = {}
+scheduled_pcrids_pending: set[int] = set()
+pcrid_schedule_heap: list[tuple[float, int, int]] = []
+pcrid_schedule_entries: dict[int, tuple[float, int]] = {}
+pcrid_schedule_seq = 0
+auto_query_duration_ewma = REFRESH_SECOND
 timeStamp = 0
 pri_user = 0
 today_notice = 0
@@ -378,6 +387,61 @@ async def get_notice_type(tmp):
     riseNotice = True if (tmp % 1000) // 100 else False
     atNotice = True if (tmp % 100) // 10 else False
     return atNotice, jjcNotice, pjjcNotice, riseNotice
+
+
+def get_auto_query_interval(notice_type: int) -> float | None:
+    """返回自动刷新需要的最小查询间隔；None 表示无需自动查询。"""
+    jjc_notice = bool(notice_type // 10000)
+    pjjc_notice = bool((notice_type % 10000) // 1000)
+    if jjc_notice or pjjc_notice:
+        return REFRESH_SECOND
+
+    online_notice = notice_type % 10
+    if online_notice == 3:
+        return 60
+    if online_notice:
+        return max(60, NOTICE_CD_MIN * 60)
+    return None
+
+
+def push_auto_query_schedule(uid: int, due_at: float) -> None:
+    global pcrid_schedule_seq
+    pcrid_schedule_seq += 1
+    entry = (due_at, pcrid_schedule_seq, uid)
+    pcrid_schedule_entries[uid] = (due_at, pcrid_schedule_seq)
+    heappush(pcrid_schedule_heap, entry)
+
+
+def sync_auto_query_schedule(now: float) -> None:
+    active_pcrids = set(pcrid_list)
+    for uid in list(pcrid_schedule_entries):
+        if uid not in active_pcrids:
+            del pcrid_schedule_entries[uid]
+    for uid in list(scheduled_pcrids_pending):
+        if uid not in active_pcrids:
+            scheduled_pcrids_pending.discard(uid)
+    for uid in active_pcrids:
+        if uid not in pcrid_schedule_entries and uid not in scheduled_pcrids_pending:
+            push_auto_query_schedule(uid, now)
+
+
+def get_auto_query_queue_target() -> int:
+    duration = max(auto_query_duration_ewma, 0.1)
+    per_tick_capacity = int((REFRESH_SECOND / duration) * PCRJJC_ACCOUNT_COUNT * 0.8)
+    return max(
+        PCRJJC_ACCOUNT_COUNT,
+        min(PCRJJC_ACCOUNT_COUNT * 3, per_tick_capacity + PCRJJC_ACCOUNT_COUNT),
+    )
+
+
+def complete_auto_query(uid: int, duration: float) -> None:
+    global auto_query_duration_ewma
+    scheduled_pcrids_pending.discard(uid)
+    if uid not in pcrid_query_intervals:
+        return
+
+    auto_query_duration_ewma = auto_query_duration_ewma * 0.8 + max(duration, 0.1) * 0.2
+    push_auto_query_schedule(uid, time.monotonic() + pcrid_query_intervals[uid])
 
 
 @on_regex(r"^(?:击剑|竞技场)记录 ?(\d+)?$").handle()
@@ -853,8 +917,11 @@ def delete_arena(uid):
 
 
 async def renew_pcrid_list():
-    global bind_cache, pcrid_list, lck, lck_friend_list, friend_list
-    pcrid_list = []
+    global bind_cache, pcrid_list, pcrid_subscribers, pcrid_query_intervals
+    global lck, lck_friend_list, friend_list
+    next_pcrid_list = []
+    next_subscribers: dict[int, list[tuple[str, int]]] = {}
+    next_intervals: dict[int, float] = {}
     async with lck_friend_list:
         copy_friendList = friend_list
     if len(copy_friendList) == 0:
@@ -869,9 +936,22 @@ async def renew_pcrid_list():
                 if qid not in copy_friendList and bind_cache[qid]["private"]:
                     bind_cache[qid]["notice_on"] = False
                     continue
-                for i in bind_cache[qid]["pcrid"]:
-                    pcrid_list.append(int(i))
-    pcrid_list = list(set(pcrid_list))
+                for index, pcrid in enumerate(bind_cache[qid]["pcrid"]):
+                    notice_type = bind_cache[qid]["noticeType"][index]
+                    interval = get_auto_query_interval(notice_type)
+                    if interval is None:
+                        continue
+
+                    pcrid_int = int(pcrid)
+                    next_pcrid_list.append(pcrid_int)
+                    next_subscribers.setdefault(pcrid_int, []).append((qid, index))
+                    old_interval = next_intervals.get(pcrid_int)
+                    next_intervals[pcrid_int] = (
+                        interval if old_interval is None else min(old_interval, interval)
+                    )
+    pcrid_list = list(dict.fromkeys(next_pcrid_list))
+    pcrid_subscribers = next_subscribers
+    pcrid_query_intervals = next_intervals
 
 
 async def query_schedule(data):
@@ -1050,58 +1130,55 @@ async def send_notice(
         else:
             change += f"""{old}->{new} [▽{new - old}]"""
     # -----------------------------------------------------------------
-    for qid in bind_cache:
-        if not bind_cache[qid]["notice_on"]:
+    for qid, i in list(pcrid_subscribers.get(pcrid, ())):
+        if qid not in bind_cache or not bind_cache[qid]["notice_on"]:
             continue
-        for i in range(len(bind_cache[qid]["pcrid"])):
-            if bind_cache[qid]["pcrid"][i] == pcrid:
-                tmp = bind_cache[qid]["noticeType"][i]
-                name = bind_cache[qid]["pcrName"][i]
-                atNotice, jjcNotice, pjjcNotice, riseNotice = await get_notice_type(tmp)
-                onlineNotice = False
-                if (OnlineType := tmp % 10) and notice_type == 3:
-                    if (new - old) < (60 if OnlineType == 3 else 60 * NOTICE_CD_MIN):
-                        cache[pcrid][2] = old  # 间隔太短，不更新缓存
-                    elif OnlineType != 1 or (
-                        # (new % 86400 // 3600 + 8) % 24 == 14 and new % 3600 // 60 >= 30 # 14:30~14:59
-                        (new % 86400 // 3600 + 8) % 24 == 14 # 14:00~14:59
-                    ):  # 类型1，只在特定时间播报
-                        onlineNotice = True
-                if (
-                    (
-                        (notice_type == 1 and jjcNotice)
-                        or (notice_type == 2 and pjjcNotice)
-                    )
-                    and (riseNotice or (new > old))
-                ) or (notice_type == 3 and onlineNotice):
-                    logger.info("sendNotice   sendNotice    sendNotice")
-                    msg = Message()
-                    msg.append(name + change)
-                    today_notice += 1
-                    if bind_cache[qid]["private"]:
-                        for sid in get_bots():
-                            try:
-                                await bot.send_private_msg(
-                                    self_id=sid, user_id=int(qid), message=msg
-                                )
-                                return
-                            except Exception:
-                                pass
-                        bind_cache[qid]["notice_on"] = False
-                    else:
-                        if atNotice:
-                            msg.append(MessageSegment.at(qid))
-                        for sid in get_bots():
-                            try:
-                                await bot.send_group_msg(
-                                    self_id=sid,
-                                    group_id=int(bind_cache[qid]["gid"]),
-                                    message=msg,
-                                )
-                                break
-                            except Exception as e:
-                                logger.debug(e)
-                break
+        if i >= len(bind_cache[qid]["pcrid"]) or bind_cache[qid]["pcrid"][i] != pcrid:
+            continue
+
+        tmp = bind_cache[qid]["noticeType"][i]
+        name = bind_cache[qid]["pcrName"][i]
+        atNotice, jjcNotice, pjjcNotice, riseNotice = await get_notice_type(tmp)
+        onlineNotice = False
+        if (OnlineType := tmp % 10) and notice_type == 3:
+            if (new - old) < (60 if OnlineType == 3 else 60 * NOTICE_CD_MIN):
+                cache[pcrid][2] = old  # 间隔太短，不更新缓存
+            elif OnlineType != 1 or (
+                # (new % 86400 // 3600 + 8) % 24 == 14 and new % 3600 // 60 >= 30 # 14:30~14:59
+                (new % 86400 // 3600 + 8) % 24 == 14  # 14:00~14:59
+            ):  # 类型1，只在特定时间播报
+                onlineNotice = True
+        if (
+            ((notice_type == 1 and jjcNotice) or (notice_type == 2 and pjjcNotice))
+            and (riseNotice or (new > old))
+        ) or (notice_type == 3 and onlineNotice):
+            logger.info("sendNotice   sendNotice    sendNotice")
+            msg = Message()
+            msg.append(name + change)
+            today_notice += 1
+            if bind_cache[qid]["private"]:
+                for sid in get_bots():
+                    try:
+                        await bot.send_private_msg(
+                            self_id=sid, user_id=int(qid), message=msg
+                        )
+                        return
+                    except Exception:
+                        pass
+                bind_cache[qid]["notice_on"] = False
+            else:
+                if atNotice:
+                    msg.append(MessageSegment.at(qid))
+                for sid in get_bots():
+                    try:
+                        await bot.send_group_msg(
+                            self_id=sid,
+                            group_id=int(bind_cache[qid]["gid"]),
+                            message=msg,
+                        )
+                        break
+                    except Exception as e:
+                        logger.debug(e)
 
 
 # ========================================Auto========================================
@@ -1159,12 +1236,44 @@ async def on_arena_schedule():
     if not get_bots():
         return
     await renew_pcrid_list()
-    await queue.join()
-    await gather(
-        *map(
-            lambda uid: queue.put((10, (query_schedule, uid, {"uid": uid}))), pcrid_list
+    now = time.monotonic()
+    sync_auto_query_schedule(now)
+    available_slots = get_auto_query_queue_target() - queue.qsize()
+    if available_slots <= 0:
+        return
+
+    put_tasks = []
+    while available_slots > 0 and pcrid_schedule_heap:
+        due_at, seq, uid = heappop(pcrid_schedule_heap)
+        if pcrid_schedule_entries.get(uid) != (due_at, seq):
+            continue
+        if due_at > now:
+            heappush(pcrid_schedule_heap, (due_at, seq, uid))
+            break
+
+        del pcrid_schedule_entries[uid]
+        if uid not in pcrid_query_intervals or uid in scheduled_pcrids_pending:
+            continue
+
+        scheduled_pcrids_pending.add(uid)
+        put_tasks.append(
+            queue.put(
+                (
+                    10,
+                    (
+                        query_schedule,
+                        uid,
+                        {
+                            "uid": uid,
+                            "_auto_query_done": complete_auto_query,
+                        },
+                    ),
+                )
+            )
         )
-    )
+        available_slots -= 1
+    if put_tasks:
+        await gather(*put_tasks)
 
 
 async def clear_ranking_rise_time():

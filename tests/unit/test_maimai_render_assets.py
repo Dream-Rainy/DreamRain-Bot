@@ -6,8 +6,6 @@ from typing import Any
 
 import pytest
 
-from src.plugins.chiffon_bot.domains.maimai.schemas import MaiSongData
-from src.plugins.chiffon_bot.domains.maimai.views import mai_bg_draw
 from tests.fixtures.song_seed import MAI_DIFFICULTIES, MAI_SONG_ID, MAI_SONG_TITLE
 
 
@@ -26,7 +24,18 @@ def _b50_user_data() -> dict[str, Any]:
     }
 
 
-async def test_b50_render_uses_maimai_data_asset_root(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture()
+def maimai_render_modules(loaded_chiffon_bot):
+    from src.plugins.chiffon_bot.domains.maimai.schemas import MaiSongData
+    from src.plugins.chiffon_bot.domains.maimai.views import mai_bg_draw
+
+    return MaiSongData, mai_bg_draw
+
+
+async def test_b50_render_uses_maimai_data_asset_root(
+    maimai_render_modules, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, mai_bg_draw = maimai_render_modules
     captured: dict[str, Any] = {}
 
     async def fake_template_to_pic(**kwargs: Any) -> bytes:
@@ -46,7 +55,10 @@ async def test_b50_render_uses_maimai_data_asset_root(monkeypatch: pytest.Monkey
     assert Path(captured["templates"]["base_url"]) == mai_bg_draw._MAIMAI_ASSETS_DIR
 
 
-async def test_song_info_render_uses_maimai_data_asset_root(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_song_info_render_uses_maimai_data_asset_root(
+    maimai_render_modules, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    MaiSongData, mai_bg_draw = maimai_render_modules
     captured: dict[str, Any] = {}
 
     async def fake_template_to_pic(**kwargs: Any) -> bytes:
@@ -79,7 +91,8 @@ async def test_song_info_render_uses_maimai_data_asset_root(monkeypatch: pytest.
     assert captured["templates"]["bg_page_url"] == "bg_html/prism/prism.html"
 
 
-def test_maimai_asset_root_matches_runtime_data_dir() -> None:
+def test_maimai_asset_root_matches_runtime_data_dir(maimai_render_modules) -> None:
+    _, mai_bg_draw = maimai_render_modules
     expected = Path.cwd() / "data" / "chiffon_bot" / "template" / "maimai"
 
     assert mai_bg_draw._MAIMAI_ASSETS_DIR.resolve() == expected.resolve()
@@ -89,7 +102,10 @@ def test_maimai_asset_root_matches_runtime_data_dir() -> None:
         )
 
 
-def test_maimai_required_assets_are_present_when_asset_check_is_enabled() -> None:
+def test_maimai_required_assets_are_present_when_asset_check_is_enabled(
+    maimai_render_modules,
+) -> None:
+    _, mai_bg_draw = maimai_render_modules
     required_assets = (
         "assets/UI_CMN_Num_70p.png",
         "assets/title_bg_prism.png",

@@ -19,7 +19,7 @@ def _build(response: BotResponse) -> list:
     if response.text is not None:
         segs.append(Text(response.text))
     if response.image is not None:
-        segs.append(SaaImage(raw=response.image))
+        segs.append(SaaImage(response.image))
     if response.suffix is not None:
         segs.append(Text(response.suffix))
     return segs
