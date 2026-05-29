@@ -8,14 +8,19 @@ from __future__ import annotations
 from typing import NoReturn
 
 from nonebot_plugin_saa import MessageFactory, Text, Image as SaaImage, Reply
+from nonebot_plugin_saa.adapters.onebot_v11 import OB11MessageId
 
 from ...shared.bot_response import BotResponse
+
+
+def _reply(message_id: int) -> Reply:
+    return Reply(OB11MessageId(message_id=message_id))
 
 
 def _build(response: BotResponse) -> list:
     segs: list = []
     if response.reply_to is not None:
-        segs.append(Reply(response.reply_to))
+        segs.append(_reply(response.reply_to))
     if response.text is not None:
         segs.append(Text(response.text))
     if response.image is not None:
