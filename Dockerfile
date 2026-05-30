@@ -12,7 +12,8 @@ ENV UV_PROJECT_ENVIRONMENT=/build/.venv \
     DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    UV_HTTP_TIMEOUT=120
+    UV_HTTP_TIMEOUT=120 \
+    UV_LINK_MODE=copy
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential curl ca-certificates pkg-config libssl-dev && \

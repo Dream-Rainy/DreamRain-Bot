@@ -22,28 +22,28 @@ from nonebot.rule import Rule
 from PIL import Image
 
 from .config import Config
+from .compat import upstream_import
 from .storage import EXCEL_CACHE_DIR
 
 require("nonebot_plugin_orm")
 from .orm import get_session as get_session  # noqa: F401,E402
 
-from src.submodule.autopcr.autopcr.core.clientpool import instance as clientpool
-from src.submodule.autopcr.autopcr.db.database import db
-from src.submodule.autopcr.autopcr.db.dbstart import db_start
-from src.submodule.autopcr.autopcr.module.accountmgr import (
-    BATCHINFO,
-    Account,
-    AccountBatch,
-    AccountManager,
-    TaskResultInfo,
-    instance as usermgr,
-)
-from src.submodule.autopcr.autopcr.module.modulebase import eResultStatus
-from src.submodule.autopcr.autopcr.util.draw import instance as drawer
-from src.submodule.autopcr.autopcr.util.draw_table import outp_b64
-from src.submodule.autopcr.autopcr.util.excel_export import export_excel
-from src.submodule.autopcr.autopcr.util.logger import instance as logger
-from src.submodule.autopcr.autopcr.util.pcr_data import get_id_from_name
+clientpool = upstream_import("core.clientpool").instance
+db = upstream_import("db.database").db
+db_start = upstream_import("db.dbstart").db_start
+accountmgr_module = upstream_import("module.accountmgr")
+BATCHINFO = accountmgr_module.BATCHINFO
+Account = accountmgr_module.Account
+AccountBatch = accountmgr_module.AccountBatch
+AccountManager = accountmgr_module.AccountManager
+TaskResultInfo = accountmgr_module.TaskResultInfo
+usermgr = accountmgr_module.instance
+eResultStatus = upstream_import("module.modulebase").eResultStatus
+drawer = upstream_import("util.draw").instance
+outp_b64 = upstream_import("util.draw_table").outp_b64
+export_excel = upstream_import("util.excel_export").export_excel
+logger = upstream_import("util.logger").instance
+get_id_from_name = upstream_import("util.pcr_data").get_id_from_name
 
 config = get_plugin_config(Config)
 prefix = config.autopcr_prefix
@@ -140,7 +140,7 @@ sv = ServiceRegistry(name="自动清日常", help_=sv_help)
 async def init():
     await db_start()
     if config.autopcr_enable_crons:
-        from src.submodule.autopcr.autopcr.module.crons import queue_crons
+        queue_crons = upstream_import("module.crons").queue_crons
 
         queue_crons()
 
@@ -298,7 +298,7 @@ async def _handle_autopcr(bot: Bot, event: MessageEvent, matcher: Matcher, plain
 
 
 async def check_validate(botev: BotEvent, qq: str, cnt: int = 1):
-    from src.submodule.autopcr.autopcr.http_server.validator import validate_dict
+    validate_dict = upstream_import("http_server.validator").validate_dict
     for _ in range(360):
         if qq in validate_dict and validate_dict[qq]:
             validate = validate_dict[qq].pop()
@@ -719,7 +719,9 @@ async def clean_daily_time(botev: BotEvent, accmgr: AccountManager):
 
 @sv.on_prefix(f"{prefix}定时日志")
 async def cron_log(botev: BotEvent):
-    from src.submodule.autopcr.autopcr.module.crons import CRONLOG_PATH, CronLog
+    crons_module = upstream_import("module.crons")
+    CRONLOG_PATH = crons_module.CRONLOG_PATH
+    CronLog = crons_module.CronLog
     with open(CRONLOG_PATH, 'r') as f:
         msg = [CronLog.from_json(line.strip()) for line in f.readlines()]
     args = await botev.message()
@@ -746,7 +748,10 @@ async def cron_log(botev: BotEvent):
 
 @sv.on_prefix(f"{prefix}定时状态")
 async def cron_status(botev: BotEvent):
-    from src.submodule.autopcr.autopcr.module.crons import CRONLOG_PATH, CronLog, eCronOperation
+    crons_module = upstream_import("module.crons")
+    CRONLOG_PATH = crons_module.CRONLOG_PATH
+    CronLog = crons_module.CronLog
+    eCronOperation = crons_module.eCronOperation
     with open(CRONLOG_PATH, 'r') as f:
         logs = [CronLog.from_json(line.strip()) for line in f.readlines()]
     cur = datetime.datetime.now()

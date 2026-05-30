@@ -1,10 +1,49 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import sys
 import types
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
+
+UPSTREAM_PACKAGE = "_dreamrain_autopcr_upstream"
+
+
+def get_upstream_root() -> Path:
+    return Path(__file__).parents[2] / "submodule" / "autopcr" / "autopcr"
+
+
+def import_upstream_package() -> str:
+    """Load the autopcr submodule package under a private, non-conflicting name."""
+
+    install_distutils_shim()
+    if UPSTREAM_PACKAGE in sys.modules:
+        return UPSTREAM_PACKAGE
+
+    package_root = get_upstream_root()
+    init_file = package_root / "__init__.py"
+    if not init_file.exists():
+        raise ModuleNotFoundError(f"autopcr submodule package not found at {package_root}")
+
+    spec = importlib.util.spec_from_file_location(
+        UPSTREAM_PACKAGE,
+        init_file,
+        submodule_search_locations=[str(package_root)],
+    )
+    if spec is None or spec.loader is None:
+        raise ModuleNotFoundError(f"cannot load autopcr submodule package from {init_file}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[UPSTREAM_PACKAGE] = module
+    spec.loader.exec_module(module)
+    return UPSTREAM_PACKAGE
+
+
+def upstream_import(module: str):
+    package = import_upstream_package()
+    return importlib.import_module(f"{package}.{module}")
 
 
 def install_distutils_shim() -> None:
@@ -83,16 +122,17 @@ def _pydantic_v1_imports() -> Iterator[None]:
 def warm_up_autopcr_legacy_imports() -> None:
     """Import pydantic-v1-era autopcr modules under a scoped compatibility layer."""
 
+    package = import_upstream_package()
     modules = (
-        "src.submodule.autopcr.autopcr.model.modelbase",
-        "src.submodule.autopcr.autopcr.model.common",
-        "src.submodule.autopcr.autopcr.model.custom",
-        "src.submodule.autopcr.autopcr.model.requests",
-        "src.submodule.autopcr.autopcr.model.responses",
-        "src.submodule.autopcr.autopcr.model.sdkrequests",
-        "src.submodule.autopcr.autopcr.model.handlers",
-        "src.submodule.autopcr.autopcr.db.assetmgr",
+        "model.modelbase",
+        "model.common",
+        "model.custom",
+        "model.requests",
+        "model.responses",
+        "model.sdkrequests",
+        "model.handlers",
+        "db.assetmgr",
     )
     with _pydantic_v1_imports():
         for module in modules:
-            importlib.import_module(module)
+            importlib.import_module(f"{package}.{module}")

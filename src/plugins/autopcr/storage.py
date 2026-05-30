@@ -9,7 +9,7 @@ require("nonebot_plugin_localstore")
 
 from nonebot_plugin_localstore import get_cache_dir, get_data_dir  # noqa: E402
 
-from .compat import install_distutils_shim
+from .compat import get_upstream_root, install_distutils_shim, upstream_import
 
 PLUGIN_NAME = "autopcr"
 
@@ -27,7 +27,7 @@ def _as_dir(path: Path) -> str:
 
 
 def _copy_static_data() -> None:
-    source = Path(__file__).parents[2] / "submodule" / "autopcr" / "data"
+    source = get_upstream_root().parent / "data"
     if not source.exists():
         STATIC_DATA_DIR.mkdir(parents=True, exist_ok=True)
         return
@@ -50,7 +50,7 @@ def configure_autopcr_storage() -> None:
         path.mkdir(parents=True, exist_ok=True)
     _copy_static_data()
 
-    from src.submodule.autopcr.autopcr import constants
+    constants = upstream_import("constants")
 
     legacy_root = Path(constants.ROOT_DIR)
     constants.ROOT_DIR = _as_dir(PLUGIN_DATA_DIR)

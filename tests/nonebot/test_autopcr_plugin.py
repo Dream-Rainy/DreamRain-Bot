@@ -27,7 +27,9 @@ async def test_autopcr_plugin_imports_with_nonebot(app):
 async def test_autopcr_storage_redirects_to_localstore(app):
     _load_autopcr()
 
-    from src.submodule.autopcr.autopcr import constants
+    from src.plugins.autopcr.compat import upstream_import
+
+    constants = upstream_import("constants")
 
     assert "autopcr" in constants.CACHE_DIR
     assert "autopcr" in constants.CONFIG_PATH

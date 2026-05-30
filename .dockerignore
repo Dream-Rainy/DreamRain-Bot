@@ -45,6 +45,9 @@ stubs
 .fnsync_temp_dir
 dev_run
 src/submodule/
+!src/submodule/
+!src/submodule/autopcr/
+!src/submodule/autopcr/**
 docker-compose*.yml
 !docker-compose*.example.yml
 tests
