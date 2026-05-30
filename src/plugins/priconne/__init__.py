@@ -2,8 +2,13 @@ from nonebot import require
 from nonebot.plugin import PluginMetadata
 
 require("nonebot_plugin_orm")
+require("nonebot_plugin_localstore")
 
+from .pcr_data_runtime import apply_pcr_data_override
 from .config import Config
+
+apply_pcr_data_override()
+
 from . import login  # noqa: F401
 from . import clanbattle  # noqa: F401
 from . import fendao  # noqa: F401

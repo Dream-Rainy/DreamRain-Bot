@@ -1,5 +1,3 @@
-import os.path
-from os.path import dirname, join
 import traceback
 from msgpack import packb, unpackb
 import asyncio
@@ -20,6 +18,8 @@ import json
 import secrets
 import string
 
+from .storage import DEVICE_FILE, STATIC_VERSION_ORIGIN_FILE, VERSION_FILE
+
 
 def get_api_root(qudao):
     if qudao == 0:
@@ -29,29 +29,37 @@ def get_api_root(qudao):
             "https://l3-prod-all-gs-gzlj.bilibiligame.net"
         ])
 
-curpath = dirname(__file__)
-
-config = join(curpath, 'version.txt')
+config = str(VERSION_FILE)
 
 
 def _get_version() -> str:
-    version = join(curpath, 'version.txt')
-    if os.path.exists(version):
-        with open(version, encoding='utf-8') as ver:
-            return ver.read().strip()
-    else:
-        with open(join(curpath, 'version.origin.txt'), encoding='utf-8') as ver:
-            return ver.read().strip()
+    if VERSION_FILE.exists():
+        with open(VERSION_FILE, encoding='utf-8') as ver:
+            if version := ver.read().strip():
+                return version
+    elif STATIC_VERSION_ORIGIN_FILE.exists():
+        with open(STATIC_VERSION_ORIGIN_FILE, encoding='utf-8') as ver:
+            if version := ver.read().strip():
+                return version
+    return "11.7.1"
 
 
 def _set_version(version: str):
-    with open(join(curpath, 'version.txt'), mode='w', encoding='utf-8') as ver:
+    VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(VERSION_FILE, mode='w', encoding='utf-8') as ver:
         ver.write(version)
 
 def init_device_id(clear_id = False):
-    with open(join(curpath, 'device.json'), 'r', encoding='UTF-8') as f:
-        js = json.load(f)
-    device_id = js['DEVICE-ID']
+    DEVICE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if DEVICE_FILE.exists():
+        try:
+            with open(DEVICE_FILE, 'r', encoding='UTF-8') as f:
+                js = json.load(f)
+        except Exception:
+            js = {"DEVICE-ID": ""}
+    else:
+        js = {"DEVICE-ID": ""}
+    device_id = js.get('DEVICE-ID', '')
     if device_id == '' or clear_id:
         random_string = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
         sha256_str = sha256(random_string.encode('utf-8')).digest()
@@ -60,7 +68,7 @@ def init_device_id(clear_id = False):
         device_id = md5(timestamp_str + sha256_str).hexdigest()
         logger.info(f'设备id已更新：{device_id}')
         js['DEVICE-ID'] = device_id
-        with open(join(curpath, 'device.json'), 'w', encoding='UTF-8') as f:
+        with open(DEVICE_FILE, 'w', encoding='UTF-8') as f:
             json.dump(js, f, indent=4, ensure_ascii=False)
     return device_id
 

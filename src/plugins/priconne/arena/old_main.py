@@ -3,7 +3,7 @@ import re
 import json
 from typing import Any, List
 from io import BytesIO
-from os.path import dirname, join, exists
+from os.path import join, exists
 from os import remove, listdir
 
 import numpy as np
@@ -22,6 +22,7 @@ from ..compat.typing import CQEvent
 from ..compat.util import pic2b64, get_font
 from .arena import do_query
 from . import sv
+from ..storage import ARENA_BEST_ATK_RECORDS_FILE, ARENA_BUFFER_DIR, ARENA_DIC_FILE
 
 HoshinoBot = Any
 try:
@@ -31,7 +32,7 @@ except AttributeError:
 
 def _load_thumb_icon(name: str, size: int = 16):
     for ext in ("png", "webp", "jpg", "jpeg"):
-        path = join(curpath, "buffer", f"{name}.{ext}")
+        path = str(ARENA_BUFFER_DIR / f"{name}.{ext}")
         if not exists(path):
             continue
         try:
@@ -120,11 +121,10 @@ async def getBox(img):
     return await getPos(img)
 
 
-curpath = dirname(__file__)
 thumb_up_a = _tint_icon(_load_thumb_icon("thumb_up", 16), (22, 163, 74))
 thumb_down_a = _tint_icon(_load_thumb_icon("thumb_down", 16), (220, 38, 38))
 
-dataDir = join(curpath, 'dic.npy')
+dataDir = str(ARENA_DIC_FILE)
 if not exists(dataDir):
     update_dic()
 try:
@@ -135,7 +135,7 @@ except Exception:
     data = np.load(dataDir, allow_pickle=True).item()
 data_processed = None
 
-best_atk_records_path = join(curpath, 'buffer/best_atk_records.json')
+best_atk_records_path = str(ARENA_BEST_ATK_RECORDS_FILE)
 if not exists(best_atk_records_path):
     update_record()
 try:
@@ -735,8 +735,7 @@ async def generateCollisionFreeTeam(bot: HoshinoBot, ev: CQEvent, all_query_reco
 
 
 def remove_buffer(uid: str):
-    curpath = dirname(__file__)
-    bufferpath = join(curpath, 'buffer/buffer.json')
+    bufferpath = str(ARENA_BUFFER_DIR / "buffer.json")
 
     buffer = {}
     try:
@@ -746,7 +745,7 @@ def remove_buffer(uid: str):
         buffer = {}
 
     try:
-        remove(join(curpath, f'buffer/{uid}.json'))
+        remove(str(ARENA_BUFFER_DIR / f"{uid}.json"))
     except:
         pass
 
@@ -847,8 +846,7 @@ async def _update_dic_cron():
 
 @sv.on_fullmatch('恢复竞技场查询记录')
 async def restore_record(bot, ev):
-    curpath = dirname(__file__)
-    bufferpath = join(curpath, 'buffer/')
+    bufferpath = str(ARENA_BUFFER_DIR)
     with open(join(bufferpath, "buffer.json"), "r", encoding="utf-8") as fp:
         buffer = json.load(fp)
 

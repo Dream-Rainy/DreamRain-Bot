@@ -13,22 +13,26 @@ except:
 
 import asyncio
 import time
-from os.path import dirname, join, exists
+from os.path import exists
 from random import random, choices
 from math import log
-from pathlib import Path
 from asyncio import Lock
 
-_gs_data_dir = Path(__file__).parent / "buffer"
+from ..storage import ARENA_BUFFER_DIR, ARENA_BUFFER_INDEX_FILE
+
+_gs_data_dir = ARENA_BUFFER_DIR
 _gs_data_dir.mkdir(exist_ok=True)
-_gs_cache_filepath = _gs_data_dir / "buffer.json"
+_gs_cache_filepath = ARENA_BUFFER_INDEX_FILE
 if not _gs_cache_filepath.exists():
     _gs_cache_filepath.write_text('{}', encoding='utf-8')
 
 querylock = Lock()
 
-curpath = dirname(__file__)
-bufferpath = join(curpath, 'buffer/buffer.json')
+bufferpath = str(_gs_cache_filepath)
+
+
+def _buffer_file(key: str) -> str:
+    return str(_gs_data_dir / f"{key}.json")
 
 
 def __get_auth_key():
@@ -62,7 +66,7 @@ def findApproximateTeamResult(id_list):
             continue
         buffer_id_list = id_str2list(buffer_id_str)  # [1001, 1002, 1018, 1052, 1122]
         if len(set(buffer_id_list) & set(id_list)) >= 4:
-            pa = join(curpath, f'buffer/{buffer_id_str}.json')
+            pa = _buffer_file(buffer_id_str)
             if exists(pa):
                 # logger.info(f'找到近似解：{list(sorted(buffer_id_list))} region={buffer_id_str[-1]}')
                 with open(pa, 'r', encoding="utf-8") as fp:
@@ -151,16 +155,16 @@ async def do_query(id_list, region=1, try_cnt=1):
     with open(bufferpath, 'r', encoding="utf-8") as fp:
         buffer = json.load(fp)
 
-    if (value - buffer.get(key, 0) < 3600 * 24 * 5) and (exists(join(curpath, f'buffer/{key}.json'))):  # 5天内查询过 直接返回
+    if (value - buffer.get(key, 0) < 3600 * 24 * 5) and (exists(_buffer_file(key))):  # 5天内查询过 直接返回
         logger.info(f'    存在本服({region})近缓存，直接使用')
-        with open(join(curpath, f'buffer/{key}.json'), 'r', encoding="utf-8") as fp:
+        with open(_buffer_file(key), 'r', encoding="utf-8") as fp:
             result = json.load(fp)
     else:
         degrade_result = None
         if try_cnt <= 1:
-            if exists(join(curpath, f'buffer/{key}.json')):
+            if exists(_buffer_file(key)):
                 logger.info(f'    存在本服({region})远缓存，作为降级备用')
-                with open(join(curpath, f'buffer/{key}.json'), 'r', encoding="utf-8") as fp:
+                with open(_buffer_file(key), 'r', encoding="utf-8") as fp:
                     degrade_result = json.load(fp)
             else:
                 logger.info(f'    不存在本服({region})缓存，查找它服缓存')
@@ -174,9 +178,9 @@ async def do_query(id_list, region=1, try_cnt=1):
                 query_seq = query_seq.get(region, [])
                 for other_region in query_seq:
                     other_key = ''.join([str(x) for x in sorted(defen)]) + str(other_region)
-                    if exists(join(curpath, f'buffer/{other_key}.json')):
+                    if exists(_buffer_file(other_key)):
                         logger.info(f'        存在它服({other_region})缓存，作为降级备用')
-                        with open(join(curpath, f'buffer/{other_key}.json'), 'r', encoding="utf-8") as fp:
+                        with open(_buffer_file(other_key), 'r', encoding="utf-8") as fp:
                             degrade_result = json.load(fp)
                         break
                 else:
@@ -231,7 +235,7 @@ async def do_query(id_list, region=1, try_cnt=1):
                         with open(bufferpath, 'w', encoding="utf-8") as fp:
                             json.dump(buffer, fp, ensure_ascii=False, indent=4)
 
-                        homeworkpath = join(curpath, f'buffer/{key}.json')
+                        homeworkpath = _buffer_file(key)
                         with open(homeworkpath, 'w', encoding="utf-8") as fp:
                             json.dump(result, fp, ensure_ascii=False, indent=4)
                     else:

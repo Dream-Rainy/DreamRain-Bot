@@ -6,12 +6,13 @@ from ..compat.convert2img import grid2imgb64
 from .._pcr_data import CHARA_NAME
 from ..util.text2img import image_draw
 from ..util.tools import load_config, lap2stage, stage_dict, rate_score, DATA_PATH
+from ..storage import RUNGROUP_FILE
 try:
     from ..fendao.timeaxis import units2workid
 except:
     def units2workid(x): return []
 
-run_path = os.path.join(os.path.dirname(__file__),"rungroup.json")
+run_path = str(RUNGROUP_FILE)
 clan_path = os.path.join(DATA_PATH, 'clanbattle')
 
 def find_item(item_list, id):

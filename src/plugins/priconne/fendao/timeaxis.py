@@ -5,9 +5,10 @@ import itertools
 
 from ..compat import aiorequests, on_startup
 from .._pcr_data import CHARA_NAME
+from ..storage import CLANBATTLEWORK_FILE, STATIC_CLANBATTLEWORK_LOCAL_FILE
 from ..util.tools import stage_dict
 
-clanbattlework_path = os.path.join(os.path.dirname(__file__), 'clanbattlework.json')
+clanbattlework_path = str(CLANBATTLEWORK_FILE)
 
 MAX_calculate = 114514  # 最大计算量
 MAX_result = 3  # 最大获取结果数
@@ -25,7 +26,7 @@ async def get_clanbattlework():
         with open(clanbattlework_path, 'r', encoding='utf-8') as load_f:
             clanbattlework = json.load(load_f)
     else:
-        clanbattlework_local_path = os.path.join(os.path.dirname(__file__), 'clanbattlework.local.json')
+        clanbattlework_local_path = str(STATIC_CLANBATTLEWORK_LOCAL_FILE)
         with open(clanbattlework_local_path, 'r', encoding='utf-8') as load_f:
             clanbattlework = json.load(load_f)
     try:

@@ -16,12 +16,13 @@ from nonebot import logger
 
 from . import _pcr_data
 from .compat.util import normalize_str, pic2b64
+from .pcr_data_runtime import apply_pcr_data_override
+from .storage import ICON_CACHE_DIR, ICON_WARMUP_STATE_FILE
 
 UNKNOWN = 1000
 ICON_BASE_URL = "https://redive.estertion.win/icon/unit"
-ICON_CACHE_DIR = Path(__file__).resolve().parents[0] / "data" / "icons"
 ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-ICON_WARMUP_STATE_PATH = ICON_CACHE_DIR.parent / "icon_warmup_state.json"
+ICON_WARMUP_STATE_PATH = ICON_WARMUP_STATE_FILE
 ICON_WARMUP_VERSION = 1
 
 
@@ -183,7 +184,9 @@ class Roster:
 
     def update(self):
         import importlib
-        importlib.reload(_pcr_data)
+        if not apply_pcr_data_override():
+            importlib.reload(_pcr_data)
+            apply_pcr_data_override()
         self._build()
         return {"success": len(self._all_names), "duplicate": 0}
 

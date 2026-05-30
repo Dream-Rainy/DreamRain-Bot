@@ -37,5 +37,5 @@
 
 ## 数据目录
 
-- 游戏 DB、账号、会战数据等存放在 `src/plugins/priconne/data/` 下
-- 角色头像缓存：`src/plugins/priconne/data/icons/`
+- 账号、会战、助战、分刀用户配置、设备 ID 等持久数据由 `nonebot_plugin_localstore` 接管，默认位于 `localstore` 的 `data/priconne/`
+- 角色头像、arena 查询结果、识别库、作业网数据等可再生成缓存由 `nonebot_plugin_localstore` 接管，默认位于 `localstore` 的 `cache/priconne/`

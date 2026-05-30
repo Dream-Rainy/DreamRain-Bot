@@ -2,9 +2,11 @@ import json
 import asyncio
 import os
 
-DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
-RES_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'img')
-FONT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'fonts')
+from ..storage import PRICONNE_DATA_DIR, STATIC_FONT_DIR, STATIC_IMG_DIR
+
+DATA_PATH = str(PRICONNE_DATA_DIR)
+RES_PATH = str(STATIC_IMG_DIR)
+FONT_PATH = str(STATIC_FONT_DIR)
 
 stage_dict = {
     "B":1,

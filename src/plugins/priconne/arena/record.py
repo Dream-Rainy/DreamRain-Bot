@@ -1,10 +1,11 @@
 import numpy as np
 from PIL import Image
 import os
-from os.path import dirname, join
+from os.path import join
 import json
 
 from .. import chara
+from ..storage import ARENA_BEST_ATK_RECORDS_FILE, ARENA_BUFFER_DIR, ARENA_DIC_FILE
 import re
 
 
@@ -31,15 +32,15 @@ def update_dic():
             cnt_success += 1
         except Exception as e:
             msg.append(f'Warning. 头像{icon_id}加入识别库失败：{e}')
-    np.save(os.path.join(os.path.dirname(__file__), "dic"), dic)
+    ARENA_DIC_FILE.parent.mkdir(parents=True, exist_ok=True)
+    np.save(ARENA_DIC_FILE, dic)
     if cnt_success:
         msg.append(f'Succeed. 更新成功。共收录{cnt_success}个头像进入识别库')
     return '\n'.join(msg)
 
 
 def update_record():
-    curpath = dirname(__file__)
-    bufferpath = join(curpath, 'buffer/')
+    bufferpath = str(ARENA_BUFFER_DIR)
 
     buffer_region_cnt = [None, {}, {}, {}, {}]  # 全服=1 b服=2 台服=3 日服=4
     tot_file_cnt = len(os.listdir(bufferpath))
@@ -73,7 +74,7 @@ def update_record():
 
     best_atk_records_item = sorted(buffer_region_cnt[2].items(), key=lambda x: x[1], reverse=True)[:200]
     best_atk_records = [x[0] for x in best_atk_records_item]
-    with open(join(bufferpath, "best_atk_records.json"), "w", encoding="utf-8") as fp:
+    with open(ARENA_BEST_ATK_RECORDS_FILE, "w", encoding="utf-8") as fp:
         json.dump(best_atk_records, fp, ensure_ascii=False, indent=4)
 
     return f'从{tot_file_cnt}个文件中搜索到{len(buffer_region_cnt[2])}个进攻阵容（不计日台服查询）\n已缓存最频繁使用的{len(best_atk_records)}个阵容'

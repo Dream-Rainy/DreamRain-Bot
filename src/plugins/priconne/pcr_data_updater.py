@@ -1,12 +1,11 @@
-import os
-import random
-
 from nonebot import get_bot, logger
 from nonebot.adapters.onebot.v11 import Bot
 from nonebot.drivers import Driver
 
 from . import chara
 from .compat import Service, aiorequests
+from .pcr_data_runtime import apply_pcr_data_override
+from .storage import PCR_DATA_FILE
 
 sv = Service("pcr-data-updater", visible=False)
 
@@ -41,9 +40,10 @@ async def pull_chara(sess=None):
         rsp.raise_for_status()
         text = await rsp.text
 
-        filename = os.path.join(os.path.dirname(__file__), "_pcr_data.py")
-        with open(filename, "w", encoding="utf8") as f:
+        PCR_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PCR_DATA_FILE, "w", encoding="utf8") as f:
             f.write(text)
+        apply_pcr_data_override()
         result = chara.roster.update()
 
     except Exception as e:
