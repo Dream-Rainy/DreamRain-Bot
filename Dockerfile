@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM astral/uv:python3.12-bookworm-slim AS builder
 WORKDIR /build
 ENV UV_PROJECT_ENVIRONMENT=/build/.venv \
@@ -7,7 +9,8 @@ ENV UV_PROJECT_ENVIRONMENT=/build/.venv \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --locked --no-dev && \
+RUN --mount=type=cache,target=/build/.cache/uv \
+    uv sync --locked --no-dev && \
     uvx pip-licenses \
         --python /build/.venv/bin/python \
         --format=json \
@@ -15,6 +18,9 @@ RUN uv sync --locked --no-dev && \
         --with-authors \
         --with-description \
         --output-file /build/DEPENDENCY_LICENSES.json
+
+FROM scratch AS dependency-licenses
+COPY --from=builder /build/DEPENDENCY_LICENSES.json /DEPENDENCY_LICENSES.json
 
 FROM astral/uv:python3.12-bookworm-slim
 

@@ -32,23 +32,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v8.1.0
+      - name: Export dependency license report
+        uses: docker/build-push-action@v6
         with:
-          enable-cache: true
-
-      - name: Install runtime dependencies
-        run: uv sync --locked --no-dev
-
-      - name: Generate dependency license report
-        run: |
-          uvx pip-licenses \
-            --python .venv/bin/python \
-            --format=json \
-            --with-urls \
-            --with-authors \
-            --with-description \
-            --output-file DEPENDENCY_LICENSES.json
+          context: .
+          file: ./Dockerfile
+          target: dependency-licenses
+          outputs: type=local,dest=.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Upload dependency license report
         uses: actions/upload-artifact@v6
