@@ -7,7 +7,8 @@ ENV UV_PROJECT_ENVIRONMENT=/build/.venv \
     UV_COMPILE_BYTECODE=1 \
     UV_CACHE_DIR=/build/.cache/uv \
     LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
+    LC_ALL=C.UTF-8 \
+    UV_HTTP_TIMEOUT=120
 COPY pyproject.toml uv.lock* ./
 RUN --mount=type=cache,target=/build/.cache/uv \
     uv sync --locked --no-dev && \
