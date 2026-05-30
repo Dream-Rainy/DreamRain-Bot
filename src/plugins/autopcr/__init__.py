@@ -21,10 +21,8 @@ __plugin_meta__ = PluginMetadata(
 
 plugin_config = get_plugin_config(Config)
 
-from .compat import warm_up_autopcr_legacy_imports  # noqa: E402
-from .storage import configure_autopcr_storage  # noqa: E402
+from .storage import ensure_autopcr_storage  # noqa: E402
 
-configure_autopcr_storage()
-warm_up_autopcr_legacy_imports()
+ensure_autopcr_storage()
 
 from . import handlers as handlers  # noqa: E402,F401

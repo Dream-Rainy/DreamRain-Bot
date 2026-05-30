@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import nonebot
 import pytest
+import sys
 from nonebot.plugin import get_plugin
 
 
@@ -24,16 +25,18 @@ async def test_autopcr_plugin_imports_with_nonebot(app):
     assert "查装备" in handlers.tool_info
 
 
-async def test_autopcr_storage_redirects_to_localstore(app):
+async def test_autopcr_plugin_does_not_import_upstream_runtime(app):
     _load_autopcr()
 
-    from src.plugins.autopcr.compat import upstream_import
+    assert not any(name.startswith("_dreamrain_autopcr_upstream") for name in sys.modules)
 
-    constants = upstream_import("constants")
 
-    assert "autopcr" in constants.CACHE_DIR
-    assert "autopcr" in constants.CONFIG_PATH
-    assert "src" not in constants.CACHE_DIR.replace("\\", "/")
+def test_autopcr_public_base_accepts_login_url():
+    from src.plugins.autopcr.config import Config
+
+    config = Config(autopcr_public_base_url="https://autopcr.example.com/daily/login")
+
+    assert config.autopcr_public_base_url == "https://autopcr.example.com/daily/"
 
 
 @pytest.mark.parametrize(
@@ -67,3 +70,22 @@ async def test_autopcr_recover_text_by_tokens(app):
 
     raw = "1 1 队伍1 春妈 蝶妈 END"
     assert recover_text_by_tokens(raw, ["队伍1", "春妈", "蝶妈", "END"]) == "队伍1 春妈 蝶妈 END"
+
+
+async def test_autopcr_remote_result_payload(app):
+    _load_autopcr()
+
+    from src.plugins.autopcr.remote import _messages_from_payload
+
+    messages = _messages_from_payload(
+        {
+            "messages": [
+                {"type": "text", "text": "ok"},
+                {"type": "image", "url": "https://example.com/result.webp"},
+            ],
+        }
+    )
+
+    assert [message.kind for message in messages] == ["text", "image"]
+    assert messages[0].text == "ok"
+    assert messages[1].url == "https://example.com/result.webp"
