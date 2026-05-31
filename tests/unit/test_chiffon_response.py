@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-def test_build_uses_saa_image_constructor_shape(app):
+def test_build_uses_saa_image_constructor_shape(loaded_chiffon_bot):
     from nonebot_plugin_saa import Image, Reply, Text
     from nonebot_plugin_saa.adapters.onebot_v11 import OB11MessageId
 

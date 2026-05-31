@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import nonebot
@@ -10,6 +11,32 @@ from nonebot.plugin import get_plugin
 from tortoise import Tortoise
 
 from tests.fixtures.song_seed import seed_song_data
+
+
+def _drop_imported_module_tree(module_name: str) -> None:
+    for name in list(sys.modules):
+        if name == module_name or name.startswith(f"{module_name}."):
+            del sys.modules[name]
+
+
+def load_nonebot_plugin(module_name: str, plugin_name: str):
+    plugin = get_plugin(plugin_name)
+    if plugin is not None:
+        return plugin
+
+    _drop_imported_module_tree(module_name)
+    plugin = nonebot.load_plugin(module_name)
+    assert plugin is not None
+    return plugin
+
+
+def load_saa_plugin():
+    return load_nonebot_plugin("nonebot_plugin_saa", "nonebot_plugin_saa")
+
+
+def load_chiffon_bot_plugin():
+    load_saa_plugin()
+    return load_nonebot_plugin("src.plugins.chiffon_bot", "chiffon_bot")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -30,15 +57,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture()
 def loaded_chiffon_bot(app):
-    if get_plugin("nonebot_plugin_saa") is None:
-        nonebot.load_plugin("nonebot_plugin_saa")
-
-    plugin = get_plugin("chiffon_bot")
-    if plugin is None:
-        plugin = nonebot.load_plugin("src.plugins.chiffon_bot")
-
-    assert plugin is not None
-    return plugin
+    return load_chiffon_bot_plugin()
 
 
 @pytest_asyncio.fixture()
