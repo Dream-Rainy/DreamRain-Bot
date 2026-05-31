@@ -4,23 +4,92 @@ ASGI 版本的 HTTP 服务器，使用 Quart 和 Hypercorn 实现。相比 WSGI 
 """
 import asyncio
 import os
-import base64
 import traceback
+import datetime
+import gc
+import time
 
+from collections import Counter
 from functools import wraps
 from quart import request as quart_request, jsonify, Response # type: ignore
 
-from autopcr.module.accountmgr import instance as usermgr, BATCHINFO # type: ignore
+from autopcr.module.accountmgr import instance as usermgr, BATCHINFO, AccountException # type: ignore
 from autopcr.core.clientpool import instance as clientpool # type: ignore
 from autopcr.util.draw import instance as drawer # type: ignore
 from autopcr.util.excel_export import export_excel # type: ignore
 from autopcr.http_server.httpserver import HttpServer # type: ignore
-from autopcr.constants import SERVER_PORT, SERVER_HOST # type: ignore
+from autopcr.constants import CLIENT_POOL_MAX_AGE, SERVER_PORT, SERVER_HOST # type: ignore
 from autopcr.db.dbstart import db_start # type: ignore
 from autopcr.db.database import db # type: ignore
-from autopcr.module.crons import queue_crons # type: ignore
+from autopcr.module.crons import CRONLOG_PATH, CronLog, eCronOperation, queue_crons # type: ignore
+from autopcr.module.modulebase import ModuleResult, eResultStatus # type: ignore
+from autopcr.module.modulemgr import ModuleManager, TaskResult # type: ignore
 from hypercorn.config import Config # type: ignore
 from hypercorn.asyncio import serve # type: ignore
+
+
+def install_runtime_memory_guards():
+    """Patch upstream runtime edges that otherwise keep memory after failures."""
+
+    if getattr(ModuleManager.do_task, "_bot_bridge_guarded", False):
+        return
+
+    async def guarded_do_task(self, config: dict, modules: list, isAdminCall: bool = False) -> TaskResult:
+        if db.is_clan_battle_time() and self.is_clan_battle_forbidden() and not isAdminCall:
+            key = 'clan_battle' if not modules else modules[0].key
+            return TaskResult(
+                order=[key],
+                result={
+                    key: ModuleResult(
+                        status=eResultStatus.PANIC,
+                        log="会战期间禁止执行任务"
+                    )
+                }
+            )
+
+        client = self.client
+        activated = False
+        await client.activate()
+        activated = True
+        try:
+            self.config["stamina_relative_not_run"] = any(
+                db.is_campaign(campaign)
+                for campaign in self.config.get("stamina_relative_not_run_campaign_before_one_day", [])
+            )
+            self.config.update(config)
+
+            resp = TaskResult(order=[], result={})
+            for module in modules:
+                resp.order.append(module.key)
+                resp.result[module.key] = await module.do_from(client)
+                if resp.result[module.key].status == eResultStatus.PANIC:
+                    break
+            return resp
+        finally:
+            if activated:
+                try:
+                    client.deactivate()
+                except Exception:
+                    traceback.print_exc()
+
+    guarded_do_task._bot_bridge_guarded = True
+    ModuleManager.do_task = guarded_do_task
+
+
+async def trim_client_pool_loop():
+    interval = int(os.getenv("AUTOPCR_CLIENT_POOL_TRIM_INTERVAL", "300"))
+    max_idle = int(os.getenv("AUTOPCR_CLIENT_POOL_MAX_IDLE_SECONDS", str(CLIENT_POOL_MAX_AGE)))
+    while True:
+        await asyncio.sleep(max(interval, 30))
+        now = int(time.time())
+        pool = getattr(clientpool, "_pool", {})
+        removed = 0
+        for key, client in list(pool.items()):
+            if client.last_access + max_idle < now:
+                pool.pop(key, None)
+                removed += 1
+        if removed:
+            gc.collect()
 
 def install_bot_bridge(server: HttpServer):
     bot_token = os.getenv("AUTOPCR_BOT_TOKEN") or os.getenv("autopcr_bot_token") or ""
@@ -41,23 +110,72 @@ def install_bot_bridge(server: HttpServer):
 
     async def image_msg(img):
         bio = await drawer.img2bytesio(img, "WEBP")
-        data = base64.b64encode(bio.getvalue()).decode()
-        return jsonify({
-            "messages": [{
-                "type": "image",
-                "content": data,
-                "mime_type": "image/webp",
-            }]
-        })
+        try:
+            data = bio.getvalue()
+        finally:
+            bio.close()
+            try:
+                img.close()
+            except Exception:
+                pass
+        gc.collect()
+        return Response(data, mimetype="image/webp", headers={"Cache-Control": "no-store"})
+
+    async def image_table(header: list[str], rows: list[list[str]]):
+        return await image_msg(await drawer.draw(header, rows))
+
+    async def image_lines(lines: list[str]):
+        return await image_msg(await drawer.draw_msgs(lines))
+
+    def load_cron_logs():
+        if not os.path.exists(CRONLOG_PATH):
+            return []
+        logs = []
+        with open(CRONLOG_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    logs.append(CronLog.from_json(line))
+                except Exception:
+                    traceback.print_exc()
+        return logs
+
+    def has_arg(args: list[str], key: str) -> bool:
+        if key in args:
+            args.remove(key)
+            return True
+        return False
+
+    def visible_user_ids_from_context(context: dict) -> set[str]:
+        visible = context.get("visible_user_ids") or []
+        return {str(user_id) for user_id in visible if str(user_id).isdigit()}
+
+    def find_ghost_qids(context: dict) -> list[str] | None:
+        visible = visible_user_ids_from_context(context)
+        if not visible:
+            return None
+        return sorted(qid for qid in usermgr.qids() if qid.isdigit() and qid not in visible)
 
     def normalize_account(acc: str | None):
-        if not acc or acc == "_default":
-            return "", False
         if acc == "所有":
             return BATCHINFO, True
         if acc == "批量":
             return BATCHINFO, False
+        if not acc or acc == "_default":
+            return "_default", False
         return acc, False
+
+    def resolve_account_name(mgr, account_name: str):
+        if account_name != "_default":
+            return account_name
+        if mgr.default_account:
+            return mgr.default_account
+        accounts = list(mgr.accounts())
+        if len(accounts) == 1:
+            return accounts[0]
+        raise AccountException("No default account")
 
     async def get_context():
         data = await quart_request.get_json(silent=True) or {}
@@ -136,6 +254,7 @@ def install_bot_bridge(server: HttpServer):
         account_name, force_all = normalize_account(acc)
 
         async with usermgr.load(qid, readonly=True) as mgr:
+            account_name = resolve_account_name(mgr, account_name)
             async with mgr.load(account_name, force_use_all=force_all) as account:
                 result_info = await account.do_daily(is_admin)
                 img = await drawer.draw_tasks_result(result_info.get_result())
@@ -164,6 +283,7 @@ def install_bot_bridge(server: HttpServer):
     async def bot_daily_report(qid: str, acc: str, result_id: int):
         account_name, force_all = normalize_account(acc)
         async with usermgr.load(qid, readonly=True) as mgr:
+            account_name = resolve_account_name(mgr, account_name)
             async with mgr.load(account_name, readonly=True, force_use_all=force_all) as account:
                 result = await account.get_daily_result_from_id(result_id)
                 if not result:
@@ -182,6 +302,7 @@ def install_bot_bridge(server: HttpServer):
 
         account_name, force_all = normalize_account(acc)
         async with usermgr.load(qid, readonly=True) as mgr:
+            account_name = resolve_account_name(mgr, account_name)
             async with mgr.load(account_name, force_use_all=force_all) as account:
                 result_info = await account.do_from_key(module_config, tool_key, is_admin)
 
@@ -194,9 +315,12 @@ def install_bot_bridge(server: HttpServer):
 
                 if export:
                     xlsx = await export_excel(result.table)
-                    filename = f"{data.get('tool_name') or tool_key}_{account.alias}_{db.format_time_safe(db.datetime.datetime.now())}.xlsx"
+                    filename = f"{data.get('tool_name') or tool_key}_{account.alias}_{db.format_time_safe(datetime.datetime.now())}.xlsx"
+                    content = xlsx.getvalue()
+                    xlsx.close()
+                    gc.collect()
                     return Response(
-                        xlsx.getvalue(),
+                        content,
                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
                     )
@@ -207,13 +331,114 @@ def install_bot_bridge(server: HttpServer):
     @server.api.route("/bot/users/<string:qid>/commands/<string:command>", methods=["POST"])
     @require_bot_token
     async def bot_command(qid: str, command: str):
+        data = await quart_request.get_json(silent=True) or {}
+        args = [str(arg) for arg in data.get("args") or []]
+        context = data.get("context") or {}
+
+        if command == "cron_log":
+            logs = load_cron_logs()
+            cur = datetime.datetime.now()
+            if has_arg(args, "错误"):
+                logs = [log for log in logs if log.status == eResultStatus.ERROR]
+            if has_arg(args, "警告"):
+                logs = [log for log in logs if log.status == eResultStatus.WARNING]
+            if has_arg(args, "成功"):
+                logs = [log for log in logs if log.status == eResultStatus.SUCCESS]
+            if has_arg(args, "昨日"):
+                cur -= datetime.timedelta(days=1)
+                logs = [log for log in logs if log.time.date() == cur.date()]
+            if has_arg(args, "今日"):
+                logs = [log for log in logs if log.time.date() == cur.date()]
+
+            lines = [str(log) for log in logs[-40:][::-1]]
+            return await image_lines(lines or ["暂无定时日志"])
+
+        if command == "cron_status":
+            logs = load_cron_logs()
+            cur = datetime.datetime.now()
+            target_label = "今日"
+            if has_arg(args, "昨日"):
+                cur -= datetime.timedelta(days=1)
+                target_label = "昨日"
+            start_logs = [log for log in logs if log.operation == eCronOperation.START and log.time.date() == cur.date()]
+            finish_logs = [log for log in logs if log.operation == eCronOperation.FINISH and log.time.date() == cur.date()]
+            status = Counter(log.status for log in finish_logs)
+            lines = [f"{target_label}定时任务：启动{len(start_logs)}个，完成{len(finish_logs)}个"]
+            lines += [f"{key.value}: {value}" for key, value in status.items()]
+            return await image_lines(lines)
+
+        if command == "cron_statistic":
+            cnt_clanbattle = Counter()
+            cnt = Counter()
+            for user_qid in usermgr.qids():
+                async with usermgr.load(user_qid, readonly=True) as accmgr:
+                    for alias in accmgr.accounts():
+                        async with accmgr.load(alias, readonly=True) as acc:
+                            for i in range(1, 5):
+                                suffix = f"cron{i}"
+                                if acc.data.config.get(suffix, False):
+                                    cron_time = acc.data.config.get(f"time_{suffix}", "00:00")
+                                    if cron_time.count(":") == 2:
+                                        cron_time = ":".join(cron_time.split(":")[:2])
+                                    cnt[cron_time] += 1
+                                    if acc.data.config.get(f"clanbattle_run_{suffix}", False):
+                                        cnt_clanbattle[cron_time] += 1
+            rows = [[key, str(value), str(cnt_clanbattle[key])] for key, value in cnt.items()]
+            rows = sorted(rows, key=lambda row: row[0])
+            rows.append(["总计", str(sum(cnt.values())), str(sum(cnt_clanbattle.values()))])
+            return await image_table(["时间", "定时任务数", "公会战任务数"], rows)
+
+        if command == "clan_forbid":
+            lines = ["会战期间仅管理员调用"]
+            for user_qid in usermgr.qids():
+                async with usermgr.load(user_qid, readonly=True) as accmgr:
+                    for alias in accmgr.accounts():
+                        async with accmgr.load(alias, readonly=True) as acc:
+                            if acc.is_clan_battle_forbidden():
+                                lines.append(f"{acc.qq}  {acc.alias} ")
+            return await image_lines(lines)
+
+        if command == "find_ghost":
+            ghosts = find_ghost_qids(context)
+            if ghosts is None:
+                return text_msg("缺少可见成员列表，无法判断内鬼")
+            return text_msg(" ".join(ghosts) if ghosts else "未找到内鬼")
+
+        if command == "clean_ghost":
+            ghosts = find_ghost_qids(context)
+            if ghosts is None:
+                return text_msg("缺少可见成员列表，无法判断内鬼")
+            if not ghosts:
+                return text_msg("未找到内鬼")
+            deleted = []
+            for ghost in ghosts:
+                if not ghost.isdigit():
+                    continue
+                try:
+                    usermgr.delete(ghost)
+                    deleted.append(ghost)
+                except Exception:
+                    traceback.print_exc()
+            if not deleted:
+                return text_msg("未找到可清除的内鬼")
+            return text_msg(" ".join([f"已清除{len(deleted)}个内鬼:"] + deleted))
+
+        if command == "group_clan_forbid":
+            return text_msg("远端 bridge v1 暂不支持查群禁用，请使用查禁用")
+
+        if command == "ocr_team":
+            return text_msg("远端 bridge v1 不支持远端识图")
+
         return text_msg(f"远端暂未实现 bot command: {command}")
 
 async def main():
     # 原来 httpserver_test.py 的初始化
+    install_runtime_memory_guards()
     server = HttpServer(host=SERVER_HOST, port=SERVER_PORT)
     install_bot_bridge(server)
+    await db_start()
     queue_crons()
+    asyncio.get_event_loop().create_task(trim_client_pool_loop())
     
     @server.quart.before_request
     async def fix_remote_addr():
@@ -240,9 +465,6 @@ async def main():
 
     # 手动执行 run_forever 里的 blueprint 注册（关键！）
     server.quart.register_blueprint(server.app)
-
-    # db_start 作为后台任务
-    asyncio.get_event_loop().create_task(db_start())
 
     # 配置并启动 Hypercorn
     config = Config()

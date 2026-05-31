@@ -260,18 +260,49 @@ async def _handle_autopcr(bot: Bot, event: MessageEvent, matcher: Matcher, plain
     await route.func(botev)
 
 
-async def _context(botev: BotEvent) -> dict[str, Any]:
+async def _visible_user_ids(botev: BotEvent) -> list[str]:
+    visible: set[str] = set()
+    group_ids = set(ACTIVE_GROUPS)
+    try:
+        group_id = await botev.group_id()
+        if group_id:
+            group_ids.add(group_id)
+    except Exception:
+        pass
+
+    if not group_ids:
+        try:
+            groups = await botev.call_action("get_group_list")
+            group_ids.update(str(group.get("group_id")) for group in groups if group.get("group_id"))
+        except Exception:
+            group_ids = set()
+
+    for group_id in sorted(group_ids):
+        if not str(group_id).isdigit():
+            continue
+        try:
+            members = await botev.call_action("get_group_member_list", group_id=int(group_id))
+        except Exception:
+            continue
+        visible.update(str(member.get("user_id")) for member in members if member.get("user_id"))
+    return sorted(visible)
+
+
+async def _context(botev: BotEvent, *, include_visible_user_ids: bool = False) -> dict[str, Any]:
     group_id = ""
     try:
         group_id = await botev.group_id()
     except Exception:
         group_id = ""
-    return {
+    context = {
         "sender_qq": await botev.send_qq(),
         "group_id": group_id,
         "is_admin": await botev.is_admin(),
         "is_super_admin": await botev.is_super_admin(),
     }
+    if include_visible_user_ids:
+        context["visible_user_ids"] = await _visible_user_ids(botev)
+    return context
 
 
 async def _target_qq_for_operation(botev: BotEvent) -> str:
@@ -568,7 +599,7 @@ async def query_group_clan_battle_forbidden(botev: BotEvent) -> None:
 @sv.on_fullmatch(f"{prefix}查内鬼")
 async def find_ghost(botev: BotEvent) -> None:
     qq = await _target_qq_for_operation(botev)
-    context = await _context(botev)
+    context = await _context(botev, include_visible_user_ids=True)
     await _call_remote(botev, lambda: remote.run_command(command="find_ghost", qq=qq, raw_text="", args=[], context=context))
 
 
@@ -577,7 +608,7 @@ async def clean_ghost(botev: BotEvent) -> None:
     if not await botev.is_admin():
         await botev.finish("仅管理员可以调用")
     qq = await _target_qq_for_operation(botev)
-    context = await _context(botev)
+    context = await _context(botev, include_visible_user_ids=True)
     await _call_remote(botev, lambda: remote.run_command(command="clean_ghost", qq=qq, raw_text="", args=[], context=context))
 
 

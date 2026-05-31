@@ -89,3 +89,56 @@ async def test_autopcr_remote_result_payload(app):
     assert [message.kind for message in messages] == ["text", "image"]
     assert messages[0].text == "ok"
     assert messages[1].url == "https://example.com/result.webp"
+
+
+async def test_autopcr_context_can_include_visible_user_ids(app, monkeypatch):
+    _load_autopcr()
+
+    from src.plugins.autopcr import handlers
+
+    monkeypatch.setattr(handlers, "ACTIVE_GROUPS", {"100", "not-a-group"})
+
+    class FakeBotEvent:
+        async def group_id(self):
+            return "200"
+
+        async def send_qq(self):
+            return "123"
+
+        async def is_admin(self):
+            return True
+
+        async def is_super_admin(self):
+            return False
+
+        async def call_action(self, action, **params):
+            assert action == "get_group_member_list"
+            if params["group_id"] == 100:
+                return [{"user_id": 111}, {"user_id": "222"}]
+            if params["group_id"] == 200:
+                return [{"user_id": "222"}, {"user_id": 333}]
+            raise AssertionError(params)
+
+    context = await handlers._context(FakeBotEvent(), include_visible_user_ids=True)
+
+    assert context["sender_qq"] == "123"
+    assert context["group_id"] == "200"
+    assert context["visible_user_ids"] == ["111", "222", "333"]
+
+
+async def test_autopcr_remote_binary_image_response(app):
+    _load_autopcr()
+
+    import httpx
+
+    from src.plugins.autopcr.remote import AutopcrRemoteClient
+
+    client = object.__new__(AutopcrRemoteClient)
+    result = await client._result_from_response(
+        httpx.Response(200, headers={"content-type": "image/webp"}, content=b"webp-bytes")
+    )
+
+    assert len(result.messages) == 1
+    assert result.messages[0].kind == "image"
+    assert result.messages[0].mime_type == "image/webp"
+    assert result.messages[0].content == b"webp-bytes"
