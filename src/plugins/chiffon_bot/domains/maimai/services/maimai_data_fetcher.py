@@ -15,7 +15,7 @@ from ....integrations.lxns.constants import (
     yuzuchan_maimai_alias_url,
 )
 from ....integrations.lxns.plugin_data import plugin_data
-from ..schemas import MaiSongData
+from ..schemas import MaiSongData, MaiSongSheet
 from .map_xml_parser import (
     scan_map_directory,
     extract_music_ids_from_maps,
@@ -308,16 +308,40 @@ def _enrich_with_music_xml(
 ) -> None:
     """将 Music.xml 数据作为补充源注入 merged_songs。
 
-    - note_counts: 从 ma2 解析的权威值，直接覆盖每个谱面
-    - 元数据: 仅当 API 数据缺失时作为 fallback
+    Music.xml + ma2 为权威数据源：
+    - note_counts: 权威值，直接覆盖每个谱面
+    - difficulties: 如果 merged 中缺失某个难度类型（如 utage），从 XML 补充
+    - 元数据: API 数据缺失时作为 fallback（含 artist / bpm）
+    - title 匹配: 当 song_id 无法匹配时，尝试 title 匹配
+      （远端数据更新不及时导致本地已有但远端无该 ID 的兜底）
     """
+    # 构建 title → song_id 索引（title 匹配兜底）
+    title_index: dict[str, int] = {}
+    for sid, song in merged_songs.items():
+        title_key = (song.title or "").strip().lower()
+        if title_key:
+            title_index[title_key] = sid
+
     enriched_count = 0
-    for song_id, xml_song in music_xml_data.items():
-        merged = merged_songs.get(song_id)
-        if not merged:
+    title_matched_count = 0
+    note_counts_written = 0
+    missing_types_added = 0
+
+    for xml_id, xml_song in music_xml_data.items():
+        merged = merged_songs.get(xml_id)
+
+        # ID 匹配失败时，尝试 title 匹配
+        if merged is None:
+            xml_title = (xml_song.get("title") or "").strip().lower()
+            if xml_title and xml_title in title_index:
+                matched_id = title_index[xml_title]
+                merged = merged_songs[matched_id]
+                title_matched_count += 1
+
+        if merged is None:
             continue
 
-        # Fallback 元数据
+        # Fallback 元数据（API 缺失时由 Music.xml 补充）
         if not getattr(merged, "category", None) and xml_song.get("category"):
             merged.category = xml_song["category"]
         if not getattr(merged, "version", None) and xml_song.get("version"):
@@ -328,23 +352,53 @@ def _enrich_with_music_xml(
             merged.is_locked = xml_song["is_locked"]
         if not getattr(merged, "comment", None) and xml_song.get("comment"):
             merged.comment = xml_song["comment"]
+        if not getattr(merged, "artist", None) and xml_song.get("artist"):
+            merged.artist = xml_song["artist"]
+        if not getattr(merged, "bpm", None) and xml_song.get("bpm"):
+            merged.bpm = xml_song["bpm"]
 
-        # 注入 note_counts
+        # 注入 note_counts + 补充缺失的难度类型
         xml_diffs = xml_song.get("difficulties", {})
         merged_diffs = merged.difficulties
+
         for diff_type, xml_sheets in xml_diffs.items():
             merged_sheets = merged_diffs.get(diff_type)
+
             if not merged_sheets:
+                # merged 中缺失该难度类型（如 utage），从 Music.xml 补充
+                new_sheets: list[MaiSongSheet] = []
+                for xml_sheet in xml_sheets:
+                    try:
+                        new_sheets.append(MaiSongSheet.model_validate(xml_sheet))
+                    except Exception:
+                        logger.warning(
+                            f"Music XML 谱面验证失败 (id={xml_id}, type={diff_type}): "
+                            f"{xml_sheet.get('difficulty', '?')}"
+                        )
+                if new_sheets:
+                    merged_diffs[diff_type] = new_sheets
+                    missing_types_added += 1
                 continue
+
+            # 注入 note_counts（ma2 解析的权威值，直接覆盖）
             for idx, xml_sheet in enumerate(xml_sheets):
                 xml_nc = xml_sheet.get("note_counts")
                 if xml_nc is None:
                     continue
-                if idx < len(merged_sheets) and isinstance(merged_sheets[idx], dict):
-                    merged_sheets[idx]["note_counts"] = xml_nc
+                if idx < len(merged_sheets):
+                    merged_sheets[idx].note_counts = xml_nc
+                    note_counts_written += 1
+
         enriched_count += 1
 
-    logger.info(f"Music XML 数据补充完成：{enriched_count} 首乐曲注入了 note_counts")
+    parts = [f"{enriched_count} 首乐曲注入了 Music XML 数据"]
+    if note_counts_written:
+        parts.append(f"{note_counts_written} 个谱面的 note_counts 已覆盖")
+    if missing_types_added:
+        parts.append(f"{missing_types_added} 个难度类型从 XML 补充")
+    if title_matched_count:
+        parts.append(f"{title_matched_count} 首通过 title 匹配")
+    logger.info(f"Music XML 数据补充完成：{'，'.join(parts)}")
 
 
 async def _attach_lxns_yuzuchan_aliases(merged_songs: dict[int, MaiSongData]) -> None:

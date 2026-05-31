@@ -64,6 +64,8 @@ def parse_music_xml(xml_path: str | Path) -> dict[str, Any] | None:
         if song_id is None or not title:
             logger.warning(f"Music.xml 缺少 name/id 或 name/str: {xml_path}")
             return None
+        
+        is_dx = 10000 <= song_id < 100000
 
         # artist
         _, artist = _parse_id_str(root.find("artistName"))
@@ -137,7 +139,12 @@ def parse_music_xml(xml_path: str | Path) -> dict[str, Any] | None:
                     else f"chart_{idx}"
                 )
                 # 宴谱类型使用 "utage"，普通使用 "standard"
-                sheet_type = "utage" if is_utage else "standard"
+                if is_utage:
+                    sheet_type = "utage"
+                elif is_dx:
+                    sheet_type = "dx"
+                else:
+                    sheet_type = "standard"
 
                 sheet: dict[str, Any] = {
                     "type": sheet_type,
@@ -191,6 +198,8 @@ def scan_music_directory(music_base_dir: str | Path) -> dict[int, dict[str, Any]
         song_dict = parse_music_xml(music_xml_path)
         if song_dict:
             song_id = song_dict["id"]
+            if 10000 <= song_id < 100000:
+                song_id %= 10000
             result[song_id] = song_dict
             count += 1
             logger.debug(
