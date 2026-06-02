@@ -13,7 +13,10 @@ from ..chunithm.views.chuni_bg_draw import (
     render_chuni_song_info_img as _render_img,
     clear_chuni_song_info_img_cache as _clear_cache,
 )
-from ..chunithm.services.chunithm_data_fetcher import fetch_chunithm_raw_data
+from ..chunithm.services.chunithm_data_fetcher import (
+    build_chuni_jacket_image_name,
+    fetch_chunithm_raw_data,
+)
 
 
 class ChunithmDomainAdapter(ChunithmSongQueryAdapter, DomainAdapter):
@@ -43,6 +46,7 @@ class ChunithmDomainAdapter(ChunithmSongQueryAdapter, DomainAdapter):
             "bpm": getattr(song, "bpm", None),
             "version": getattr(song, "version", None),
             "rights": getattr(song, "rights", None),
+            "image_name": getattr(song, "image_name", "") or "",
             "difficulties": {
                 t: [s.model_dump(mode="json", by_alias=True, exclude_none=True) for s in sheets]
                 for t, sheets in diffs.items()
@@ -59,7 +63,7 @@ class ChunithmDomainAdapter(ChunithmSongQueryAdapter, DomainAdapter):
             "version": row.version,
             "rights": row.rights,
             "difficulties": row.difficulties or {},
-            "image_name": "",
+            "image_name": row.image_name or build_chuni_jacket_image_name(row.id),
             "release_date": "",
             "is_new": False,
             "is_locked": False,

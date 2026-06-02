@@ -76,7 +76,7 @@ async def test_song_info_render_uses_maimai_data_asset_root(
         bpm=165,
         version="PRiSM",
         rights="test rights",
-        image_name="UI_Jacket_000181.png",
+        image_name="jacket/UI_Jacket_000181.png",
         difficulties=MAI_DIFFICULTIES,
     )
 
@@ -89,6 +89,7 @@ async def test_song_info_render_uses_maimai_data_asset_root(
     assert captured["pages"]["base_url"].startswith("file:")
     assert Path(captured["templates"]["base_url"]) == mai_bg_draw._MAIMAI_ASSETS_DIR
     assert captured["templates"]["bg_page_url"] == "bg_html/prism/prism.html"
+    assert captured["templates"]["song_info"]["image_name"] == "jacket/UI_Jacket_000181.png"
 
 
 def test_maimai_asset_root_matches_runtime_data_dir(maimai_render_modules) -> None:
@@ -100,6 +101,60 @@ def test_maimai_asset_root_matches_runtime_data_dir(maimai_render_modules) -> No
         assert mai_bg_draw._MAIMAI_ASSETS_DIR.as_posix() == (
             "/app/data/chiffon_bot/template/maimai"
         )
+
+
+def test_build_maimai_jacket_image_name_branches(loaded_chiffon_bot) -> None:
+    from src.plugins.chiffon_bot.domains.maimai.services.maimai_data_fetcher import (
+        build_maimai_jacket_image_name,
+    )
+
+    assert build_maimai_jacket_image_name(181) == "jacket/UI_Jacket_000181.png"
+    assert build_maimai_jacket_image_name(10181) == "jacket/UI_Jacket_000181.png"
+    assert (
+        build_maimai_jacket_image_name(10000001, "hash.png")
+        == "https://shama.dxrating.net/images/cover/v2/hash.jpg"
+    )
+    assert (
+        build_maimai_jacket_image_name(
+            10000001,
+            "hash.png",
+            cue_name_id=123456,
+            is_utage=True,
+        )
+        == "jacket/UI_Jacket_003456.png"
+    )
+    assert build_maimai_jacket_image_name(None, "") == "jacket/UI_Jacket_000000.png"
+
+
+def test_music_xml_parser_reads_cue_name_id(tmp_path: Path) -> None:
+    from src.plugins.chiffon_bot.domains.maimai.services.music_xml_parser import (
+        parse_music_xml,
+    )
+
+    music_xml = tmp_path / "Music.xml"
+    music_xml.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<MusicData>
+  <dataName>Music000181</dataName>
+  <name><id>181</id><str>Test Song</str></name>
+  <artistName><id>1</id><str>Artist</str></artistName>
+  <genreName><id>1</id><str>POPS&amp;ANIME</str></genreName>
+  <AddVersion><id>1</id><str>PRiSM</str></AddVersion>
+  <rightsInfoName><id>1</id><str>Rights</str></rightsInfoName>
+  <cueName><id>123456</id><str>cue</str></cueName>
+  <bpm>165</bpm>
+  <lockType>0</lockType>
+  <utageKanjiName>宴</utageKanjiName>
+  <notesData></notesData>
+</MusicData>
+""",
+        encoding="utf-8",
+    )
+
+    parsed = parse_music_xml(music_xml)
+
+    assert parsed is not None
+    assert parsed["cue_name_id"] == 123456
 
 
 def test_maimai_required_assets_are_present_when_asset_check_is_enabled(

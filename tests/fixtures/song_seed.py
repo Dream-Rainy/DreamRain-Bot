@@ -85,6 +85,7 @@ async def seed_song_data() -> None:
         bpm=165,
         version="PRiSM",
         rights="test rights",
+        image_name="jacket/UI_Jacket_000181.png",
         difficulties=MAI_DIFFICULTIES,
         collections=[],
     )
@@ -99,6 +100,7 @@ async def seed_song_data() -> None:
         bpm=180,
         version=1,
         rights="test rights",
+        image_name="jacket/CHU_UI_Jacket_000001.png",
         difficulties=CHUNI_DIFFICULTIES,
     )
     await ChuniSongAlias.create(song=chuni_song, alias=CHUNI_ALIAS, priority=0)

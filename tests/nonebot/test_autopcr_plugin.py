@@ -91,6 +91,99 @@ async def test_autopcr_remote_result_payload(app):
     assert messages[1].url == "https://example.com/result.webp"
 
 
+async def test_autopcr_remote_structured_payload(app):
+    _load_autopcr()
+
+    from src.plugins.autopcr.remote import _messages_from_payload
+
+    messages = _messages_from_payload(
+        {
+            "messages": [
+                {"type": "lines", "lines": ["定时日志", "成功"]},
+                {"type": "table", "header": ["时间", "数量"], "rows": [["05:00", 2]]},
+            ],
+        }
+    )
+
+    assert [message.kind for message in messages] == ["lines", "table"]
+    assert messages[0].lines == ["定时日志", "成功"]
+    assert messages[1].header == ["时间", "数量"]
+    assert messages[1].rows == [["05:00", "2"]]
+
+
+async def test_autopcr_remote_result_payloads(app):
+    _load_autopcr()
+
+    from src.plugins.autopcr.remote import _messages_from_payload
+
+    messages = _messages_from_payload(
+        {
+            "messages": [
+                {"type": "autopcr_task_result", "result": {"order": [], "result": {}}},
+                {
+                    "type": "autopcr_module_result",
+                    "result": {"name": "查装备", "config": "", "log": "ok", "status": "成功", "table": {"header": [], "data": []}},
+                },
+            ],
+        }
+    )
+
+    assert [message.kind for message in messages] == ["autopcr_task_result", "autopcr_module_result"]
+    assert messages[0].result == {"order": [], "result": {}}
+    assert messages[1].result["name"] == "查装备"
+
+
+async def test_autopcr_remote_structured_rendering(app):
+    _load_autopcr()
+
+    from src.plugins.autopcr.handlers import _render_remote_message
+    from src.plugins.autopcr.remote import RemoteMessage
+
+    lines = _render_remote_message(RemoteMessage(kind="lines", lines=["今日定时任务：启动1个，完成1个"]))
+    table = _render_remote_message(
+        RemoteMessage(kind="table", header=["时间", "定时任务数"], rows=[["05:00", "3"]])
+    )
+
+    assert lines.startswith(b"\x89PNG")
+    assert table.startswith(b"\x89PNG")
+
+
+async def test_autopcr_remote_result_rendering(app):
+    _load_autopcr()
+
+    from src.plugins.autopcr.handlers import _render_remote_message
+    from src.plugins.autopcr.remote import RemoteMessage
+
+    task_result = {
+        "order": ["a"],
+        "result": {
+            "a": {
+                "name": "清体力",
+                "config": "默认",
+                "log": "完成",
+                "status": "成功",
+                "table": {"header": [], "data": []},
+            }
+        },
+    }
+    module_result = {
+        "name": "查box",
+        "config": "",
+        "log": "",
+        "status": "成功",
+        "table": {
+            "header": ["名字", {"角色A": ["星级", "等级"]}],
+            "data": [{"名字": "tester", "角色A": {"星级": 5, "等级": 310}}],
+        },
+    }
+
+    task = _render_remote_message(RemoteMessage(kind="autopcr_task_result", result=task_result))
+    module = _render_remote_message(RemoteMessage(kind="autopcr_module_result", result=module_result))
+
+    assert task.startswith(b"\x89PNG")
+    assert module.startswith(b"\x89PNG")
+
+
 async def test_autopcr_context_can_include_visible_user_ids(app, monkeypatch):
     _load_autopcr()
 

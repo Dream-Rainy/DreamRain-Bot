@@ -8,7 +8,7 @@ from nonebot import logger
 
 
 # 数据库当前目标版本（每次添加新迁移时递增）
-CURRENT_DB_VERSION = 1
+CURRENT_DB_VERSION = 3
 
 
 async def get_db_version(conn) -> int:

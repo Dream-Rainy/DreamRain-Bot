@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
-from nonebot import logger
+from pathlib import Path
 
+from nonebot import get_plugin_config, logger
+
+from ....config import Config
 from ....infra.http import http_client
 from ....integrations.lxns.constants import (
     chunithm_song_list_url,
     chunithm_alias_list_url,
 )
 from ..schemas import ChuniSongData
+from .music_xml_parser import scan_music_directory
 
 ARCADE_SITES_JSON_URL = (
     "https://raw.githubusercontent.com/zetaraku/arcade-songs/master/data/sites.json"
 )
+
+plugin_config = get_plugin_config(Config)
+_CHUNI_REMOTE_ASSETS_BASE_URL = "https://assets2.lxns.net/chunithm"
 
 _CHUNI_LXNS_LEVEL_TO_LABEL: dict[int, str] = {
     0: "basic",
@@ -215,6 +222,37 @@ def _group_arcade_chuni_sheets(arc_song: dict | None, chuni_note_keys: tuple[str
     return grouped
 
 
+def _ingame_path(sub_dir: str) -> str:
+    return f"{plugin_config.ingame_data_base_dir}/chunithm/{sub_dir}"
+
+
+def build_chuni_jacket_image_name(
+    song_id: object,
+    jacket_file_path: str | None = "",
+    *,
+    remote_assets_base_url: str | None = None,
+) -> str:
+    """生成模板可直接使用的 CHUNITHM 封面 src。"""
+    if jacket_file_path:
+        filename = Path(str(jacket_file_path).strip()).name
+        if filename:
+            path = Path(filename)
+            if path.suffix.lower() == ".dds":
+                filename = f"{path.stem}.png"
+            return f"jacket/{filename}"
+
+    try:
+        parsed_song_id = int(song_id)
+    except (TypeError, ValueError):
+        parsed_song_id = None
+
+    if parsed_song_id is not None and parsed_song_id > 0:
+        assets_base = (remote_assets_base_url or _CHUNI_REMOTE_ASSETS_BASE_URL).rstrip("/")
+        return f"{assets_base}/jacket/{parsed_song_id}.png"
+
+    return ""
+
+
 def _resolve_arcade_title_conflict(
     lxns_song: dict,
     candidates: list[dict],
@@ -260,7 +298,11 @@ def _resolve_arcade_title_conflict(
 # 主合并与拉取入口
 # ══════════════════════════════════════════════════════════════════════════
 
-def merge_chuni_arcade_and_lxns(arcade_payload: dict, lxns_payload: dict) -> dict[int, ChuniSongData]:
+def merge_chuni_arcade_and_lxns(
+    arcade_payload: dict,
+    lxns_payload: dict,
+    music_xml_data: dict[int, dict] | None = None,
+) -> dict[int, ChuniSongData]:
     """以 LXNS 为主源、arcade-songs 为补充；跳过 arcade 的 WORLD'S END 条目。"""
     arcade_by_title: dict[str, list[dict]] = {}
     for arc_song in arcade_payload.get("songs", []):
@@ -277,6 +319,7 @@ def merge_chuni_arcade_and_lxns(arcade_payload: dict, lxns_payload: dict) -> dic
     merged_chuni: dict[int, ChuniSongData] = {}
     unknown_id_counter = 100000
     chuni_note_keys = ("tap", "hold", "slide", "touch", "break", "air", "flick", "total")
+    music_xml_data = music_xml_data or {}
 
     for lxns_song in lxns_payload.get("songs", []):
         if not isinstance(lxns_song, dict):
@@ -368,13 +411,17 @@ def merge_chuni_arcade_and_lxns(arcade_payload: dict, lxns_payload: dict) -> dic
         is_locked = arc_song.get("isLocked") if arc_song else None
         if is_locked is None:
             is_locked = False
+        xml_song = music_xml_data.get(inferred_song_id) or {}
 
         merged_song = ChuniSongData.model_validate({
             "id": inferred_song_id,
             "title": title_key,
             "artist": artist,
             "bpm": bpm_val,
-            "image_name": (arc_song.get("imageName") if arc_song else "") or "",
+            "image_name": build_chuni_jacket_image_name(
+                inferred_song_id,
+                xml_song.get("image_name") or "",
+            ),
             "genre": genre_lx or category,
             "version": lxns_song.get("version"),
             "release_date": (arc_song.get("releaseDate") if arc_song else "") or "",
@@ -393,13 +440,16 @@ def merge_chuni_arcade_and_lxns(arcade_payload: dict, lxns_payload: dict) -> dic
 async def fetch_chunithm_raw_data() -> dict[int, ChuniSongData]:
     """从外部 API 拉取并合并 CHUNITHM 曲库数据（含别名）。"""
     logger.info("获取 chunithm 数据（arcade-songs + LXNS）...")
+    music_xml_data: dict[int, dict] = {}
+    if plugin_config.ingame_data_base_dir:
+        music_xml_data = scan_music_directory(_ingame_path("music"))
     arcade_chuni = await _fetch_arcade_data_json("chunithm")
     chuni_lxns = await http_client.get_json(
         chunithm_song_list_url(notes=True), force_refresh=True
     )
     if not isinstance(chuni_lxns, dict):
         chuni_lxns = {"songs": []}
-    merged = merge_chuni_arcade_and_lxns(arcade_chuni, chuni_lxns)
+    merged = merge_chuni_arcade_and_lxns(arcade_chuni, chuni_lxns, music_xml_data)
     logger.info(f"chunithm 合并完成：共 {len(merged)} 首")
 
     # 获取 LXNS chunithm 别名并附加

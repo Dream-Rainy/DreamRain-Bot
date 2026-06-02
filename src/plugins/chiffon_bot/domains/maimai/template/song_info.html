@@ -923,10 +923,9 @@
         <!-- 额外信息展示区域 -->
         {% if song_info %}
         <div class="info-section">
-            {% if song_info.id < 10000000 %}
             <div class="jacket-container">
                 <img class="song-jacket"
-                     src="jacket/UI_Jacket_{{ '{:0>6}'.format(song_info.id % 10000 if song_info.id > 10000 else song_info.id) }}.png"
+                     src="{{ song_info.image_name }}"
                      onerror="this.onerror=null; this.src='jacket/UI_Jacket_000000.png';"
                      >
                 {% if song_info.isLocked %}
@@ -936,21 +935,6 @@
                 <img class="new-song-icon" src="assets/UI_CMN_TabTitle_NewSong.png" alt="New Song">
                 {% endif %}
             </div>
-            {% else %}
-            <div class="jacket-container">
-                <img 
-                    class="song-jacket" 
-                    src="https://shama.dxrating.net/images/cover/v2/{{ song_info.image_name | replace('png', 'jpg') }}"
-                    onerror="this.onerror=null; this.src='jacket/UI_Jacket_000000.png';"
-                    >
-                {% if song_info.isLocked %}
-                <img class="lock-icon" src="assets/UI_PFC_Icon_Lock_02.png" alt="Locked">
-                {% endif %}
-                {% if song_info.isNew %}
-                <img class="new-song-icon" src="assets/UI_CMN_TabTitle_NewSong.png" alt="New Song">
-                {% endif %}
-            </div>
-            {% endif %}
             <div class="song-details">
                 <div class="base-info">
                     <span class="title">{{ song_info.title|default("???") }}</span>

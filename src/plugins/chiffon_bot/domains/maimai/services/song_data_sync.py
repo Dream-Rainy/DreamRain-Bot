@@ -16,6 +16,16 @@ from ....infra.db.models import (
 )
 from ..schemas import MaiSongData, MapData, MapTreasureData
 from ...chunithm.schemas import ChuniSongData
+from ...chunithm.services.chunithm_data_fetcher import build_chuni_jacket_image_name
+
+_DEFAULT_MAI_JACKET_IMAGE_NAME = "jacket/UI_Jacket_000000.png"
+
+
+def _fallback_mai_image_name(song_id: int) -> str:
+    if 0 < song_id < 10000000:
+        jacket_id = song_id % 10000 if song_id > 10000 else song_id
+        return f"jacket/UI_Jacket_{jacket_id:0>6}.png"
+    return _DEFAULT_MAI_JACKET_IMAGE_NAME
 
 
 def _mai_song_from_db_row(row: MaiSong, aliases: list[str]) -> MaiSongData:
@@ -29,6 +39,7 @@ def _mai_song_from_db_row(row: MaiSong, aliases: list[str]) -> MaiSongData:
         "rights": row.rights,
         "mai_map": row.mai_map,
         "releaseDate": row.release_date,
+        "image_name": row.image_name or _fallback_mai_image_name(row.id),
         "isNew": row.is_new,
         "isLocked": row.is_locked,
         "comment": row.comment,
@@ -49,7 +60,7 @@ def _chuni_song_from_db_row(row: ChuniSong, aliases: list[str]) -> ChuniSongData
         "version": row.version,
         "rights": row.rights,
         "difficulties": row.difficulties or {},
-        "image_name": "",
+        "image_name": row.image_name or build_chuni_jacket_image_name(row.id),
         "release_date": "",
         "is_new": False,
         "is_locked": False,
@@ -99,6 +110,7 @@ async def sync_mai_song_data(
                 "rights": song.get("rights"),
                 "mai_map": song.get("mai_map"),  # 添加地图信息
                 "release_date": song.get("releaseDate"),
+                "image_name": song.get("image_name") or "",
                 "is_new": song.get("isNew", False),
                 "is_locked": song.get("isLocked", False),
                 "comment": song.get("comment"),
@@ -243,6 +255,7 @@ async def sync_chuni_song_data(song_data: dict[int, ChuniSongData]) -> None:
                 "bpm": song.bpm,
                 "version": version_int,
                 "rights": song.rights,
+                "image_name": song.image_name or "",
                 "difficulties": {
                     t: [s.model_dump(mode="json", by_alias=True, exclude_none=True) for s in sheets]
                     for t, sheets in (song.difficulties or {}).items()

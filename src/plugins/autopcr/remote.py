@@ -24,6 +24,10 @@ class RemoteMessage:
     filename: str | None = None
     content: bytes | None = None
     mime_type: str | None = None
+    lines: list[str] | None = None
+    header: list[str] | None = None
+    rows: list[list[str]] | None = None
+    result: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -179,6 +183,8 @@ def _messages_from_payload(payload: Any) -> list[RemoteMessage]:
         return _messages_from_iterable(payload)
     if not isinstance(payload, dict):
         return [RemoteMessage(kind="text", text=str(payload))]
+    if payload.get("type") or payload.get("kind"):
+        return _messages_from_iterable([payload])
 
     messages: list[RemoteMessage] = []
     if "messages" in payload:
@@ -207,11 +213,55 @@ def _messages_from_iterable(items: Iterable[Any]) -> list[RemoteMessage]:
                 messages.append(_image_message(item))
             elif kind == "file":
                 messages.append(_file_message(item))
+            elif kind == "lines":
+                messages.append(_lines_message(item))
+            elif kind == "table":
+                messages.append(_table_message(item))
+            elif kind in {"autopcr_task_result", "autopcr_module_result"}:
+                messages.append(_result_message(kind, item))
             else:
                 messages.append(RemoteMessage(kind="text", text=str(item.get("text") or item.get("message") or "")))
         else:
             messages.append(RemoteMessage(kind="text", text=str(item)))
-    return [message for message in messages if message.text or message.url or message.content]
+    return [
+        message
+        for message in messages
+        if message.text
+        or message.url
+        or message.content
+        or message.lines
+        or message.rows
+        or message.result is not None
+    ]
+
+
+def _lines_message(data: dict[str, Any]) -> RemoteMessage:
+    lines = data.get("lines")
+    if isinstance(lines, list):
+        return RemoteMessage(kind="lines", lines=[str(line) for line in lines])
+    text = data.get("text") or data.get("message") or ""
+    return RemoteMessage(kind="lines", lines=str(text).splitlines() or [str(text)])
+
+
+def _table_message(data: dict[str, Any]) -> RemoteMessage:
+    header = data.get("header") or []
+    rows = data.get("rows") or []
+    return RemoteMessage(
+        kind="table",
+        header=[str(item) for item in header] if isinstance(header, list) else [str(header)],
+        rows=[
+            [str(cell) for cell in row]
+            for row in rows
+            if isinstance(row, list)
+        ] if isinstance(rows, list) else [],
+    )
+
+
+def _result_message(kind: str, data: dict[str, Any]) -> RemoteMessage:
+    result = data.get("result")
+    if isinstance(result, dict):
+        return RemoteMessage(kind=kind, result=result)
+    return RemoteMessage(kind="text", text="远端返回的 autopcr 结果格式错误")
 
 
 def _image_message(data: Any) -> RemoteMessage:

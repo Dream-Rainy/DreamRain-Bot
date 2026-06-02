@@ -30,10 +30,58 @@ from .song_data_sync import (
 
 plugin_config = get_plugin_config(Config)
 
+_DEFAULT_JACKET_IMAGE_NAME = "jacket/UI_Jacket_000000.png"
+_REMOTE_COVER_BASE_URL = "https://shama.dxrating.net/images/cover/v2"
+
 
 def _ingame_path(sub_dir: str) -> str:
     """从 ingame_data_base_dir 推导 maimai 子目录路径。"""
     return f"{plugin_config.ingame_data_base_dir}/maimai/{sub_dir}"
+
+
+def _parse_optional_int(value: object) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_cue_name_id(dx_song: dict) -> int | None:
+    cue_name = dx_song.get("cueName")
+    if isinstance(cue_name, dict):
+        return _parse_optional_int(cue_name.get("id"))
+    return _parse_optional_int(cue_name)
+
+
+def _local_jacket_image_name(song_id: int) -> str:
+    jacket_id = song_id % 10000 if song_id > 10000 else song_id
+    return f"jacket/UI_Jacket_{jacket_id:0>6}.png"
+
+
+def build_maimai_jacket_image_name(
+    song_id: object,
+    raw_image_name: str | None = "",
+    *,
+    cue_name_id: int | None = None,
+    is_utage: bool = False,
+) -> str:
+    """生成模板可直接使用的 maimai 封面 src。"""
+    parsed_song_id = _parse_optional_int(song_id)
+    parsed_cue_name_id = _parse_optional_int(cue_name_id)
+
+    if is_utage and parsed_cue_name_id:
+        return _local_jacket_image_name(parsed_cue_name_id)
+
+    if parsed_song_id is not None and 0 < parsed_song_id < 10000000:
+        return _local_jacket_image_name(parsed_song_id)
+
+    if raw_image_name:
+        remote_name = str(raw_image_name).replace("png", "jpg")
+        return f"{_REMOTE_COVER_BASE_URL}/{remote_name}"
+
+    return _DEFAULT_JACKET_IMAGE_NAME
 
 
 async def _parse_map_xml() -> tuple[dict[int, int], dict[int, str], dict[str, int], dict[int, str]]:
@@ -134,6 +182,8 @@ def _merge_dxrating_and_lxns(
         sheets = dx_song.get("sheets", [])
         inferred_song_id = None
         associated_map_name = None
+        raw_image_name = dx_song.get("imageName") or ""
+        cue_name_id = _extract_cue_name_id(dx_song)
 
         # 优先级1: internal_id
         if sheets:
@@ -227,7 +277,6 @@ def _merge_dxrating_and_lxns(
             "title": title,
             "artist": dx_song.get("artist") or "",
             "bpm": dx_song.get("bpm") or 0,
-            "image_name": dx_song.get("imageName") or "",
             "category": dx_song.get("category") or "",
             "version": dx_song.get("version"),
             "releaseDate": dx_song.get("releaseDate") or "",
@@ -289,6 +338,13 @@ def _merge_dxrating_and_lxns(
                 merged_song["id"] = unknown_id_counter
                 unknown_id_counter += 1
 
+        merged_song["image_name"] = build_maimai_jacket_image_name(
+            merged_song.get("id"),
+            raw_image_name,
+            cue_name_id=cue_name_id,
+            is_utage=is_utage_song,
+        )
+
         song_model = MaiSongData.from_dict(merged_song)
 
         # 附加 dxrating 别名
@@ -324,6 +380,7 @@ def _enrich_with_music_xml(
 
     enriched_count = 0
     title_matched_count = 0
+    id_corrected_count = 0
     note_counts_written = 0
     missing_types_added = 0
 
@@ -337,6 +394,14 @@ def _enrich_with_music_xml(
                 matched_id = title_index[xml_title]
                 merged = merged_songs[matched_id]
                 title_matched_count += 1
+                # 远端数据未及时更新 → merged 持有合成 ID（如 10000001），
+                # 用 Music.xml 的权威 in-game ID 修正，确保后续同步/查询使用正确 ID
+                if merged.id != xml_id and xml_id not in merged_songs:
+                    id_corrected_count += 1
+                    del merged_songs[merged.id]
+                    merged.id = xml_id
+                    merged_songs[xml_id] = merged
+                    title_index[xml_title] = xml_id
 
         if merged is None:
             continue
@@ -357,10 +422,27 @@ def _enrich_with_music_xml(
         if not getattr(merged, "bpm", None) and xml_song.get("bpm"):
             merged.bpm = xml_song["bpm"]
 
-        # 注入 note_counts + 补充缺失的难度类型
         xml_diffs = xml_song.get("difficulties", {})
         merged_diffs = merged.difficulties
+        xml_cue_name_id = _parse_optional_int(xml_song.get("cue_name_id"))
+        has_utage = "utage" in xml_diffs or "utage" in merged_diffs
+        current_image_name = getattr(merged, "image_name", "") or ""
+        if xml_cue_name_id or (
+            0 < merged.id < 10000000
+            and (
+                not current_image_name
+                or current_image_name == _DEFAULT_JACKET_IMAGE_NAME
+                or current_image_name.startswith(_REMOTE_COVER_BASE_URL)
+            )
+        ):
+            merged.image_name = build_maimai_jacket_image_name(
+                merged.id,
+                "",
+                cue_name_id=xml_cue_name_id,
+                is_utage=has_utage,
+            )
 
+        # 注入 note_counts + 补充缺失的难度类型
         for diff_type, xml_sheets in xml_diffs.items():
             merged_sheets = merged_diffs.get(diff_type)
 
@@ -398,6 +480,8 @@ def _enrich_with_music_xml(
         parts.append(f"{missing_types_added} 个难度类型从 XML 补充")
     if title_matched_count:
         parts.append(f"{title_matched_count} 首通过 title 匹配")
+    if id_corrected_count:
+        parts.append(f"{id_corrected_count} 首的 ID 已从合成 ID 修正为 in-game ID")
     logger.info(f"Music XML 数据补充完成：{'，'.join(parts)}")
 
 

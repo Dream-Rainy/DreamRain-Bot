@@ -32,12 +32,14 @@ async def test_song_index_and_id_loaders(seeded_song_db, song_indexes):
     assert mai_song is not None
     assert mai_song.id == MAI_SONG_ID
     assert mai_song.title == MAI_SONG_TITLE
+    assert mai_song.image_name == "jacket/UI_Jacket_000181.png"
     assert MAI_ALIAS in mai_song.aliases
 
     chuni_song = await load_chuni_song_by_id_from_db(CHUNI_SONG_ID)
     assert chuni_song is not None
     assert chuni_song.id == CHUNI_SONG_ID
     assert chuni_song.title == CHUNI_SONG_TITLE
+    assert chuni_song.image_name == "jacket/CHU_UI_Jacket_000001.png"
     assert CHUNI_ALIAS in chuni_song.aliases
 
 

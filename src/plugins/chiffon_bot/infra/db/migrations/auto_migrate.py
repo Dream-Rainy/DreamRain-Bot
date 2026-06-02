@@ -13,6 +13,7 @@ from .version_manager import (
     set_db_version,
     create_version_table,
     get_db_type,
+    check_column_exists,
 )
 
 
@@ -42,6 +43,30 @@ from . import migration_v1_add_map_support
 @register_migration(1, "添加 Map 和 MapTreasure 支持")
 async def migrate_v1(conn):
     await migration_v1_add_map_support.apply(conn)
+
+
+@register_migration(2, "添加 maimai 乐曲封面路径字段")
+async def migrate_v2(conn):
+    db_type = get_db_type(conn)
+    logger.info(f"执行 {db_type} 迁移到 v2...")
+    if not await check_column_exists(conn, "mai_songs", "image_name"):
+        logger.info("  -> 在 mai_songs 表中添加 image_name 字段...")
+        await conn.execute_query("ALTER TABLE mai_songs ADD COLUMN image_name VARCHAR(512)")
+        logger.info("    ✓ image_name 字段添加成功")
+    else:
+        logger.info("  -> image_name 字段已存在，跳过")
+
+
+@register_migration(3, "添加 CHUNITHM 乐曲封面路径字段")
+async def migrate_v3(conn):
+    db_type = get_db_type(conn)
+    logger.info(f"执行 {db_type} 迁移到 v3...")
+    if not await check_column_exists(conn, "chuni_songs", "image_name"):
+        logger.info("  -> 在 chuni_songs 表中添加 image_name 字段...")
+        await conn.execute_query("ALTER TABLE chuni_songs ADD COLUMN image_name VARCHAR(512)")
+        logger.info("    ✓ image_name 字段添加成功")
+    else:
+        logger.info("  -> image_name 字段已存在，跳过")
 
 
 async def auto_migrate(silent: bool = False) -> bool:

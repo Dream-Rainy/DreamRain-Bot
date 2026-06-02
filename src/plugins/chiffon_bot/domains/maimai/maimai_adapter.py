@@ -12,7 +12,10 @@ from ..maimai.services.song_query import MaimaiSongQueryAdapter
 from ..maimai.views import clear_all_img_cache as _clear_all_img_cache
 from ..maimai.views.mai_bg_draw import render_song_info_img as _render_song_info_img
 from ..maimai.services.collections import fetch_and_update_collections as _fetch_collections
-from ..maimai.services.maimai_data_fetcher import fetch_maimai_raw_data
+from ..maimai.services.maimai_data_fetcher import (
+    build_maimai_jacket_image_name,
+    fetch_maimai_raw_data,
+)
 
 
 class MaimaiDomainAdapter(MaimaiSongQueryAdapter, DomainAdapter):
@@ -43,6 +46,7 @@ class MaimaiDomainAdapter(MaimaiSongQueryAdapter, DomainAdapter):
             "rights": getattr(song, "rights", None),
             "mai_map": getattr(song, "mai_map", None),
             "release_date": getattr(song, "release_date", None),
+            "image_name": getattr(song, "image_name", "") or "",
             "is_new": getattr(song, "is_new", False),
             "is_locked": getattr(song, "is_locked", False),
             "comment": getattr(song, "comment", None),
@@ -69,7 +73,7 @@ class MaimaiDomainAdapter(MaimaiSongQueryAdapter, DomainAdapter):
             "difficulties": row.difficulties or {},
             "collections": row.collections or [],
             "aliases": aliases,
-            "image_name": "",
+            "image_name": row.image_name or build_maimai_jacket_image_name(row.id),
         })
 
     # ── 渲染 ──

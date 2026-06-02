@@ -8,6 +8,7 @@ import traceback
 import datetime
 import gc
 import time
+import json
 
 from collections import Counter
 from functools import wraps
@@ -15,7 +16,6 @@ from quart import request as quart_request, jsonify, Response # type: ignore
 
 from autopcr.module.accountmgr import instance as usermgr, BATCHINFO, AccountException # type: ignore
 from autopcr.core.clientpool import instance as clientpool # type: ignore
-from autopcr.util.draw import instance as drawer # type: ignore
 from autopcr.util.excel_export import export_excel # type: ignore
 from autopcr.http_server.httpserver import HttpServer # type: ignore
 from autopcr.constants import CLIENT_POOL_MAX_AGE, SERVER_PORT, SERVER_HOST # type: ignore
@@ -108,24 +108,23 @@ def install_bot_bridge(server: HttpServer):
     def text_msg(text: str):
         return jsonify({"messages": [{"type": "text", "text": text}]})
 
-    async def image_msg(img):
-        bio = await drawer.img2bytesio(img, "WEBP")
-        try:
-            data = bio.getvalue()
-        finally:
-            bio.close()
-            try:
-                img.close()
-            except Exception:
-                pass
-        gc.collect()
-        return Response(data, mimetype="image/webp", headers={"Cache-Control": "no-store"})
+    def lines_msg(lines: list[str]):
+        return jsonify({"messages": [{"type": "lines", "lines": [str(line) for line in lines]}]})
 
-    async def image_table(header: list[str], rows: list[list[str]]):
-        return await image_msg(await drawer.draw(header, rows))
+    def table_msg(header: list[str], rows: list[list[str]]):
+        return jsonify({
+            "messages": [{
+                "type": "table",
+                "header": [str(item) for item in header],
+                "rows": [[str(cell) for cell in row] for row in rows],
+            }]
+        })
 
-    async def image_lines(lines: list[str]):
-        return await image_msg(await drawer.draw_msgs(lines))
+    def task_result_msg(result):
+        return jsonify({"messages": [{"type": "autopcr_task_result", "result": json.loads(result.to_json())}]})
+
+    def module_result_msg(result):
+        return jsonify({"messages": [{"type": "autopcr_module_result", "result": json.loads(result.to_json())}]})
 
     def load_cron_logs():
         if not os.path.exists(CRONLOG_PATH):
@@ -243,8 +242,7 @@ def install_bot_bridge(server: HttpServer):
                     traceback.print_exc()
                     rows.append([alias, str(e), "#错误"])
 
-            img = await drawer.draw(["昵称", "清日常结果", "状态"], rows)
-            return await image_msg(img)
+            return table_msg(["昵称", "清日常结果", "状态"], rows)
 
     @server.api.route("/bot/users/<string:qid>/accounts/<string:acc>/daily", methods=["POST"])
     @require_bot_token
@@ -257,8 +255,7 @@ def install_bot_bridge(server: HttpServer):
             account_name = resolve_account_name(mgr, account_name)
             async with mgr.load(account_name, force_use_all=force_all) as account:
                 result_info = await account.do_daily(is_admin)
-                img = await drawer.draw_tasks_result(result_info.get_result())
-                return await image_msg(img)
+                return task_result_msg(result_info.get_result())
 
     @server.api.route("/bot/users/<string:qid>/daily-records", methods=["GET"])
     @require_bot_token
@@ -275,8 +272,7 @@ def install_bot_bridge(server: HttpServer):
         if not rows:
             return text_msg("暂无日常记录")
 
-        img = await drawer.draw(["昵称", "清日常时间", "状态"], rows)
-        return await image_msg(img)
+        return table_msg(["昵称", "清日常时间", "状态"], rows)
 
     @server.api.route("/bot/users/<string:qid>/accounts/<string:acc>/daily-results/<int:result_id>", methods=["GET"])
     @require_bot_token
@@ -288,8 +284,7 @@ def install_bot_bridge(server: HttpServer):
                 result = await account.get_daily_result_from_id(result_id)
                 if not result:
                     return text_msg("未找到日常报告")
-                img = await drawer.draw_tasks_result(result)
-                return await image_msg(img)
+                return task_result_msg(result)
 
     @server.api.route("/bot/users/<string:qid>/accounts/<string:acc>/tools/<string:tool_key>", methods=["POST"])
     @require_bot_token
@@ -325,8 +320,7 @@ def install_bot_bridge(server: HttpServer):
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
                     )
 
-                img = await drawer.draw_task_result(result)
-                return await image_msg(img)
+                return module_result_msg(result)
 
     @server.api.route("/bot/users/<string:qid>/commands/<string:command>", methods=["POST"])
     @require_bot_token
@@ -351,7 +345,7 @@ def install_bot_bridge(server: HttpServer):
                 logs = [log for log in logs if log.time.date() == cur.date()]
 
             lines = [str(log) for log in logs[-40:][::-1]]
-            return await image_lines(lines or ["暂无定时日志"])
+            return lines_msg(lines or ["暂无定时日志"])
 
         if command == "cron_status":
             logs = load_cron_logs()
@@ -365,7 +359,7 @@ def install_bot_bridge(server: HttpServer):
             status = Counter(log.status for log in finish_logs)
             lines = [f"{target_label}定时任务：启动{len(start_logs)}个，完成{len(finish_logs)}个"]
             lines += [f"{key.value}: {value}" for key, value in status.items()]
-            return await image_lines(lines)
+            return lines_msg(lines)
 
         if command == "cron_statistic":
             cnt_clanbattle = Counter()
@@ -386,7 +380,7 @@ def install_bot_bridge(server: HttpServer):
             rows = [[key, str(value), str(cnt_clanbattle[key])] for key, value in cnt.items()]
             rows = sorted(rows, key=lambda row: row[0])
             rows.append(["总计", str(sum(cnt.values())), str(sum(cnt_clanbattle.values()))])
-            return await image_table(["时间", "定时任务数", "公会战任务数"], rows)
+            return table_msg(["时间", "定时任务数", "公会战任务数"], rows)
 
         if command == "clan_forbid":
             lines = ["会战期间仅管理员调用"]
@@ -396,7 +390,7 @@ def install_bot_bridge(server: HttpServer):
                         async with accmgr.load(alias, readonly=True) as acc:
                             if acc.is_clan_battle_forbidden():
                                 lines.append(f"{acc.qq}  {acc.alias} ")
-            return await image_lines(lines)
+            return lines_msg(lines)
 
         if command == "find_ghost":
             ghosts = find_ghost_qids(context)

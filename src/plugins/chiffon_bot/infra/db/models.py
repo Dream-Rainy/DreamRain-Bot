@@ -180,6 +180,7 @@ class MaiSong(Model):
     
     # dxrating 独有字段
     release_date = fields.CharField(max_length=32, null=True)  # 发布日期
+    image_name = fields.CharField(max_length=512, null=True)  # 封面图片路径或远端 URL
     is_new = fields.BooleanField(default=False)  # 是否新曲
     is_locked = fields.BooleanField(default=False)  # 是否锁定
     comment = fields.TextField(null=True)  # 备注信息
@@ -303,6 +304,7 @@ class ChuniSong(Model):
     bpm = fields.IntField(null=True)  # BPM
     version = fields.IntField(null=True, index=True)  # 版本号
     rights = fields.TextField(null=True)  # 版权信息
+    image_name = fields.CharField(max_length=512, null=True)  # 封面图片路径或远端 URL
 
     # 难度数据（JSON 存储完整的 difficulties 结构）
     difficulties = fields.JSONField(default=dict)

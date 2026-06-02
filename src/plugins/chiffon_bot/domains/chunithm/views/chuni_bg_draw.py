@@ -26,25 +26,16 @@ _template_search_paths = (
 
 # 素材/外部数据（data/ 目录，不在 git 中）
 _DATA_DIR = Path(os.getcwd()) / "data" / "chiffon_bot"
-_MAIMAI_ASSETS_DIR = _DATA_DIR / "template" / "maimai"
-_MAIMAI_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-_template_base_uri = _MAIMAI_ASSETS_DIR.resolve().as_uri()
+_CHUNI_ASSETS_DIR = _DATA_DIR / "template" / "chunithm"
+_CHUNI_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+_template_base_uri = _CHUNI_ASSETS_DIR.resolve().as_uri()
 
 # 字体目录（file:// URI，供模板中 @font-face 引用）
 _FONTS_DIR_URI = (
     (_CHIFFON_BOT_ROOT / "shared" / "render_templates" / "fonts").resolve().as_uri()
 )
 
-_CHUNI_DEFAULT_BG_PAGE = "../chunithm/bg_html/X-VERSE-X/X-VERSE-X.html"
-
-
-def _chuni_assets_base_url() -> str:
-    try:
-        from nonebot import get_plugin_config
-        from ....config import Config
-        return str(get_plugin_config(Config).chunithm_assets_base_url).rstrip("/")
-    except Exception:
-        return "https://assets2.lxns.net/chunithm"
+_CHUNI_DEFAULT_BG_PAGE = "bg_html/X-VERSE-X/X-VERSE-X.html"
 
 
 async def render_chuni_song_info_img(song_data) -> bytes:
@@ -81,11 +72,9 @@ async def render_chuni_song_info_img(song_data) -> bytes:
         song_info = {k: v for k, v in song_data.model_dump().items() if k != "difficulties"}
     else:
         song_info = {k: v for k, v in song_data.items() if k != "difficulties"}
-    assets_base = _chuni_assets_base_url()
-    song_info["jacket_url"] = f"{assets_base}/jacket/{song_id}.png"
 
     templates: dict[str, Any] = {
-        "base_url": str(_MAIMAI_ASSETS_DIR),
+        "base_url": str(_CHUNI_ASSETS_DIR),
         "fonts_dir": _FONTS_DIR_URI,
         "bg_page_url": _CHUNI_DEFAULT_BG_PAGE,
         "bg_image_url": None,

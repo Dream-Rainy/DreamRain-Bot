@@ -97,6 +97,7 @@ def parse_music_xml(xml_path: str | Path) -> dict[str, Any] | None:
         # 判断是否为宴谱
         utage_kanji = root.findtext("utageKanjiName", "")
         is_utage = bool(utage_kanji)
+        cue_name_id, _ = _parse_id_str(root.find("cueName"))
 
         # 解析 notesData → difficulties
         difficulties: dict[str, list[dict[str, Any]]] = {}
@@ -169,7 +170,8 @@ def parse_music_xml(xml_path: str | Path) -> dict[str, Any] | None:
             "is_locked": is_locked,
             "comment": comment,
             "difficulties": difficulties,
-            "image_name": "",  # XML 中无直接映射
+            "cue_name_id": cue_name_id,
+            "image_name": "",
             "aliases": [],
         }
     except Exception as e:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import html
+from functools import lru_cache
+from io import BytesIO
+from pathlib import Path
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Iterable
@@ -13,6 +16,7 @@ from nonebot.matcher import Matcher
 from nonebot.params import EventPlainText
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
+from PIL import Image, ImageDraw, ImageFont
 
 from .config import Config
 from .remote import AutopcrRemoteClient, AutopcrRemoteError, RemoteMessage, RemoteResult
@@ -350,6 +354,13 @@ async def _send_remote_message(botev: BotEvent, message: RemoteMessage) -> None:
         elif message.content:
             await botev.send(MessageSegment.image(message.content))
         return
+    if message.kind in {"lines", "table", "autopcr_task_result", "autopcr_module_result"}:
+        try:
+            await botev.send(MessageSegment.image(_render_remote_message(message)))
+        except Exception:
+            logger.exception("failed to render autopcr remote structured message")
+            await botev.send(_remote_message_text_fallback(message))
+        return
     if message.kind == "file":
         await _send_remote_file(botev, message)
         return
@@ -383,6 +394,278 @@ async def _send_remote_file(botev: BotEvent, message: RemoteMessage) -> None:
     except Exception:
         logger.exception("failed to upload autopcr remote file")
         await botev.send(f"文件已生成但上传失败: {path}")
+
+
+_BRIDGE_FONT_CANDIDATES = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
+]
+
+
+@lru_cache(maxsize=8)
+def _bridge_font(size: int) -> ImageFont.ImageFont:
+    for path in _BRIDGE_FONT_CANDIDATES:
+        if Path(path).exists():
+            return ImageFont.truetype(path, size=size)
+    return ImageFont.load_default(size=size)
+
+
+def _measure_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
+    bbox = draw.textbbox((0, 0), text or " ", font=font)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]:
+    wrapped: list[str] = []
+    for paragraph in str(text).splitlines() or [""]:
+        current = ""
+        for char in paragraph:
+            next_text = current + char
+            if current and _measure_text(draw, next_text, font)[0] > max_width:
+                wrapped.append(current)
+                current = char
+            else:
+                current = next_text
+        wrapped.append(current)
+    return wrapped or [""]
+
+
+def _render_remote_message(message: RemoteMessage) -> bytes:
+    if message.kind == "table":
+        return _render_remote_table(message.header or [], message.rows or [])
+    if message.kind == "autopcr_task_result":
+        return _render_autopcr_task_result(message.result or {})
+    if message.kind == "autopcr_module_result":
+        return _render_autopcr_module_result(message.result or {})
+    return _render_remote_lines(message.lines or [])
+
+
+def _render_autopcr_task_result(result: dict[str, Any]) -> bytes:
+    rows: list[list[str]] = []
+    modules = result.get("result") or {}
+    for key in result.get("order") or []:
+        if not isinstance(modules, dict):
+            continue
+        item = modules.get(str(key)) or modules.get(key)
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("log") or "") == "功能未启用":
+            continue
+        rows.append([
+            str(len(rows) + 1),
+            _clean_result_text(item.get("name")),
+            _clean_result_text(item.get("config")),
+            "#" + _status_value(item.get("status")),
+            _clean_result_text(item.get("log")),
+        ])
+    return _render_remote_table(["序号", "名字", "配置", "状态", "结果"], rows)
+
+
+def _render_autopcr_module_result(result: dict[str, Any]) -> bytes:
+    table = result.get("table") if isinstance(result.get("table"), dict) else {}
+    table_data = table.get("data") if isinstance(table, dict) else []
+    if isinstance(table_data, list) and len(table_data) > 1:
+        return _render_autopcr_result_table(table)
+
+    rows = [
+        ["配置", _clean_result_text(result.get("config"))],
+        ["状态", "#" + _status_value(result.get("status"))],
+        ["结果", _clean_result_text(result.get("log"))],
+    ]
+    return _render_remote_table(["名字", _clean_result_text(result.get("name"))], rows)
+
+
+def _render_autopcr_result_table(table: dict[str, Any]) -> bytes:
+    header_items = table.get("header") if isinstance(table.get("header"), list) else []
+    records = table.get("data") if isinstance(table.get("data"), list) else []
+    columns = _flatten_autopcr_header(header_items)
+    if not columns and records and isinstance(records[0], dict):
+        columns = [(str(key), [str(key)]) for key in records[0].keys()]
+    header = [label for label, _ in columns]
+    rows = [
+        [_stringify_result_value(_value_from_path(record, path)) for _, path in columns]
+        for record in records
+        if isinstance(record, dict)
+    ]
+    return _render_remote_table(header, rows)
+
+
+def _flatten_autopcr_header(header_items: list[Any]) -> list[tuple[str, list[str]]]:
+    columns: list[tuple[str, list[str]]] = []
+    for item in header_items:
+        if isinstance(item, dict):
+            for key, children in item.items():
+                group = str(key)
+                child_items = children if isinstance(children, list) else [children]
+                child_columns = _flatten_autopcr_header(child_items)
+                if not child_columns:
+                    columns.append((group, [group]))
+                    continue
+                for label, path in child_columns:
+                    columns.append((f"{group}\n{label}", [group] + path))
+        else:
+            value = str(item)
+            columns.append((value, [value]))
+    return columns
+
+
+def _value_from_path(record: dict[str, Any], path: list[str]) -> Any:
+    value: Any = record
+    for key in path:
+        if isinstance(value, dict):
+            value = value.get(key, "")
+        else:
+            return ""
+    return value
+
+
+def _clean_result_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _status_value(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("value") or value.get("name") or ""
+    return str(value or "").lstrip("#")
+
+
+def _stringify_result_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return "\n".join(f"{key}: {_stringify_result_value(item)}" for key, item in value.items())
+    if isinstance(value, list):
+        return "\n".join(_stringify_result_value(item) for item in value)
+    return str(value or "")
+
+
+def _render_remote_lines(lines: list[str]) -> bytes:
+    font = _bridge_font(24)
+    pad_x, pad_y = 28, 24
+    max_text_width = 1180
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    wrapped = [
+        subline
+        for line in (lines or [""])
+        for subline in _wrap_text(probe, str(line), font, max_text_width)
+    ]
+    line_height = max(_measure_text(probe, "国Ag", font)[1] + 12, 32)
+    text_width = max((_measure_text(probe, line, font)[0] for line in wrapped), default=1)
+    width = min(max_text_width + pad_x * 2, max(360, text_width + pad_x * 2))
+    height = max(96, len(wrapped) * line_height + pad_y * 2)
+
+    image = Image.new("RGB", (width, height), (255, 252, 245))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((12, 12, width - 13, height - 13), outline=(220, 211, 196), width=2)
+    y = pad_y
+    for line in wrapped:
+        draw.text((pad_x, y), line, fill=(96, 78, 66), font=font)
+        y += line_height
+    return _image_to_png_bytes(image)
+
+
+def _render_remote_table(header: list[str], rows: list[list[str]]) -> bytes:
+    font = _bridge_font(22)
+    header_font = _bridge_font(23)
+    pad_x, pad_y = 14, 10
+    max_cell_width = 360
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    column_count = max(len(header), *(len(row) for row in rows), 1)
+    normalized_header = [str(item) for item in header] + [""] * max(0, column_count - len(header))
+    normalized_rows = [
+        [str(cell) for cell in row] + [""] * max(0, column_count - len(row))
+        for row in rows
+    ]
+    table_cells = [normalized_header] + normalized_rows
+    wrapped_cells = [
+        [
+            _wrap_text(probe, cell, header_font if row_index == 0 else font, max_cell_width)
+            for cell in row
+        ]
+        for row_index, row in enumerate(table_cells)
+    ]
+
+    col_widths: list[int] = []
+    for col_index in range(column_count):
+        width = 72
+        for row_index, row in enumerate(wrapped_cells):
+            cell_font = header_font if row_index == 0 else font
+            width = max(width, *(_measure_text(probe, line, cell_font)[0] for line in row[col_index]))
+        col_widths.append(min(max_cell_width + pad_x * 2, width + pad_x * 2))
+
+    line_height = max(_measure_text(probe, "国Ag", font)[1] + 10, 30)
+    header_line_height = max(_measure_text(probe, "国Ag", header_font)[1] + 10, 32)
+    row_heights = [
+        max((header_line_height if row_index == 0 else line_height) * len(cell) + pad_y * 2 for cell in row)
+        for row_index, row in enumerate(wrapped_cells)
+    ]
+    width = sum(col_widths) + 2
+    height = sum(row_heights) + 2
+
+    image = Image.new("RGB", (width, height), (255, 252, 245))
+    draw = ImageDraw.Draw(image)
+    y = 1
+    for row_index, row in enumerate(wrapped_cells):
+        x = 1
+        fill = (242, 232, 216) if row_index == 0 else (255, 252, 245)
+        for col_index, cell_lines in enumerate(row):
+            cell_width = col_widths[col_index]
+            cell_height = row_heights[row_index]
+            cell_fill = _cell_fill_color(table_cells[row_index][col_index], fill)
+            draw.rectangle((x, y, x + cell_width, y + cell_height), fill=cell_fill, outline=(220, 211, 196), width=1)
+            cell_font = header_font if row_index == 0 else font
+            text_y = y + pad_y
+            for line in cell_lines:
+                draw.text((x + pad_x, text_y), line.lstrip("#"), fill=(96, 78, 66), font=cell_font)
+                text_y += header_line_height if row_index == 0 else line_height
+            x += cell_width
+        y += row_heights[row_index]
+    return _image_to_png_bytes(image)
+
+
+def _cell_fill_color(text: str, default: tuple[int, int, int]) -> tuple[int, int, int]:
+    if not str(text).startswith("#"):
+        return default
+    return {
+        "成功": (225, 255, 181),
+        "跳过": (200, 214, 250),
+        "警告": (255, 215, 0),
+        "中止": (255, 255, 0),
+        "错误": (255, 100, 100),
+        "致命": (139, 0, 0),
+    }.get(str(text).lstrip("#"), default)
+
+
+def _image_to_png_bytes(image: Image.Image) -> bytes:
+    bio = BytesIO()
+    try:
+        image.save(bio, format="PNG", optimize=True)
+        return bio.getvalue()
+    finally:
+        bio.close()
+        image.close()
+
+
+def _remote_message_text_fallback(message: RemoteMessage) -> str:
+    if message.kind == "table":
+        lines = ["\t".join(message.header or [])]
+        lines.extend("\t".join(row) for row in message.rows or [])
+        return "\n".join(line for line in lines if line)
+    if message.kind == "autopcr_task_result":
+        result = message.result or {}
+        modules = result.get("result") or {}
+        lines = []
+        for key in result.get("order") or []:
+            item = modules.get(str(key)) or modules.get(key) if isinstance(modules, dict) else None
+            if isinstance(item, dict):
+                lines.append(f"{item.get('name', key)}: {_status_value(item.get('status'))} {item.get('log', '')}")
+        return "\n".join(lines)
+    if message.kind == "autopcr_module_result":
+        result = message.result or {}
+        return f"{result.get('name', '')}: {_status_value(result.get('status'))}\n{result.get('log', '')}"
+    return "\n".join(message.lines or [])
 
 
 async def _call_remote(botev: BotEvent, call: Callable[[], Coroutine[Any, Any, RemoteResult]]) -> None:
