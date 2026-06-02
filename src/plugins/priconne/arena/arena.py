@@ -75,7 +75,7 @@ def findApproximateTeamResult(id_list):
     logger.info(f'    共有{len(result)}条记录')
     render = result2render(result, "approximation", id_list)
     if len(render) > 10:
-        render = list(sorted(render, key=lambda x: x.get("val", -100), reverse=True))[:10]
+        render = render[:10]
     return render
 
 
@@ -96,6 +96,33 @@ def _is_abnormal_ratio(up: int, down: int) -> bool:
     return False
 
 
+def _vote_ratio(up: int, down: int) -> float:
+    total = up + down
+    if total <= 0:
+        return 0
+    return up / total
+
+
+def _vote_sort_key(entry):
+    up_vote = int(entry["up"])
+    down_vote = int(entry["down"])
+    return (_vote_ratio(up_vote, down_vote), up_vote + down_vote, up_vote, -down_vote)
+
+
+def _select_display_results(result):
+    result = list(result)
+    filtered_result = []
+    for entry in result:
+        up_vote = int(entry["up"])
+        down_vote = int(entry["down"])
+        if not _is_abnormal_ratio(up_vote, down_vote):
+            filtered_result.append(entry)
+
+    if filtered_result:
+        return filtered_result
+    return result
+
+
 def result2render(result, team_type="normal", id_list=[]):
     '''
     team_type:
@@ -107,12 +134,9 @@ def result2render(result, team_type="normal", id_list=[]):
     "youshu":五个佑树 # 本函数不支持
     '''
     render = []
-    for entry in result:
-        up_vote = int(entry["up"])
-        down_vote = int(entry["down"])
-        if _is_abnormal_ratio(up_vote, down_vote):
-            continue
-
+    selected_result = _select_display_results(result)
+    selected_result = sorted(selected_result, key=_vote_sort_key, reverse=True)
+    for entry in selected_result:
         write_type = team_type
         if team_type == "approximation":
             try:
