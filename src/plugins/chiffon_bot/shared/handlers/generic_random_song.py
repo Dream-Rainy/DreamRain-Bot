@@ -12,7 +12,7 @@ from typing import Mapping, Optional
 from nonebot import logger
 
 from ..bot_response import BotResponse
-from ..domain_adapter import DomainAdapter
+from ..game.adapter import DomainAdapter
 from ..song_data import SongData
 
 
@@ -186,7 +186,11 @@ async def generic_random_song(
 
         range_text = f" (定数: {selected['level_value']})" if range_str else ""
         sheet = selected["sheet"]
-        level_display = str(sheet["level"] or selected["level_value"])
+        if isinstance(sheet, dict):
+            level = sheet.get("level")
+        else:
+            level = getattr(sheet, "level", None)
+        level_display = str(level or selected["level_value"])
         description = (
             f"\n随机到的 {adapter.display_name} 乐曲{range_text}：\n"
             f"[{song_id}] {song_data.title}\n"

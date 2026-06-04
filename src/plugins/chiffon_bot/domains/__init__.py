@@ -1,4 +1,4 @@
 """业务域（domain）集合。
 
-例如：maimai/chunithm/fortune 等。
+例如：maimai/chunithm/ongeki 等。
 """

@@ -17,7 +17,7 @@ from pypinyin import Style, lazy_pinyin
 from rapidfuzz import fuzz, process
 
 from ..song_data import SongData
-from .song_query_adapter import get_game_adapter
+from ..game.registry import get_game_adapter
 
 GameCode = str
 

@@ -102,6 +102,19 @@ docker compose up
 docker compose -f docker-compose.yml up
 ```
 
+生产环境数据库迁移：
+
+```powershell
+docker compose -f docker-compose.yml run --rm dreamrain-bot uv run python scripts/orm.py upgrade
+```
+
+该命令会在项目插件加载完成后执行 `nonebot-plugin-orm` 迁移，适合在启动或重启 `dreamrain-bot` 前作为一次性部署步骤运行。可用 `check`、`current`、`history` 等子命令查看迁移状态：
+
+```powershell
+uv run python scripts/orm.py check
+uv run python scripts/orm.py current
+```
+
 开发环境（含代码热重载）：
 
 ```powershell

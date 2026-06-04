@@ -16,7 +16,7 @@ from .song_query import (
     query_song_fuzzy,
     search_song,
 )
-from .song_query_adapter import (
+from ..game import (
     SongQueryAdapter,
     get_game_adapter,
     register_game_adapter,

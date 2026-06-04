@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from ...infra.db.models import MaiSong, MaiSongAlias
-from ...shared.domain_adapter import DomainAdapter
+from ...shared.game.adapter import DomainAdapter
+from ...shared.game.db_song_adapter import DbSongAdapter
+from ...shared.game.metadata import NaturalRandomPattern
+from ...shared.game.registry import register_game_adapter as _reg
 from ...shared.song_data import SongData
 from ..maimai.schemas import MaiSongData
-from ..maimai.services.song_query import MaimaiSongQueryAdapter
 from ..maimai.views import clear_all_img_cache as _clear_all_img_cache
 from ..maimai.views.mai_bg_draw import render_song_info_img as _render_song_info_img
 from ..maimai.services.collections import fetch_and_update_collections as _fetch_collections
@@ -18,16 +20,39 @@ from ..maimai.services.maimai_data_fetcher import (
 )
 
 
-class MaimaiDomainAdapter(MaimaiSongQueryAdapter, DomainAdapter):
+class MaimaiDomainAdapter(DbSongAdapter, DomainAdapter):
     """maimai 域完整适配器。"""
 
     # ── 游戏常量 ──
     display_name = "maimai"
+    command_prefix = "mai"
+    select_aliases = ["maimai", "mai", "舞萌"]
+    enable_cross_game_search = True
+    natural_random_patterns = [
+        NaturalRandomPattern(r"^随机(?:一首)?(?:歌|乐曲|曲子)?[？?]?$"),
+        NaturalRandomPattern(r"^来首?随机(?:歌|乐曲|曲子)?[？?]?$"),
+        NaturalRandomPattern(
+            r"^(?:随机|来首?)(?:一首)?([0-9.]+\+?)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$",
+            1,
+        ),
+        NaturalRandomPattern(
+            r"^(?:随机|来首?)(?:一首)?([0-9.]+)-([0-9.]+)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$",
+            2,
+        ),
+        NaturalRandomPattern(
+            r"^(?:随机|来首?)(?:一首)?([0-9.]+)到([0-9.]+)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$",
+            2,
+        ),
+    ]
     level_names = ["Basic", "Advanced", "Expert", "Master", "Re:Master"]
     difficulty_types = ["standard", "dx"]
 
     # ── 数据同步 ──
     temp_id_threshold = 10000000
+    game_code = "maimai"
+    song_store_attr = "mai_song_data"
+    song_index_attr = "mai_song_index"
+    supports_song_with_difficulty = True
 
     def get_db_song_model(self) -> type:
         return MaiSong
@@ -90,9 +115,6 @@ class MaimaiDomainAdapter(MaimaiSongQueryAdapter, DomainAdapter):
     async def fetch_raw_data(self) -> dict[int, SongData]:
         return await fetch_maimai_raw_data()  # type: ignore[return-value]
 
-
-# 注册为全局适配器（替换旧的 MaimaiSongQueryAdapter 单例）
-from ...shared.search.song_query_adapter import register_game_adapter as _reg
 
 _maimai_adapter = MaimaiDomainAdapter()
 _reg("maimai", _maimai_adapter)

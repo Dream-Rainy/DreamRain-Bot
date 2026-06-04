@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from ...infra.db.models import ChuniSong, ChuniSongAlias
-from ...shared.domain_adapter import DomainAdapter
+from ...shared.game.adapter import DomainAdapter
+from ...shared.game.db_song_adapter import DbSongAdapter
+from ...shared.game.metadata import NaturalRandomPattern
+from ...shared.game.registry import register_game_adapter as _reg
 from ...shared.song_data import SongData
-from ..maimai.services.song_query import ChunithmSongQueryAdapter
 from ..chunithm.schemas import ChuniSongData
 from ..chunithm.views.chuni_bg_draw import (
     render_chuni_song_info_img as _render_img,
@@ -19,16 +21,39 @@ from ..chunithm.services.chunithm_data_fetcher import (
 )
 
 
-class ChunithmDomainAdapter(ChunithmSongQueryAdapter, DomainAdapter):
+class ChunithmDomainAdapter(DbSongAdapter, DomainAdapter):
     """CHUNITHM 域完整适配器。"""
 
     # ── 游戏常量 ──
     display_name = "CHUNITHM"
+    command_prefix = "chuni"
+    select_aliases = ["chunithm", "chuni", "中二", "中二节奏"]
+    enable_cross_game_search = True
+    natural_random_patterns = [
+        NaturalRandomPattern(r"^chunithm随机(?:一首)?(?:歌|乐曲|曲子)?[？?]?$"),
+        NaturalRandomPattern(r"^随机(?:一首)?chunithm(?:歌|乐曲|曲子)?[？?]?$"),
+        NaturalRandomPattern(
+            r"^chunithm随机([0-9.]+\+?)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$",
+            1,
+        ),
+        NaturalRandomPattern(
+            r"^chunithm随机([0-9.]+)-([0-9.]+)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$",
+            2,
+        ),
+        NaturalRandomPattern(
+            r"^chunithm随机([0-9.]+)到([0-9.]+)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$",
+            2,
+        ),
+    ]
     level_names = ["BASIC", "ADVANCED", "EXPERT", "MASTER", "ULTIMA"]
     difficulty_types = ["standard", "ultima"]
 
     # ── 数据同步 ──
     temp_id_threshold = 100000
+    game_code = "chunithm"
+    song_store_attr = "chuni_song_data"
+    song_index_attr = "chuni_song_index"
+    dedupe_aliases_for_display = True
 
     def get_db_song_model(self) -> type:
         return ChuniSong
@@ -85,9 +110,6 @@ class ChunithmDomainAdapter(ChunithmSongQueryAdapter, DomainAdapter):
     async def fetch_raw_data(self) -> dict[int, SongData]:
         return await fetch_chunithm_raw_data()  # type: ignore[return-value]
 
-
-# 注册为全局适配器（替换旧的 ChunithmSongQueryAdapter 单例）
-from ...shared.search.song_query_adapter import register_game_adapter as _reg
 
 _chuni_adapter = ChunithmDomainAdapter()
 _reg("chunithm", _chuni_adapter)

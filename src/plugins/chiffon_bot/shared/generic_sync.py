@@ -10,7 +10,7 @@ import traceback
 
 from nonebot import logger
 
-from .domain_adapter import DomainAdapter
+from .game.adapter import DomainAdapter
 from .song_data import SongData
 
 

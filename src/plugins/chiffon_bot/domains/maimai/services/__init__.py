@@ -12,7 +12,7 @@ from .song_query import (
     MatchType,
 )
 from .song_data_sync import sync_mai_song_data
-from .song_data_updater import refresh_song_data
+from ....shared.song_data_updater import refresh_song_data
 
 __all__ = [
     "GameCode",

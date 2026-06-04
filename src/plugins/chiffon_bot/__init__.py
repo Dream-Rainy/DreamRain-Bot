@@ -16,7 +16,7 @@ from .app.commands.natural_language import register_natural_language_commands
 from .integrations.lxns.sse_client import sse_client
 
 from .infra.db.connect import init as init_db, close as close_db
-from .domains.maimai.services import refresh_song_data
+from .shared.song_data_updater import refresh_song_data
 
 __plugin_meta__ = PluginMetadata(
     name="src/plugins/chiffon_bot",

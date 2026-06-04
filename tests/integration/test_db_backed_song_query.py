@@ -19,10 +19,12 @@ pytestmark = pytest.mark.asyncio
 
 async def test_song_index_and_id_loaders(seeded_song_db, song_indexes):
     from src.plugins.chiffon_bot.domains.maimai.services.song_data_sync import (
-        load_chuni_song_by_id_from_db,
-        load_chuni_song_index_from_db,
         load_mai_song_by_id_from_db,
         load_mai_song_index_from_db,
+    )
+    from src.plugins.chiffon_bot.domains.chunithm.services.song_data_sync import (
+        load_chuni_song_by_id_from_db,
+        load_chuni_song_index_from_db,
     )
 
     assert await load_mai_song_index_from_db() == {MAI_SONG_ID: MAI_SONG_TITLE}
@@ -95,7 +97,7 @@ async def test_adapters_can_load_random_candidates_without_persistent_full_cache
     from src.plugins.chiffon_bot.shared.handlers.generic_random_song import (
         get_songs_by_difficulty_range,
     )
-    from src.plugins.chiffon_bot.shared.search.song_query_adapter import get_game_adapter
+    from src.plugins.chiffon_bot.shared.game.registry import get_game_adapter
 
     mai_adapter = get_game_adapter("maimai")
     chuni_adapter = get_game_adapter("chunithm")
@@ -112,3 +114,14 @@ async def test_adapters_can_load_random_candidates_without_persistent_full_cache
 
     assert song_indexes.mai_song_data == {}
     assert song_indexes.chuni_song_data == {}
+
+
+async def test_game_adapters_are_registered_from_shared_game_layer(loaded_chiffon_bot):
+    from src.plugins.chiffon_bot.shared.game import DbSongAdapter, get_game_adapter
+
+    mai_adapter = get_game_adapter("maimai")
+    chuni_adapter = get_game_adapter("chunithm")
+
+    assert isinstance(mai_adapter, DbSongAdapter)
+    assert isinstance(chuni_adapter, DbSongAdapter)
+    assert type(chuni_adapter).__module__.endswith("domains.chunithm.chunithm_adapter")

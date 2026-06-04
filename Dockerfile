@@ -100,6 +100,7 @@ RUN mkdir -p /app/config /app/data /app/logs /app/.cache && \
     chown -R ${UID}:${GID} /app/config /app/data /app/logs /app/.cache
 
 COPY --chown=${UID}:${GID} src /app/src
+COPY --chown=${UID}:${GID} scripts /app/scripts
 COPY --chown=${UID}:${GID} bot.py /app/bot.py
 COPY --chown=${UID}:${GID} LICENSE README.md THIRD_PARTY_NOTICES.md REUSE.toml /usr/share/doc/dreamrain-bot/
 COPY --from=builder --chown=${UID}:${GID} /build/DEPENDENCY_LICENSES.json /usr/share/doc/dreamrain-bot/DEPENDENCY_LICENSES.json

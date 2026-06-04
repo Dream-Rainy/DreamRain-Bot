@@ -13,8 +13,8 @@ from nonebot.adapters import Event, Message
 from nonebot.params import CommandArg, EventPlainText
 from nonebot.permission import SUPERUSER
 
-from ...shared.domain_adapter import DomainAdapter
-from ...shared.handlers.generic_random_song import generic_random_song, parse_difficulty_range
+from ...shared.game.adapter import DomainAdapter
+from ...shared.handlers.generic_random_song import generic_random_song
 from ...shared.handlers.generic_song_info import generic_song_info
 from ...shared.search.song_query import get_song_aliases
 from ._response import finish_with
@@ -105,7 +105,7 @@ def register_game_commands(group, adapter: DomainAdapter) -> None:
     @update_cmd.handle()
     async def _update():
         try:
-            from ...domains.maimai.services.song_data_updater import refresh_song_data
+            from ...shared.song_data_updater import refresh_song_data
             is_updated, message = await refresh_song_data()
         except Exception as e:
             message = f"更新失败: {e}"
@@ -129,39 +129,16 @@ def _register_natural_random(group, adapter: DomainAdapter) -> None:
 
     natural = on_message(priority=10, block=False)
 
-    # 构建游戏特定的随机模式
-    if gc == "chunithm":
-        patterns = [
-            (rf"^{gc}随机(?:一首)?(?:歌|乐曲|曲子)?[？?]?$", None),
-            (rf"^随机(?:一首)?{gc}(?:歌|乐曲|曲子)?[？?]?$", None),
-            (rf"^{gc}随机([0-9.]+\+?)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$", 1),
-            (rf"^{gc}随机([0-9.]+)-([0-9.]+)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$", 2),
-            (rf"^{gc}随机([0-9.]+)到([0-9.]+)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$", 2),
-        ]
-    else:
-        patterns = [
-            (r"^随机(?:一首)?(?:歌|乐曲|曲子)?[？?]?$", None),
-            (r"^来首?随机(?:歌|乐曲|曲子)?[？?]?$", None),
-            (r"^(?:随机|来首?)(?:一首)?([0-9.]+\+?)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$", 1),
-            (r"^(?:随机|来首?)(?:一首)?([0-9.]+)-([0-9.]+)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$", 2),
-            (r"^(?:随机|来首?)(?:一首)?([0-9.]+)到([0-9.]+)(?:难度)?(?:的)?(?:歌|乐曲|曲子)?[？?]?$", 2),
-        ]
-
     @natural.handle()
     async def _natural_random(event: Event, plain_text: str = EventPlainText()):
         text = plain_text.strip()
 
-        for pattern, last_index in patterns:
-            m = re.match(pattern, text, re.IGNORECASE)
+        for pattern in adapter.natural_random_patterns:
+            m = re.match(pattern.regex, text, re.IGNORECASE)
             if not m:
                 continue
 
-            range_str: str | None = None
-            if last_index is not None:
-                if last_index == 1:
-                    range_str = m.group(1)
-                elif last_index == 2:
-                    range_str = f"{m.group(1)}-{m.group(2)}"
+            range_str = pattern.extract_range(m)
 
             logger.info(f"[{gc}] 自然语言随机乐曲: {text!r} -> 难度: {range_str!r}")
             response = await generic_random_song(range_str, event.get_user_id(), event.message_id, adapter)

@@ -1,42 +1,37 @@
-"""跨游戏自然语言查歌。
-
-触发模式：XXX是什么歌 / XXX是啥歌
-逻辑：
-- 同时在 maimai 和 CHUNITHM 中检索
-- 比较两侧最佳结果的命中优先级（id > 标题完全 > 别名完全 > 标题模糊 > 别名模糊）
-  - 一侧优先级更高 → 直接返回该游戏结果
-  - 同级 → 消歧义提示
-  - 一侧无结果 → 直接返回另一侧
-  - 两侧均无结果 → 静默
-"""
+"""Cross-game natural-language song query."""
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+from datetime import timedelta
 import re
 
 from nonebot import on_message
 from nonebot.adapters import Event
+from nonebot.internal.matcher import Matcher
 from nonebot.log import logger
 from nonebot.params import EventPlainText
+from nonebot.rule import Rule
 
-from ...domains.maimai.handlers.song_info import song_info as mai_song_info
-from ...domains.chunithm.handlers.song_info import chuni_song_info_msg
-from ...domains.maimai.services.song_query import search_song
 from ...shared.bot_response import BotResponse
-from ...shared.search.song_query import MatchType, SongQueryResult
-from ._response import finish_with
+from ...shared.game.adapter import DomainAdapter
+from ...shared.game.registry import iter_searchable_adapters
+from ...shared.handlers.generic_song_info import generic_song_info
+from ...shared.search.song_query import MatchType, SongQueryResult, search_song
+from ._response import finish_with, send_with
 
-# ── 优先级映射（数值越小优先级越高）────────────────────────────────────────
+_DISAMBIGUATION_TIMEOUT_SECONDS = 30
+
 _PRIORITY: dict[MatchType, int] = {
-    MatchType.EXACT_ID:        0,   # id
-    MatchType.EXACT_TITLE:     1,   # 标题完全命中
-    MatchType.EXACT_ALIAS:     2,   # 别名完全命中
-    MatchType.FUZZY_TITLE:     3,   # 标题模糊命中
-    MatchType.PINYIN_INITIALS: 3,   # 拼音首字母 → 同属标题模糊
-    MatchType.PINYIN_FULL:     3,   # 完整拼音   → 同属标题模糊
-    MatchType.SIMPLIFIED:      3,   # 简体化归一 → 同属标题模糊
-    MatchType.FUZZY_ALIAS:     4,   # 别名模糊命中
+    MatchType.EXACT_ID: 0,
+    MatchType.EXACT_TITLE: 1,
+    MatchType.EXACT_ALIAS: 2,
+    MatchType.FUZZY_TITLE: 3,
+    MatchType.PINYIN_INITIALS: 3,
+    MatchType.PINYIN_FULL: 3,
+    MatchType.SIMPLIFIED: 3,
+    MatchType.FUZZY_ALIAS: 4,
 }
 
 _SONG_PATTERNS = [
@@ -45,86 +40,219 @@ _SONG_PATTERNS = [
 ]
 
 
+@dataclass(frozen=True)
+class _SearchHit:
+    adapter: DomainAdapter
+    results: list[SongQueryResult]
+    priority: int
+
+    @property
+    def best(self) -> SongQueryResult:
+        return self.results[0]
+
+
 def _best_priority(results: list[SongQueryResult]) -> int | None:
-    """返回结果列表中最高优先级的级别（None 表示列表为空）。"""
     if not results:
         return None
-    return min(_PRIORITY.get(r.match_type, 99) for r in results)
+    return min(_PRIORITY.get(result.match_type, 99) for result in results)
+
+
+async def _search_adapter(adapter: DomainAdapter, query: str) -> _SearchHit | None:
+    results = await search_song(query, game_code=adapter.game_code)
+    priority = _best_priority(results)
+    if priority is None:
+        return None
+    return _SearchHit(adapter=adapter, results=results, priority=priority)
+
+
+def _extract_song_query(text: str) -> str | None:
+    for pattern in _SONG_PATTERNS:
+        match = re.match(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return None
 
 
 def _build_conflict_message(
     query: str,
-    mai_r: SongQueryResult,
-    chuni_r: SongQueryResult,
+    hits: list[_SearchHit],
     message_id: int,
 ) -> BotResponse:
-    lines = [
-        "在多个游戏中找到匹配，请指定游戏：",
-        f"① [maimai]   [{mai_r.song_id}] {mai_r.title}",
-        f"② [CHUNITHM] [{chuni_r.song_id}] {chuni_r.title}",
-        "",
-        f"/mai.song {query}   或   /chuni.song {query}",
-    ]
+    lines = ["在多个游戏中找到匹配，请回复序号或游戏名："]
+
+    for idx, hit in enumerate(hits, start=1):
+        result = hit.best
+        label = str(idx)
+        lines.append(
+            f"{label}. [{hit.adapter.display_name}] [{result.song_id}] {result.title}"
+        )
+
+    aliases = []
+    for hit in hits:
+        adapter_aliases = " / ".join(hit.adapter.select_aliases)
+        aliases.append(f"{hit.adapter.display_name}: {adapter_aliases}")
+
+    lines.extend(["", "可回复：" + "；".join(aliases)])
     return BotResponse(text="\n".join(lines), reply_to=message_id)
 
 
-def register_natural_language_commands():
+def _choice_tokens(adapter: DomainAdapter) -> set[str]:
+    tokens = {
+        adapter.game_code,
+        adapter.command_prefix,
+        adapter.display_name,
+        *adapter.select_aliases,
+    }
+    return {token.strip().lower() for token in tokens if token and token.strip()}
+
+
+def _resolve_adapter_choice(choice_text: str, hits: list[_SearchHit]) -> _SearchHit | None:
+    text = choice_text.strip().lower()
+    if not text:
+        return None
+
+    if text.isdigit():
+        index = int(text)
+        if 1 <= index <= len(hits):
+            return hits[index - 1]
+        return None
+
+    matches = [hit for hit in hits if text in _choice_tokens(hit.adapter)]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _available_choice_text(hits: list[_SearchHit]) -> str:
+    parts = []
+    for idx, hit in enumerate(hits, start=1):
+        aliases = " / ".join(hit.adapter.select_aliases)
+        parts.append(f"{idx} 或 {aliases}")
+    return "；".join(parts)
+
+
+def _destroy_matcher(matcher: type[Matcher]) -> None:
+    try:
+        matcher.destroy()
+    except ValueError:
+        pass
+
+
+def _register_choice_waiter(
+    *,
+    user_id: str,
+    session_id: str,
+    timeout_seconds: int,
+) -> tuple[asyncio.Future[str], type[Matcher]]:
+    future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+    async def is_same_conversation(event: Event) -> bool:
+        return event.get_user_id() == user_id and event.get_session_id() == session_id
+
+    choice_matcher = on_message(
+        rule=Rule(is_same_conversation),
+        priority=1,
+        block=True,
+        expire_time=timedelta(seconds=timeout_seconds),
+    )
+
+    @choice_matcher.handle()
+    async def handle_choice(event: Event):
+        if not future.done():
+            future.set_result(event.get_plaintext().strip())
+        await choice_matcher.finish()
+
+    return future, choice_matcher
+
+
+async def _wait_for_adapter_choice(
+    *,
+    event: Event,
+    hits: list[_SearchHit],
+    timeout_seconds: int = _DISAMBIGUATION_TIMEOUT_SECONDS,
+) -> _SearchHit | None:
+    future, matcher = _register_choice_waiter(
+        user_id=event.get_user_id(),
+        session_id=event.get_session_id(),
+        timeout_seconds=timeout_seconds,
+    )
+    try:
+        try:
+            choice_text = await asyncio.wait_for(future, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            return None
+        return _resolve_adapter_choice(choice_text, hits)
+    finally:
+        _destroy_matcher(matcher)
+
+
+def register_natural_language_commands() -> None:
     song_query_handler = on_message(priority=10, block=False)
 
     @song_query_handler.handle()
-    async def handle_cross_game_song_query(event: Event, plain_text: str = EventPlainText()):
+    async def handle_cross_game_song_query(
+        event: Event,
+        plain_text: str = EventPlainText(),
+    ):
         text = plain_text.strip()
-
-        song_query: str | None = None
-        for pattern in _SONG_PATTERNS:
-            m = re.match(pattern, text)
-            if m:
-                song_query = m.group(1).strip()
-                break
+        song_query = _extract_song_query(text)
 
         if not song_query or not (1 <= len(song_query) <= 50):
             return
 
+        adapters = iter_searchable_adapters()
+        if not adapters:
+            return
+
         logger.info(f"[NL] 跨游戏查歌: {song_query!r}")
-
-        mai_results, chuni_results = await asyncio.gather(
-            search_song(song_query, game_code="maimai"),
-            search_song(song_query, game_code="chunithm"),
+        raw_hits = await asyncio.gather(
+            *(_search_adapter(adapter, song_query) for adapter in adapters)
         )
-
-        mai_prio = _best_priority(mai_results)
-        chuni_prio = _best_priority(chuni_results)
+        hits = [hit for hit in raw_hits if hit is not None]
 
         user_id = event.get_user_id()
         message_id = event.message_id
 
-        # 两侧均无结果 → 返回未找到匹配的歌曲
-        if mai_prio is None and chuni_prio is None:
+        if not hits:
             await finish_with(BotResponse(text="未找到匹配的歌曲", reply_to=message_id))
 
-        # 只有一侧有结果 → 直接返回
-        if mai_prio is None:
-            logger.info(f"[NL] 仅 CHUNITHM 命中 (prio={chuni_prio}): [{chuni_results[0].song_id}] {chuni_results[0].title}")
-            await finish_with(await chuni_song_info_msg(song_query, message_id))
+        best_priority = min(hit.priority for hit in hits)
+        best_hits = [hit for hit in hits if hit.priority == best_priority]
 
-        if chuni_prio is None:
-            logger.info(f"[NL] 仅 maimai 命中 (prio={mai_prio}): [{mai_results[0].song_id}] {mai_results[0].title}")
-            await finish_with(await mai_song_info(song_query, user_id, message_id))
+        if len(best_hits) == 1:
+            hit = best_hits[0]
+            logger.info(
+                f"[NL] {hit.adapter.display_name} 命中 "
+                f"(prio={hit.priority}): [{hit.best.song_id}] {hit.best.title}"
+            )
+            await finish_with(
+                await generic_song_info(song_query, user_id, message_id, hit.adapter)
+            )
 
-        # 两侧均有结果 → 比较优先级
-        if mai_prio < chuni_prio:
-            logger.info(f"[NL] maimai 优先级更高 ({mai_prio} < {chuni_prio}): [{mai_results[0].song_id}] {mai_results[0].title}")
-            await finish_with(await mai_song_info(song_query, user_id, message_id))
-
-        if chuni_prio < mai_prio:
-            logger.info(f"[NL] CHUNITHM 优先级更高 ({chuni_prio} < {mai_prio}): [{chuni_results[0].song_id}] {chuni_results[0].title}")
-            await finish_with(await chuni_song_info_msg(song_query, message_id))
-
-        # 同优先级 → 消歧义
         logger.info(
-            f"[NL] 同优先级冲突 (prio={mai_prio}): "
-            f"mai=[{mai_results[0].song_id}]{mai_results[0].title} "
-            f"chuni=[{chuni_results[0].song_id}]{chuni_results[0].title}"
+            "[NL] 同优先级冲突 "
+            + " ".join(
+                f"{hit.adapter.game_code}=[{hit.best.song_id}]{hit.best.title}"
+                for hit in best_hits
+            )
         )
-        response = _build_conflict_message(song_query, mai_results[0], chuni_results[0], message_id)
-        await finish_with(response)
+        await send_with(_build_conflict_message(song_query, best_hits, message_id))
+        selected = await _wait_for_adapter_choice(event=event, hits=best_hits)
+        if selected is None:
+            await finish_with(
+                BotResponse(
+                    text=(
+                        "没有识别到要查询的游戏，已取消。\n"
+                        f"可选：{_available_choice_text(best_hits)}"
+                    ),
+                    reply_to=message_id,
+                )
+            )
+
+        logger.info(
+            f"[NL] 用户选择 {selected.adapter.display_name}: "
+            f"[{selected.best.song_id}] {selected.best.title}"
+        )
+        await finish_with(
+            await generic_song_info(song_query, user_id, message_id, selected.adapter)
+        )

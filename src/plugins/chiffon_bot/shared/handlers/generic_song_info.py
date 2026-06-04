@@ -7,7 +7,7 @@ import traceback
 from nonebot import logger
 
 from ..bot_response import BotResponse
-from ..domain_adapter import DomainAdapter
+from ..game.adapter import DomainAdapter
 from ..search.result_message import build_fuzzy_list_message, build_match_hint_text
 from ..search.song_query import search_song
 
