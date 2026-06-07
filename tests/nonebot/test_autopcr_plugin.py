@@ -111,6 +111,32 @@ async def test_autopcr_remote_structured_payload(app):
     assert messages[1].rows == [["05:00", "2"]]
 
 
+async def test_autopcr_remote_runtime_status_lines_payload(app):
+    _load_autopcr()
+
+    from src.plugins.autopcr.remote import _messages_from_payload
+
+    messages = _messages_from_payload(
+        {
+            "messages": [
+                {
+                    "type": "lines",
+                    "lines": [
+                        "RSS: 512.0MB",
+                        "tracemalloc: disabled",
+                        "bridge jobs: total=0 status={} oldest=0s",
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert len(messages) == 1
+    assert messages[0].kind == "lines"
+    assert messages[0].lines[0].startswith("RSS:")
+    assert "bridge jobs" in messages[0].lines[-1]
+
+
 async def test_autopcr_remote_result_payloads(app):
     _load_autopcr()
 
@@ -235,3 +261,87 @@ async def test_autopcr_remote_binary_image_response(app):
     assert result.messages[0].kind == "image"
     assert result.messages[0].mime_type == "image/webp"
     assert result.messages[0].content == b"webp-bytes"
+
+
+async def test_autopcr_remote_job_response_is_polled(app, monkeypatch):
+    _load_autopcr()
+
+    import httpx
+
+    from src.plugins.autopcr import remote as remote_module
+    from src.plugins.autopcr.remote import AutopcrRemoteClient
+
+    monkeypatch.setattr(remote_module, "_JOB_POLL_INTERVAL_SECONDS", 0)
+
+    client = object.__new__(AutopcrRemoteClient)
+    client.base_url = "https://autopcr.example/api/"
+    client.public_base_url = "https://autopcr.example/"
+    client.token = ""
+    client.timeout = 1.0
+
+    calls = []
+
+    async def fake_send(method, path, **kwargs):
+        calls.append((method, path))
+        if path == "bot/jobs/job-1":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={"job_id": "job-1", "status": "finished"},
+            )
+        if path == "bot/jobs/job-1/result":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={"messages": [{"type": "text", "text": "done"}]},
+            )
+        raise AssertionError(path)
+
+    client._send = fake_send
+
+    result = await client._result_from_response(
+        httpx.Response(
+            202,
+            headers={"content-type": "application/json"},
+            json={"job_id": "job-1", "status": "running"},
+        )
+    )
+
+    assert result.messages[0].text == "done"
+    assert calls == [("GET", "bot/jobs/job-1"), ("GET", "bot/jobs/job-1/result")]
+
+
+async def test_autopcr_remote_job_failure_raises(app, monkeypatch):
+    _load_autopcr()
+
+    import httpx
+    import pytest
+
+    from src.plugins.autopcr import remote as remote_module
+    from src.plugins.autopcr.remote import AutopcrRemoteClient, AutopcrRemoteError
+
+    monkeypatch.setattr(remote_module, "_JOB_POLL_INTERVAL_SECONDS", 0)
+
+    client = object.__new__(AutopcrRemoteClient)
+    client.base_url = "https://autopcr.example/api/"
+    client.public_base_url = "https://autopcr.example/"
+    client.token = ""
+    client.timeout = 1.0
+
+    async def fake_send(method, path, **kwargs):
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={"job_id": "job-2", "status": "failed", "error": "boom"},
+        )
+
+    client._send = fake_send
+
+    with pytest.raises(AutopcrRemoteError, match="boom"):
+        await client._result_from_response(
+            httpx.Response(
+                202,
+                headers={"content-type": "application/json"},
+                json={"job_id": "job-2", "status": "running"},
+            )
+        )

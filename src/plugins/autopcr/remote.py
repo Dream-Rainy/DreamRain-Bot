@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import mimetypes
+import time
 from pathlib import PurePath
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -14,6 +16,10 @@ from .config import Config
 
 class AutopcrRemoteError(RuntimeError):
     """Raised when the remote autopcr bridge rejects or fails a request."""
+
+
+_JOB_POLL_INTERVAL_SECONDS = 3.0
+_JOB_POLL_TIMEOUT_SECONDS = 3600.0
 
 
 @dataclass(slots=True)
@@ -73,11 +79,11 @@ class AutopcrRemoteClient:
         return await self._request(
             "POST",
             self._account_path(qq, alias, "daily"),
-            json={"context": context},
+            json={"context": context, "async": True},
         )
 
     async def run_daily_all(self, *, qq: str, context: dict[str, Any]) -> RemoteResult:
-        return await self._request("POST", f"bot/users/{qq}/daily", json={"context": context})
+        return await self._request("POST", f"bot/users/{qq}/daily", json={"context": context, "async": True})
 
     async def daily_records(self, *, qq: str) -> RemoteResult:
         return await self._request("GET", f"bot/users/{qq}/daily-records")
@@ -112,6 +118,7 @@ class AutopcrRemoteClient:
                 "raw_text": raw_text,
                 "args": args,
                 "context": context,
+                "async": True,
             },
         )
 
@@ -141,6 +148,30 @@ class AutopcrRemoteClient:
         except ValueError as exc:
             raise AutopcrRemoteError("远端返回了无法解析的 JSON") from exc
 
+    async def _wait_for_job(self, job_id: str) -> RemoteResult:
+        deadline = time.monotonic() + max(self.timeout, _JOB_POLL_TIMEOUT_SECONDS)
+        short_timeout = min(max(self.timeout, 1.0), 30.0)
+        while True:
+            payload = await self._request_json("GET", f"bot/jobs/{quote(job_id, safe='')}", timeout=short_timeout)
+            if not isinstance(payload, dict):
+                raise AutopcrRemoteError("远端 job 状态格式错误")
+
+            status = str(payload.get("status") or "")
+            if status == "finished":
+                response = await self._send(
+                    "GET",
+                    f"bot/jobs/{quote(job_id, safe='')}/result",
+                    timeout=short_timeout,
+                )
+                return await self._result_from_response(response)
+            if status in {"failed", "timeout"}:
+                detail = payload.get("error") or status
+                raise AutopcrRemoteError(f"远端 autopcr job {status}: {detail}")
+            if time.monotonic() >= deadline:
+                raise AutopcrRemoteError(f"远端 autopcr job 等待超时: {job_id}")
+
+            await asyncio.sleep(_JOB_POLL_INTERVAL_SECONDS)
+
     async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         url = self.base_url + path.lstrip("/")
         timeout = kwargs.pop("timeout", self.timeout)
@@ -167,6 +198,8 @@ class AutopcrRemoteClient:
             return RemoteResult([RemoteMessage(kind="text", text=text)] if text else [])
 
         payload = response.json()
+        if response.status_code == 202 and isinstance(payload, dict) and payload.get("job_id"):
+            return await self._wait_for_job(str(payload["job_id"]))
         return RemoteResult(_messages_from_payload(payload))
 
     def _account_path(self, qq: str, alias: str | None, suffix: str) -> str:
