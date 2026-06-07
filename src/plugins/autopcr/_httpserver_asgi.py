@@ -15,8 +15,9 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
 from uuid import uuid4
-from quart import request as quart_request, jsonify, Response # type: ignore
+from quart import request as quart_request, jsonify, Response, send_file # type: ignore
 
 from autopcr.module.accountmgr import instance as usermgr, BATCHINFO, AccountException # type: ignore
 from autopcr.core.clientpool import instance as clientpool # type: ignore
@@ -34,11 +35,35 @@ from autopcr.util.logger import instance as autopcr_logger # type: ignore
 from hypercorn.config import Config # type: ignore
 from hypercorn.asyncio import serve # type: ignore
 
+import sys
+import subprocess
+import importlib
+
+def install_and_import(package_name, import_name=None):
+    """
+    检查库是否存在，如果不存在则在运行时自动安装并导入。
+    :param package_name: pip 安装时的包名 (例如: 'beautifulsoup4')
+    :param import_name: 代码中 import 时的模块名 (例如: 'bs4'，如果不填则默认与 package_name 相同)
+    """
+    if import_name is None:
+        import_name = package_name
+
+    try:
+        # 尝试直接导入
+        return importlib.import_module(import_name)
+    except ImportError:
+        print(f"[提示] 未找到模块 {import_name}，正在尝试运行时安装...")
+        
+        # sys.executable 获取当前运行的 Python 路径，确保安装到正确的虚拟环境/环境中
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        
+        print(f"[提示] {package_name} 安装成功，正在导入...")
+        return importlib.import_module(import_name)
+
 try:
     import psutil # type: ignore
 except Exception:
-    psutil = None
-
+    psutil = install_and_import("psutil")
 
 _BACKGROUND_TASKS: dict[str, asyncio.Task] = {}
 _CRON_ACCOUNT_TIMEOUT_SECONDS = 3600
@@ -53,7 +78,9 @@ _MEMORY_LOG_INTERVAL_SECONDS = 60
 _MEMORY_ENABLE_TRACEMALLOC = os.getenv("AUTOPCR_ENABLE_TRACEMALLOC") == "1"
 _MEMORY_TRACEBACK_LIMIT = 5
 _MEMORY_TRACE_TOP_EVERY = 30
-_MEMORY_TRACE_TOP_LIMIT = 8
+_MEMORY_TRACE_TOP_LIMIT = 30
+_MEMORY_OBJECT_TYPE_TOP_LIMIT = 30
+_CLIENT_POOL_DETAIL_LIMIT = 10
 
 
 @dataclass(slots=True)
@@ -213,6 +240,7 @@ async def _run_bridge_job(job: BridgeJob, work: Callable[[], Awaitable[Response]
         job.updated_at = time.time()
         autopcr_logger.exception(f"bridge job {job.job_id} {job.name} failed: {e}")
     finally:
+        job.task = None
         gc.collect()
 
 
@@ -297,6 +325,48 @@ def _job_result_dir_status() -> tuple[int, int]:
     return count, total
 
 
+def _client_pool_status_lines(limit: int = _CLIENT_POOL_DETAIL_LIMIT) -> list[str]:
+    pool = getattr(clientpool, "_pool", {})
+    active_uids = getattr(clientpool, "active_uids", {})
+    lines = [f"clientpool cached clients: {len(pool)}, active_uids={len(active_uids)}"]
+    now = int(time.time())
+    for index, (key, client) in enumerate(list(pool.items())[:limit], start=1):
+        try:
+            sdk_name = key[1] if isinstance(key, tuple) and len(key) > 1 else type(getattr(client, "session", None)).__name__
+            uid = getattr(client, "uid", None)
+            last_access = getattr(client, "last_access", 0)
+            age = _format_age(now - last_access) if last_access else "unknown"
+            data = getattr(client, "data", None)
+            data_ready = getattr(data, "ready", "unknown")
+            logged = getattr(client, "logged", "unknown")
+            lines.append(
+                f"clientpool cached #{index}: sdk={sdk_name} uid={uid} "
+                f"logged={logged} data_ready={data_ready} idle={age}"
+            )
+        except Exception as e:
+            lines.append(f"clientpool cached #{index}: unavailable ({e})")
+    if len(pool) > limit:
+        lines.append(f"clientpool cached: ... {len(pool) - limit} more")
+    return lines
+
+
+def _object_type_top_lines(limit: int = _MEMORY_OBJECT_TYPE_TOP_LIMIT) -> list[str]:
+    try:
+        type_counts = Counter(type(obj) for obj in gc.get_objects())
+        lines = []
+        for obj_type, count in type_counts.most_common(limit):
+            module = getattr(obj_type, "__module__", "")
+            qualname = getattr(obj_type, "__qualname__", getattr(obj_type, "__name__", str(obj_type)))
+            name = f"{module}.{qualname}" if module else qualname
+            lines.append(f"{name}: count={count}")
+        return lines
+    finally:
+        try:
+            del type_counts
+        except UnboundLocalError:
+            pass
+
+
 def runtime_status_lines() -> list[str]:
     lines = []
     now = time.time()
@@ -310,6 +380,7 @@ def runtime_status_lines() -> list[str]:
     else:
         lines.append("RSS: unavailable (psutil not installed)")
 
+    ensure_tracemalloc_started()
     if tracemalloc.is_tracing():
         current, peak = tracemalloc.get_traced_memory()
         lines.append(f"tracemalloc: current={_format_bytes(current)} peak={_format_bytes(peak)}")
@@ -322,6 +393,7 @@ def runtime_status_lines() -> list[str]:
     sema, farm_sema = clientpool.sema_status()
     lines.append(f"clientpool: {_format_sema_status(sema)}")
     lines.append(f"farm pool: {_format_sema_status(farm_sema)}")
+    lines.extend(_client_pool_status_lines())
 
     job_status = Counter(job.status for job in _BRIDGE_JOBS.values())
     oldest_job_age = 0.0
@@ -340,6 +412,13 @@ def runtime_status_lines() -> list[str]:
     cron_size, cron_mtime = _file_info(CRONLOG_PATH)
     lines.append(f"cron log: {_format_bytes(cron_size)}, mtime={cron_mtime}")
     lines.append(f"cron result TTL: {_JOB_RESULT_TTL_SECONDS}s")
+
+    if tracemalloc.is_tracing():
+        lines.append("tracemalloc top allocations:")
+        lines.extend(_tracemalloc_top_lines(_MEMORY_TRACE_TOP_LIMIT))
+
+    lines.append("gc object type top:")
+    lines.extend(_object_type_top_lines(_MEMORY_OBJECT_TYPE_TOP_LIMIT))
     return lines
 
 
@@ -674,11 +753,51 @@ def install_bot_bridge(server: HttpServer):
             }]
         })
 
-    def task_result_msg(result):
-        return json_response({"messages": [{"type": "autopcr_task_result", "result": json.loads(result.to_json())}]})
+    def result_ref_msg(ref: dict[str, Any]):
+        return json_response({"messages": [{"type": "autopcr_result_ref", "ref": ref}]})
 
-    def module_result_msg(result):
-        return json_response({"messages": [{"type": "autopcr_module_result", "result": json.loads(result.to_json())}]})
+    def daily_all_refs_msg(refs: list[dict[str, Any]]):
+        return json_response({"messages": [{"type": "autopcr_daily_all_refs", "refs": refs}]})
+
+    def result_raw_path(qid: str, account: str, result_type: str, key: str, tool_key: str | None = None) -> str:
+        account_part = quote(account, safe="")
+        key_part = quote(key, safe="")
+        if result_type == "single_result":
+            tool_part = quote(tool_key or "", safe="")
+            return f"bot/users/{qid}/accounts/{account_part}/results/single/{tool_part}/{key_part}/raw"
+        return f"bot/users/{qid}/accounts/{account_part}/results/daily/{key_part}/raw"
+
+    def result_info_ref(qid: str, account: str, result_info, result_type: str, tool_key: str | None = None) -> dict[str, Any]:
+        key = str(result_info.key)
+        return {
+            "qid": str(qid),
+            "account": str(account),
+            "alias": str(getattr(result_info, "alias", account) or account),
+            "key": key,
+            "time": str(getattr(result_info, "time", "") or ""),
+            "status": str(getattr(getattr(result_info, "status", None), "value", getattr(result_info, "status", ""))),
+            "result_type": result_type,
+            "tool_key": str(tool_key or ""),
+            "raw_path": result_raw_path(qid, account, result_type, key, tool_key),
+        }
+
+    def find_daily_result_info(account, key: str):
+        for item in account.get_daily_result_list():
+            if str(item.key) == str(key):
+                return item
+        return None
+
+    def find_single_result_info(account, tool_key: str, key: str):
+        for item in account.get_single_result_list(tool_key):
+            if str(item.key) == str(key):
+                return item
+        return None
+
+    async def result_file_response(result_info):
+        path = getattr(result_info, "path", "")
+        if not path or not os.path.exists(path):
+            return json_response({"message": "result file not found"}, status=404)
+        return await send_file(path, mimetype="application/json")
 
     def cron_log_filters(args: list[str]):
         status_filters = []
@@ -779,18 +898,23 @@ def install_bot_bridge(server: HttpServer):
             if not aliases:
                 return text_msg("未找到可执行的账号")
 
-            rows = []
+            refs = []
             for alias in aliases:
                 try:
                     async with mgr.load(alias) as acc:
                         result_info = await acc.do_daily(is_admin)
-                        result = result_info.get_result()
-                        rows.append([alias, result.get_last_result().log, "#" + result_info.status.value])
+                        refs.append(result_info_ref(qid, alias, result_info, "daily_result"))
                 except Exception as e:
                     traceback.print_exc()
-                    rows.append([alias, str(e), "#错误"])
+                    refs.append({
+                        "qid": str(qid),
+                        "account": str(alias),
+                        "alias": str(alias),
+                        "status": eResultStatus.ERROR.value,
+                        "error": str(e),
+                    })
 
-            return table_msg(["昵称", "清日常结果", "状态"], rows)
+            return daily_all_refs_msg(refs)
 
     async def execute_daily(qid: str, acc: str, context: dict[str, Any]) -> Response:
         is_admin = bool(context.get("is_admin"))
@@ -800,7 +924,7 @@ def install_bot_bridge(server: HttpServer):
             account_name = resolve_account_name(mgr, account_name)
             async with mgr.load(account_name, force_use_all=force_all) as account:
                 result_info = await account.do_daily(is_admin)
-                return task_result_msg(result_info.get_result())
+                return result_ref_msg(result_info_ref(qid, account_name, result_info, "daily_result"))
 
     async def execute_tool(qid: str, acc: str, tool_key: str, data: dict[str, Any]) -> Response:
         module_config = data.get("config") or {}
@@ -819,9 +943,8 @@ def install_bot_bridge(server: HttpServer):
                         return text_msg("未选择账号！请到网页端批量运行选择账号后运行")
                     result_info = result_info[0]
 
-                result = result_info.get_result()
-
                 if export:
+                    result = result_info.get_result()
                     xlsx = None
                     try:
                         xlsx = await export_excel(result.table)
@@ -840,7 +963,7 @@ def install_bot_bridge(server: HttpServer):
                         result_info = None
                         gc.collect()
 
-                return module_result_msg(result)
+                return result_ref_msg(result_info_ref(qid, account_name, result_info, "single_result", tool_key))
 
     @server.api.route("/bot/health", methods=["GET"])
     @require_bot_token
@@ -953,10 +1076,34 @@ def install_bot_bridge(server: HttpServer):
         async with usermgr.load(qid, readonly=True) as mgr:
             account_name = resolve_account_name(mgr, account_name)
             async with mgr.load(account_name, readonly=True, force_use_all=force_all) as account:
-                result = await account.get_daily_result_from_id(result_id)
-                if not result:
+                results = account.get_daily_result_list()
+                if result_id < 0 or result_id >= len(results):
                     return text_msg("未找到日常报告")
-                return task_result_msg(result)
+                return result_ref_msg(result_info_ref(qid, account_name, results[result_id], "daily_result"))
+
+    @server.api.route("/bot/users/<string:qid>/accounts/<string:acc>/results/daily/<string:key>/raw", methods=["GET"])
+    @require_bot_token
+    async def bot_daily_result_raw(qid: str, acc: str, key: str):
+        account_name, force_all = normalize_account(acc)
+        async with usermgr.load(qid, readonly=True) as mgr:
+            account_name = resolve_account_name(mgr, account_name)
+            async with mgr.load(account_name, readonly=True, force_use_all=force_all) as account:
+                result_info = find_daily_result_info(account, key)
+                if not result_info:
+                    return json_response({"message": "result not found"}, status=404)
+                return await result_file_response(result_info)
+
+    @server.api.route("/bot/users/<string:qid>/accounts/<string:acc>/results/single/<string:tool_key>/<string:key>/raw", methods=["GET"])
+    @require_bot_token
+    async def bot_single_result_raw(qid: str, acc: str, tool_key: str, key: str):
+        account_name, force_all = normalize_account(acc)
+        async with usermgr.load(qid, readonly=True) as mgr:
+            account_name = resolve_account_name(mgr, account_name)
+            async with mgr.load(account_name, readonly=True, force_use_all=force_all) as account:
+                result_info = find_single_result_info(account, tool_key, key)
+                if not result_info:
+                    return json_response({"message": "result not found"}, status=404)
+                return await result_file_response(result_info)
 
     @server.api.route("/bot/users/<string:qid>/accounts/<string:acc>/tools/<string:tool_key>", methods=["POST"])
     @require_bot_token

@@ -34,6 +34,8 @@ class RemoteMessage:
     header: list[str] | None = None
     rows: list[list[str]] | None = None
     result: dict[str, Any] | None = None
+    result_ref: dict[str, Any] | None = None
+    result_refs: list[dict[str, Any]] | None = None
 
 
 @dataclass(slots=True)
@@ -136,6 +138,15 @@ class AutopcrRemoteClient:
             f"bot/users/{qq}/commands/{command}",
             json={"raw_text": raw_text, "args": args, "context": context},
         )
+
+    async def fetch_result_ref(self, ref: dict[str, Any]) -> dict[str, Any]:
+        raw_path = str(ref.get("raw_path") or "")
+        if not raw_path:
+            raise AutopcrRemoteError("远端 autopcr 结果引用缺少 raw_path")
+        payload = await self._request_json("GET", raw_path)
+        if not isinstance(payload, dict):
+            raise AutopcrRemoteError("远端 autopcr raw result 格式错误")
+        return payload
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> RemoteResult:
         response = await self._send(method, path, **kwargs)
@@ -252,6 +263,10 @@ def _messages_from_iterable(items: Iterable[Any]) -> list[RemoteMessage]:
                 messages.append(_table_message(item))
             elif kind in {"autopcr_task_result", "autopcr_module_result"}:
                 messages.append(_result_message(kind, item))
+            elif kind == "autopcr_result_ref":
+                messages.append(_result_ref_message(item))
+            elif kind == "autopcr_daily_all_refs":
+                messages.append(_daily_all_refs_message(item))
             else:
                 messages.append(RemoteMessage(kind="text", text=str(item.get("text") or item.get("message") or "")))
         else:
@@ -265,6 +280,8 @@ def _messages_from_iterable(items: Iterable[Any]) -> list[RemoteMessage]:
         or message.lines
         or message.rows
         or message.result is not None
+        or message.result_ref is not None
+        or message.result_refs
     ]
 
 
@@ -295,6 +312,23 @@ def _result_message(kind: str, data: dict[str, Any]) -> RemoteMessage:
     if isinstance(result, dict):
         return RemoteMessage(kind=kind, result=result)
     return RemoteMessage(kind="text", text="远端返回的 autopcr 结果格式错误")
+
+
+def _result_ref_message(data: dict[str, Any]) -> RemoteMessage:
+    ref = data.get("ref")
+    if isinstance(ref, dict):
+        return RemoteMessage(kind="autopcr_result_ref", result_ref=ref)
+    return RemoteMessage(kind="text", text="远端返回的 autopcr 结果引用格式错误")
+
+
+def _daily_all_refs_message(data: dict[str, Any]) -> RemoteMessage:
+    refs = data.get("refs")
+    if isinstance(refs, list):
+        return RemoteMessage(
+            kind="autopcr_daily_all_refs",
+            result_refs=[ref for ref in refs if isinstance(ref, dict)],
+        )
+    return RemoteMessage(kind="text", text="远端返回的 autopcr 批量结果引用格式错误")
 
 
 def _image_message(data: Any) -> RemoteMessage:

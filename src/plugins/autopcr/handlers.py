@@ -354,6 +354,12 @@ async def _send_remote_message(botev: BotEvent, message: RemoteMessage) -> None:
         elif message.content:
             await botev.send(MessageSegment.image(message.content))
         return
+    if message.kind == "autopcr_result_ref":
+        await _send_autopcr_result_ref(botev, message)
+        return
+    if message.kind == "autopcr_daily_all_refs":
+        await _send_autopcr_daily_all_refs(botev, message)
+        return
     if message.kind in {"lines", "table", "autopcr_task_result", "autopcr_module_result"}:
         try:
             await botev.send(MessageSegment.image(_render_remote_message(message)))
@@ -366,6 +372,41 @@ async def _send_remote_message(botev: BotEvent, message: RemoteMessage) -> None:
         return
     if message.text:
         await botev.send(message.text)
+
+
+async def _send_autopcr_result_ref(botev: BotEvent, message: RemoteMessage) -> None:
+    ref = message.result_ref or {}
+    try:
+        raw_result = await remote.fetch_result_ref(ref)
+        result_type = str(ref.get("result_type") or "")
+        if result_type == "single_result":
+            rendered = _render_autopcr_module_result(raw_result)
+        else:
+            rendered = _render_autopcr_task_result(raw_result)
+        await botev.send(MessageSegment.image(rendered))
+    except Exception:
+        logger.exception("failed to fetch/render autopcr result ref")
+        await botev.send(_result_ref_text_fallback(ref))
+
+
+async def _send_autopcr_daily_all_refs(botev: BotEvent, message: RemoteMessage) -> None:
+    rows: list[list[str]] = []
+    for ref in message.result_refs or []:
+        alias = str(ref.get("alias") or ref.get("account") or "")
+        status = "#" + _status_value(ref.get("status"))
+        if ref.get("error"):
+            rows.append([alias, str(ref.get("error")), status])
+            continue
+        try:
+            raw_result = await remote.fetch_result_ref(ref)
+            rows.append([alias, _task_result_last_log(raw_result), status])
+        except Exception as exc:
+            logger.exception("failed to fetch autopcr daily summary ref")
+            rows.append([alias, str(exc), "#错误"])
+    if not rows:
+        await botev.send("远端 autopcr 已完成请求，但没有返回结果引用")
+        return
+    await botev.send(MessageSegment.image(_render_remote_table(["昵称", "清日常结果", "状态"], rows)))
 
 
 async def _send_remote_file(botev: BotEvent, message: RemoteMessage) -> None:
@@ -463,6 +504,18 @@ def _render_autopcr_task_result(result: dict[str, Any]) -> bytes:
             _clean_result_text(item.get("log")),
         ])
     return _render_remote_table(["序号", "名字", "配置", "状态", "结果"], rows)
+
+
+def _task_result_last_log(result: dict[str, Any]) -> str:
+    modules = result.get("result") if isinstance(result.get("result"), dict) else {}
+    order = result.get("order") if isinstance(result.get("order"), list) else []
+    if not order or not isinstance(modules, dict):
+        return ""
+    key = order[-1]
+    item = modules.get(str(key)) or modules.get(key)
+    if isinstance(item, dict):
+        return _clean_result_text(item.get("log"))
+    return ""
 
 
 def _render_autopcr_module_result(result: dict[str, Any]) -> bytes:
@@ -665,7 +718,21 @@ def _remote_message_text_fallback(message: RemoteMessage) -> str:
     if message.kind == "autopcr_module_result":
         result = message.result or {}
         return f"{result.get('name', '')}: {_status_value(result.get('status'))}\n{result.get('log', '')}"
+    if message.kind == "autopcr_result_ref":
+        return _result_ref_text_fallback(message.result_ref or {})
+    if message.kind == "autopcr_daily_all_refs":
+        return "\n".join(
+            f"{ref.get('alias') or ref.get('account')}: {_status_value(ref.get('status'))}"
+            for ref in message.result_refs or []
+        )
     return "\n".join(message.lines or [])
+
+
+def _result_ref_text_fallback(ref: dict[str, Any]) -> str:
+    label = ref.get("alias") or ref.get("account") or "autopcr"
+    status = _status_value(ref.get("status"))
+    raw_path = ref.get("raw_path") or ""
+    return f"{label}: {status}\n结果引用暂时无法渲染: {raw_path}"
 
 
 async def _call_remote(botev: BotEvent, call: Callable[[], Coroutine[Any, Any, RemoteResult]]) -> None:
