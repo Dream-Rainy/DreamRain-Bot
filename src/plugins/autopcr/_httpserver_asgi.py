@@ -390,6 +390,28 @@ def runtime_status_lines() -> list[str]:
     lines.append(f"objects: {len(gc.get_objects())}")
     lines.append(f"gc count: {gc.get_count()}")
 
+    try:
+        cached_props = db.cached_props()
+        cache_idle = time.monotonic() - getattr(db, "_cache_last_access", time.monotonic())
+        cleanup_task = getattr(db, "_cache_cleanup_task", None)
+        if cleanup_task is None:
+            cleanup_state = "none"
+        elif cleanup_task.done():
+            cleanup_state = "done"
+        else:
+            cleanup_state = "running"
+        lines.append(
+            "db cache: "
+            f"active={getattr(db, '_cache_active_tasks', 'unknown')} "
+            f"cached={len(cached_props)} "
+            f"idle={_format_age(cache_idle)} "
+            f"cleanup={cleanup_state}"
+        )
+        if cached_props:
+            lines.append(f"db cached props: {', '.join(cached_props[:20])}")
+    except Exception as e:
+        lines.append(f"db cache: unavailable ({e})")
+
     sema, farm_sema = clientpool.sema_status()
     lines.append(f"clientpool: {_format_sema_status(sema)}")
     lines.append(f"farm pool: {_format_sema_status(farm_sema)}")
@@ -491,42 +513,46 @@ def install_runtime_memory_guards():
 
     if not getattr(ModuleManager.do_task, "_bot_bridge_guarded", False):
         async def guarded_do_task(self, config: dict, modules: list, isAdminCall: bool = False) -> TaskResult:
-            if db.is_clan_battle_time() and self.is_clan_battle_forbidden() and not isAdminCall:
-                key = 'clan_battle' if not modules else modules[0].key
-                return TaskResult(
-                    order=[key],
-                    result={
-                        key: ModuleResult(
-                            status=eResultStatus.PANIC,
-                            log="会战期间禁止执行任务"
-                        )
-                    }
-                )
-
-            client = self.client
-            activated = False
-            await client.activate()
-            activated = True
+            await db.enter_cache_scope()
             try:
-                self.config["stamina_relative_not_run"] = any(
-                    db.is_campaign(campaign)
-                    for campaign in self.config.get("stamina_relative_not_run_campaign_before_one_day", [])
-                )
-                self.config.update(config)
+                if db.is_clan_battle_time() and self.is_clan_battle_forbidden() and not isAdminCall:
+                    key = 'clan_battle' if not modules else modules[0].key
+                    return TaskResult(
+                        order=[key],
+                        result={
+                            key: ModuleResult(
+                                status=eResultStatus.PANIC,
+                                log="会战期间禁止执行任务"
+                            )
+                        }
+                    )
 
-                resp = TaskResult(order=[], result={})
-                for module in modules:
-                    resp.order.append(module.key)
-                    resp.result[module.key] = await module.do_from(client)
-                    if resp.result[module.key].status == eResultStatus.PANIC:
-                        break
-                return resp
+                client = self.client
+                activated = False
+                await client.activate()
+                activated = True
+                try:
+                    self.config["stamina_relative_not_run"] = any(
+                        db.is_campaign(campaign)
+                        for campaign in self.config.get("stamina_relative_not_run_campaign_before_one_day", [])
+                    )
+                    self.config.update(config)
+
+                    resp = TaskResult(order=[], result={})
+                    for module in modules:
+                        resp.order.append(module.key)
+                        resp.result[module.key] = await module.do_from(client)
+                        if resp.result[module.key].status == eResultStatus.PANIC:
+                            break
+                    return resp
+                finally:
+                    if activated:
+                        try:
+                            client.deactivate()
+                        except Exception:
+                            traceback.print_exc()
             finally:
-                if activated:
-                    try:
-                        client.deactivate()
-                    except Exception:
-                        traceback.print_exc()
+                await db.exit_cache_scope()
 
         guarded_do_task._bot_bridge_guarded = True
         ModuleManager.do_task = guarded_do_task
@@ -991,7 +1017,8 @@ def install_bot_bridge(server: HttpServer):
         if job.status == "failed":
             return jsonify(_job_payload(job)), 500
         if job.result is None:
-            return jsonify({"message": "job result missing", **_job_payload(job)}), 500
+            _BRIDGE_JOBS.pop(job_id, None)
+            return jsonify({"message": "job result already consumed or expired", **_job_payload(job)}), 410
 
         stored = job.result
         job.result = None
