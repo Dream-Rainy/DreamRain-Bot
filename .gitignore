@@ -21,6 +21,7 @@ run/
 !.env.prod.example
 
 stubs/
+secrets/
 
 *.ipynb
 **/resource/

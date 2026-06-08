@@ -4,10 +4,11 @@ import traceback
 import time
 import asyncio
 
-from nonebot import get_bot
+from nonebot import get_bot, logger
 
 from ..compat import Service, priv
 from ..compat.typing import NoticeSession
+from ..credentials import build_stored_account, should_update_stored_account
 from ..login import query
 from ..util.tools import load_config, write_config, safe_send, check_client, DATA_PATH, stage_dict
 from .base import *
@@ -73,19 +74,27 @@ async def add_monitor(bot, ev):
             qq_id = int(ev.message[0].data['qq'])
 
     group_id = ev.group_id
-    acccountinfo = await load_config(os.path.join(DATA_PATH, 'account', f'{qq_id}.json'))
+    account_file = os.path.join(DATA_PATH, 'account', f'{qq_id}.json')
+    acccountinfo = await load_config(account_file)
 
     if not acccountinfo:
         await bot.send(ev, "你没有绑定账号")
         return
 
-    account = acccountinfo[0].get("account") or acccountinfo[0].get("viewer_id") 
+    account_info = acccountinfo[0]
+    account = account_info.get("account") or account_info.get("viewer_id")
     await bot.send(ev, f"正在登录账号，请耐心等待，当前监控账号为{account[:3]}******{account[-3:]}")
     
     try:
         client = await query(acccountinfo)
         if not await check_client(client):
             raise Exception("登录异常，请重试")
+        if should_update_stored_account(account_info, client.uid, client.access_key):
+            try:
+                acccountinfo[0] = build_stored_account(account_info, client.uid, client.access_key)
+                await write_config(account_file, acccountinfo)
+            except Exception as e:
+                logger.warning(f"priconne account credential migration failed: {e}")
         # 初始化
         if group_id not in clanbattle_info:
             clanbattle_info[group_id] = ClanBattle(group_id)
@@ -423,7 +432,7 @@ async def checktree(bot, ev):
         await bot.send(ev, "目前树上空空如也")
 
 
-@sv.on_rex(r'^申请出刀\s?(\d)\s?(\S+)?$')
+@sv.on_rex(r'^(?:申请出刀|进)\s?(\d)\s?(\S+)?$')
 async def apply(bot, ev):
     group_id = ev.group_id
     at = re.search(r'\[CQ:at,qq=(\d*)]', str(ev.message))

@@ -7,6 +7,7 @@ import httpx
 from nonebot import logger
 
 from .compat import Service
+from .credentials import build_stored_account
 from .pcrclient import pcrclient, bsdkclient
 from .util.tools import DATA_PATH, check_client, write_config
 
@@ -96,7 +97,8 @@ async def bind_support(bot, ev):
         try:
             client = await query([acccount.copy()], True)
             if await check_client(client):
-                await write_config(os.path.join(account_path, f'{qq_id}.json'), [acccount])
+                bound_account = build_stored_account(acccount, client.uid, client.access_key)
+                await write_config(os.path.join(account_path, f'{qq_id}.json'), [bound_account])
                 await bot.send_private_msg(user_id=qq_id, message="绑定成功")
         except Exception as e:
             logger.info(traceback.format_exc())

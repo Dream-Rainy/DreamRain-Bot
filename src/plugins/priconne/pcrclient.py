@@ -204,15 +204,18 @@ class pcrclient:
             raise ApiException("账号存在风险", 403)
         self.viewer_id = data_headers['viewer_id']
 
-    async def login(self):
-        self.uid, self.access_key = await self.bsdk.b_login()
+    @staticmethod
+    def _can_refresh_token(error: Exception) -> bool:
+        message = str(error)
+        return not any(text in message for text in ("服务器在维护", "账号存在风险", "没过完教程"))
 
+    async def _login_with_current_token(self):
         if 'REQUEST-ID' in self.headers:
             self.headers.pop('REQUEST-ID')
 
         manifest = await self.callapi('/source_ini/get_maintenance_status?format=json', {}, False, noerr=True)
         if 'maintenance_message' in manifest:
-            match = re.search('\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d',
+            match = re.search(r'\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d',
                               manifest['maintenance_message']).group()
             raise ApiException("服务器在维护", parse(match))
 
@@ -224,4 +227,18 @@ class pcrclient:
         await self.check_gamestart()
 
         # await self.callapi('/check/check_agreement', {})
+
+    async def login(self):
+        used_saved_token = self.bsdk.has_saved_token()
+        self.uid, self.access_key = await self.bsdk.b_login()
+
+        try:
+            await self._login_with_current_token()
+        except Exception as e:
+            if used_saved_token and self.bsdk.has_password_credentials() and self._can_refresh_token(e):
+                logger.warning(f"saved priconne token failed, refreshing with account password: {e}")
+                self.uid, self.access_key = await self.bsdk.b_login(force_password=True)
+                await self._login_with_current_token()
+                return
+            raise
 

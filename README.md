@@ -90,7 +90,14 @@ cp .env.example .env.prod
 
 2. 编辑 `.env.prod`，填写真实配置（QQ 账号、LXNS API Key、数据库密码等）。
 
-3. 启动全部服务：
+3. 为 priconne 账号密码加密生成 Docker secret 源文件。该文件必须长期保留；如果丢失，已保存的密文密码将无法解密，需要重新绑定账号。
+
+```powershell
+New-Item -ItemType Directory -Force secrets
+uv run python -c "import secrets; print(secrets.token_urlsafe(32))" > secrets/priconne_credential_key
+```
+
+4. 启动全部服务：
 
 ```powershell
 docker compose up

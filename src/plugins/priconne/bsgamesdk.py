@@ -6,12 +6,42 @@ import urllib
 from loguru import logger
 import httpx
 
+from .credentials import get_account_password
+
 
 bililogin = "https://line1-sdk-center-login-sh.biligame.net/"
 header = {"User-Agent": "Mozilla/5.0 BSGameSDK", "Content-Type": "application/x-www-form-urlencoded",
           "Host": "line1-sdk-center-login-sh.biligame.net"}
 
 client = httpx.AsyncClient()
+
+SENSITIVE_RESPONSE_KEYS = {"access_key", "pwd", "password"}
+
+
+def _mask_account(account):
+    account = str(account or "")
+    if len(account) <= 6:
+        return "***"
+    return f"{account[:3]}******{account[-3:]}"
+
+
+def _redact_login_response(resp):
+    if not isinstance(resp, dict):
+        return resp
+    redacted = resp.copy()
+    for key in SENSITIVE_RESPONSE_KEYS:
+        if key in redacted:
+            redacted[key] = "***"
+    return redacted
+
+
+def _format_login_failure(resp):
+    if not isinstance(resp, dict):
+        return f"登录接口返回异常：{resp!r}"
+    message = resp.get("message") or resp.get("msg") or resp.get("error") or "未知错误"
+    code = resp.get("code", "unknown")
+    return f"code={code}, message={message}"
+
 
 async def sendpost(url, data):
     return (await client.post(url=url, data=data, headers=header, timeout=20)).json()
@@ -57,7 +87,7 @@ async def _login(account, password, challenge="", gt_user="", validate=""):
 
 
 async def login(bili_account, bili_pwd, make_captch):
-    logger.info(f'logging in with acc={bili_account}, pwd={bili_pwd}')
+    logger.info(f'logging in with acc={_mask_account(bili_account)}')
     login_sta = await _login(bili_account, bili_pwd)
     if login_sta.get("message", "") == "用户名或密码错误":
         raise Exception("用户名或密码错误")
@@ -81,10 +111,35 @@ class bsdkclient:
         self.platform = "2"
         self.captchaVerifier = captchaVerifier
 
-    async def b_login(self):
+    def has_saved_token(self):
+        return bool(self.acccountinfo.get('uid') and self.acccountinfo.get('access_key'))
+
+    def has_password_credentials(self):
+        return bool(
+            self.acccountinfo.get('account')
+            and (self.acccountinfo.get('password') or self.acccountinfo.get('password_encrypted'))
+        )
+
+    async def b_login(self, force_password=False):
+        uid = self.acccountinfo.get('uid')
+        access_key = self.acccountinfo.get('access_key')
+        if uid and access_key and not force_password:
+            return uid, access_key
+
         if self.qudao == 0:
+            last_resp = None
             for i in range(3):
-                resp = await login(self.acccountinfo['account'], self.acccountinfo['password'], self.captchaVerifier)
-                if resp['code'] == 0:
+                if not self.has_password_credentials():
+                    raise Exception("账号未保存密码或登录凭据，请重新绑定账号")
+                password = get_account_password(self.acccountinfo)
+                resp = await login(self.acccountinfo['account'], password, self.captchaVerifier)
+                last_resp = resp
+                if isinstance(resp, dict) and resp.get('code') == 0:
                     logger.info("geetest or captcha succeed")
+                    self.acccountinfo['uid'] = resp['uid']
+                    self.acccountinfo['access_key'] = resp['access_key']
                     return resp['uid'], resp['access_key']
+                logger.warning(f"bilibili sdk login failed: {_format_login_failure(resp)}, resp={_redact_login_response(resp)}")
+            raise Exception(f"BSDK 登录失败：{_format_login_failure(last_resp)}")
+
+        raise Exception(f"不支持的登录渠道：{self.qudao}")

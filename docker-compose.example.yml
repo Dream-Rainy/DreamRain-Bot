@@ -33,6 +33,9 @@ services:
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
       HTMLRENDER_CONNECT: "${HTMLRENDER_CONNECT:-ws://playwright:3000}"
+      PRICONNE_CREDENTIAL_KEY_FILE: "${PRICONNE_CREDENTIAL_KEY_FILE:-/run/secrets/priconne_credential_key}"
+    secrets:
+      - priconne_credential_key
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,3 +92,7 @@ services:
 networks:
   qq:
     driver: bridge
+
+secrets:
+  priconne_credential_key:
+    file: "${PRICONNE_CREDENTIAL_KEY_SOURCE:-./secrets/priconne_credential_key}"
