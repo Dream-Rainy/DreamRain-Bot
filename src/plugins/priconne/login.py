@@ -1,11 +1,10 @@
-import asyncio
 import os
 import traceback
 from asyncio import Lock
 
-import httpx
 from nonebot import logger
 
+from .captcha import CaptchaContext, create_captcha_verifier
 from .compat import Service
 from .credentials import build_stored_account
 from .pcrclient import pcrclient, bsdkclient
@@ -26,47 +25,8 @@ qu_bind_lck = Lock()
 client = None
 client_cache = {}
 
-captcha_header = {"Content-Type": "application/json",
-                  "User-Agent": "pcrjjc2/1.0.0"}
 
-async def captchaVerifier(*args):
-    gt = args[0]
-    challenge = args[1]
-    userid = args[2]
-    async with httpx.AsyncClient(timeout=30) as AsyncClient:
-        try:
-            res = await AsyncClient.get(url=f"https://pcrd.tencentbot.top/geetest_renew?captcha_type=1&challenge={challenge}&gt={gt}&userid={userid}&gs=1", headers=captcha_header)
-            res = res.json()
-            uuid = res["uuid"]
-            ccnt = 0
-            while (ccnt := ccnt + 1) < 10:
-                res = await AsyncClient.get(url=f"https://pcrd.tencentbot.top/check/{uuid}", headers=captcha_header)
-                res = res.json()
-
-                if "queue_num" in res:
-                    tim = min(int(res['queue_num']), 3) * 10
-                    logger.info(f"过码排队，当前有{res['queue_num']}个在前面，等待{tim}s")
-                    await asyncio.sleep(tim)
-                    continue
-
-                info = res["info"]
-                if 'validate' in info:
-                    return info["challenge"], info["gt_user_id"], info["validate"]
-
-                if res["info"] in ["fail", "url invalid"]:
-                    raise Exception(f"自动过码失败")
-
-                if res["info"] == "in running":
-                    logger.info(f"正在过码。等待5s")
-                    await asyncio.sleep(5)
-
-            raise Exception(f"自动过码多次失败")
-
-        except Exception as e:
-            raise Exception(f"自动过码异常，{e}")
-
-
-async def query(acccount_info, is_force=False):
+async def query(acccount_info, is_force=False, captcha_context: CaptchaContext | None = None):
     try:
         acccount_info = acccount_info[0].copy()
         player = acccount_info.get('account', 0) or acccount_info.get('uid')
@@ -74,7 +34,7 @@ async def query(acccount_info, is_force=False):
             client = client_cache[player]
             if await check_client(client):
                 return client
-        client = pcrclient(bsdkclient(acccount_info, captchaVerifier))
+        client = pcrclient(bsdkclient(acccount_info, create_captcha_verifier(captcha_context)))
         await client.login()
         if await check_client(client):
             client_cache[player] = client
@@ -95,7 +55,8 @@ async def bind_support(bot, ev):
         acccount["account"] = content[0]
         acccount['password'] = content[1]
         try:
-            client = await query([acccount.copy()], True)
+            captcha_context = CaptchaContext(bot=bot, user_id=qq_id)
+            client = await query([acccount.copy()], True, captcha_context)
             if await check_client(client):
                 bound_account = build_stored_account(acccount, client.uid, client.access_key)
                 await write_config(os.path.join(account_path, f'{qq_id}.json'), [bound_account])

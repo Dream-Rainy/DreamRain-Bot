@@ -10,6 +10,7 @@ from .config import Config
 apply_pcr_data_override()
 
 from . import login  # noqa: F401
+from . import captcha  # noqa: F401
 from . import clanbattle  # noqa: F401
 from . import cherugo  # noqa: F401
 from . import arena  # noqa: F401

@@ -6,6 +6,7 @@ import asyncio
 
 from nonebot import get_bot, logger
 
+from ..captcha import CaptchaContext
 from ..compat import Service, priv
 from ..compat.typing import NoticeSession
 from ..credentials import build_stored_account, should_update_stored_account
@@ -86,7 +87,8 @@ async def add_monitor(bot, ev):
     await bot.send(ev, f"正在登录账号，请耐心等待，当前监控账号为{account[:3]}******{account[-3:]}")
     
     try:
-        client = await query(acccountinfo)
+        captcha_context = CaptchaContext(bot=bot, user_id=qq_id, group_id=group_id)
+        client = await query(acccountinfo, captcha_context=captcha_context)
         if not await check_client(client):
             raise Exception("登录异常，请重试")
         if should_update_stored_account(account_info, client.uid, client.access_key):
@@ -432,7 +434,7 @@ async def checktree(bot, ev):
         await bot.send(ev, "目前树上空空如也")
 
 
-@sv.on_rex(r'^(?:申请出刀|进)\s?(\d)\s?(\S+)?$')
+@sv.on_rex(r'^(?:申请出刀|进|打)\s?(\d)\s?(\S+)?$')
 async def apply(bot, ev):
     group_id = ev.group_id
     at = re.search(r'\[CQ:at,qq=(\d*)]', str(ev.message))
@@ -449,7 +451,7 @@ async def apply(bot, ev):
         await bot.send(ev, "申请失败", at_sender=True)
 
 
-@sv.on_fullmatch("取消申请")
+@sv.on_rex(r"^(?:取消申请|不进了|不打了)$")
 async def checktree(bot, ev):
     group_id = ev.group_id
     uid = ev.user_id

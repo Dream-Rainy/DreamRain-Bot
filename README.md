@@ -97,7 +97,15 @@ New-Item -ItemType Directory -Force secrets
 uv run python -c "import secrets; print(secrets.token_urlsafe(32))" > secrets/priconne_credential_key
 ```
 
-4. 启动全部服务：
+4. priconne 登录默认自动过验证码；自动失败时会发送手动验证链接。完成验证后发送：
+
+```text
+/priconne.validate <编号> <validate>
+```
+
+可用 `priconne_captcha_auto`、`priconne_captcha_admin_group`、`priconne_captcha_timeout` 调整自动过码、兜底群聊和等待超时。
+
+5. 启动全部服务：
 
 ```powershell
 docker compose up

@@ -96,11 +96,16 @@ async def login(bili_account, bili_pwd, make_captch):
         logger.info("无需验证码登录成功")
         return login_sta
 
-    logger.info("触发验证码，尝试过码")
-    # start_captcha_input
-    cap = await sendpost(bililogin + "api/client/start_captcha", setsign(json.loads(modolcaptch)))
-    challenge, gt_user_id, validate_key = await make_captch(cap['gt'], cap['challenge'], cap['gt_user_id'])
-    return await _login(bili_account, bili_pwd, challenge, gt_user_id, validate_key)
+    if login_sta.get("code") == 200000:
+        logger.info("触发验证码，尝试过码")
+        cap = await sendpost(bililogin + "api/client/start_captcha", setsign(json.loads(modolcaptch)))
+        try:
+            challenge, gt_user_id, validate_key = await make_captch(cap['gt'], cap['challenge'], cap['gt_user_id'])
+        except Exception as e:
+            raise Exception(f"验证码校验失败: {e}") from e
+        return await _login(bili_account, bili_pwd, challenge, gt_user_id, validate_key)
+
+    return login_sta
 
 
 class bsdkclient:
