@@ -108,13 +108,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PACKAGE_NAME="${{ github.event.repository.name }}"
+          # ghcr.io 包名必须小写
+          PACKAGE_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
           ORG="${{ github.repository_owner }}"
           KEEP=3
 
+          # 判断 owner 是用户还是组织（API 路径不同）
+          OWNER_TYPE=$(gh api "/users/${ORG}" --jq '.type' 2>/dev/null || echo "User")
+          if [ "$OWNER_TYPE" = "Organization" ]; then
+            SCOPE="orgs"
+          else
+            SCOPE="users"
+          fi
+          echo "Owner: ${ORG}, type: ${OWNER_TYPE}, package: ${PACKAGE_NAME}"
+
           # 获取所有 container package versions（分页处理）
           versions=$(gh api -H "Accept: application/vnd.github+json" \
-            "/orgs/${ORG}/packages/container/${PACKAGE_NAME}/versions?per_page=100")
+            "/${SCOPE}/${ORG}/packages/container/${PACKAGE_NAME}/versions?per_page=100")
 
           # 筛选 untagged 版本，按创建时间排序，跳过最近 KEEP 个
           echo "$versions" | jq -r '
@@ -125,5 +135,5 @@ jobs:
           ' | while read -r id; do
             echo "Deleting untagged version: $id"
             gh api --silent -X DELETE \
-              "/orgs/${ORG}/packages/container/${PACKAGE_NAME}/versions/${id}" || true
+              "/${SCOPE}/${ORG}/packages/container/${PACKAGE_NAME}/versions/${id}" || true
           done
