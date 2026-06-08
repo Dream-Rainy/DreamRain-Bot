@@ -114,8 +114,11 @@ docker compose up
 生产环境：
 
 ```powershell
-docker compose -f docker-compose.yml up
+docker compose -f docker-compose.yml pull && docker image prune -f && docker compose -f docker-compose.yml up -d
 ```
+
+> [!TIP]
+> 如果你使用浮动标签（`nightly` / `latest` / `master`），新镜像拉取后旧镜像会变成 dangling（`<none>:<none>`），持续累积占用磁盘空间。上述命令在 `pull` 之后立即执行 `docker image prune -f` 可自动清理。
 
 生产环境数据库迁移：
 
