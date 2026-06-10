@@ -76,6 +76,28 @@ async def test_chuni_song_info_render_uses_chuni_data_asset_root(
         version=16,
         image_name="jacket/CHU_UI_Jacket_2450.png",
         difficulties={
+            "standard": [
+                {
+                    "type": "std",
+                    "difficulty": "basic",
+                    "level": "3",
+                    "noteCounts": {"total": 411},
+                },
+                {
+                    "type": "std",
+                    "difficulty": "master",
+                    "level": "13+",
+                    "noteCounts": {"total": 1770},
+                },
+            ],
+            "ultima": [
+                {
+                    "type": "std",
+                    "difficulty": "ultima",
+                    "level": "15",
+                    "noteCounts": {"total": 2475},
+                }
+            ],
             "we": [
                 {
                     "type": "we",
@@ -95,4 +117,8 @@ async def test_chuni_song_info_render_uses_chuni_data_asset_root(
     assert Path(captured["templates"]["base_url"]) == chuni_bg_draw._CHUNI_ASSETS_DIR
     assert captured["templates"]["bg_page_url"] == "bg_html/X-VERSE-X/X-VERSE-X.html"
     assert captured["templates"]["song_info"]["image_name"] == "jacket/CHU_UI_Jacket_2450.png"
+    assert [
+        chart["difficulty"]
+        for chart in captured["templates"]["standard_charts"]
+    ] == ["basic", "master", "ultima"]
     assert "jacket_url" not in captured["templates"]["song_info"]

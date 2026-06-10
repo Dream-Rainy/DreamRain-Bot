@@ -38,10 +38,18 @@ _FONTS_DIR_URI = (
 _CHUNI_DEFAULT_BG_PAGE = "bg_html/X-VERSE-X/X-VERSE-X.html"
 
 
+def _chart_to_template_data(chart: Any) -> dict[str, Any]:
+    if hasattr(chart, "model_dump"):
+        return chart.model_dump(mode="json", by_alias=True, exclude_none=True)
+    if isinstance(chart, dict):
+        return chart
+    return {}
+
+
 async def render_chuni_song_info_img(song_data) -> bytes:
     """渲染 CHUNITHM 乐曲信息图（与 ``chuni_song_info.html`` 模板配套）。"""
     song_id = int(song_data.id if hasattr(song_data, "id") else song_data["id"])
-    cache_key = f"chuni_song_{song_id}"
+    cache_key = f"chuni_song_v2_{song_id}"
     cached_img = _chuni_song_info_img_cache.get(cache_key, default=None)
     if cached_img is not None and isinstance(cached_img, bytes):
         return cached_img
@@ -52,12 +60,17 @@ async def render_chuni_song_info_img(song_data) -> bytes:
 
     difficulties = (song_data.difficulties if hasattr(song_data, "difficulties") else song_data.get("difficulties")) or {}
     standard_charts = [
-        s.model_dump(mode="json", by_alias=True, exclude_none=True)
+        _chart_to_template_data(s)
         for s in (difficulties.get("standard") or difficulties.get("std") or [])
     ]
+    ultima_charts = [
+        _chart_to_template_data(s)
+        for s in (difficulties.get("ultima") or [])
+    ]
+    standard_charts.extend(ultima_charts)
     # World's End 谱面（type="we"），arcade-songs 使用该 key
     we_charts = [
-        s.model_dump(mode="json", by_alias=True, exclude_none=True)
+        _chart_to_template_data(s)
         for s in (difficulties.get("we") or [])
     ]
 

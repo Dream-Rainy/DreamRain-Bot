@@ -16,6 +16,7 @@ from .base import *
 from .model import ClanBattle
 from .kpi import kpi_report
 from .sql import SubscribeDao, RecordDao, SLDao, TreeDao, ApplyDao, clear_group_data
+from .pcr_calculator import calculator
 
 from ..pcrclient import init_device_id
 
@@ -662,6 +663,14 @@ async def resatrt_remind(bot, ev):
         except Exception as e:
             pass
     await write_config(run_path, {})
+
+@sv.on_fullmatch("cal", "合刀", "尾刀计算")
+async def pcr_calculator_interface(bot, ev):
+    msg = ev.message.extract_plain_text().strip()
+    if len(msg) == 0:
+        await bot.send(ev, "什么都不发，你让我算啥呢？")
+        return
+    await bot.send(ev, calculator(msg).ToString(sep="\n\n"))
 
 @sv.on_command('update_device_id', aliases=('自动报刀换设备id', '自动报刀更新设备id'), only_to_me=False)
 async def update_device_id(session: NoticeSession):

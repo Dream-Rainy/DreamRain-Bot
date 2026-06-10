@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import NoReturn
 
 from nonebot import on_fullmatch
-from nonebot.adapters import Event, Message
+from nonebot.adapters import Bot, Event, Message
 from nonebot.exception import MatcherException
 from nonebot.internal.matcher import Matcher
 from nonebot.log import logger
@@ -28,6 +28,7 @@ from ...integrations.lxns.session import UserSession
 from ...infra.db.models import User
 from ...shared.bot_response import BotResponse
 
+from ._reaction import ack_message
 from ._response import finish_with
 from .game_command_factory import register_game_commands
 
@@ -91,8 +92,9 @@ def register_maimai_commands(maimai_group):
     b50_command = maimai_group.command("b50", force_whitespace=True)
 
     @b50_command.handle()
-    async def handle_b50(event: Event):
+    async def handle_b50(bot: Bot, event: Event):
         user_id = event.get_user_id()
+        await ack_message(event, bot)
 
         bind_result = await ensure_user_bound(user_id, plugin_data.headers)
         if bind_result.status not in ["bound", "already_bound"]:
@@ -109,8 +111,9 @@ def register_maimai_commands(maimai_group):
     r50_command = maimai_group.command("r50", force_whitespace=True)
 
     @r50_command.handle()
-    async def handle_r50(event: Event):
+    async def handle_r50(bot: Bot, event: Event):
         user_id = event.get_user_id()
+        await ack_message(event, bot)
 
         bind_result = await ensure_user_bound(user_id, plugin_data.headers)
         if bind_result.status not in ["bound", "already_bound"]:
@@ -127,8 +130,9 @@ def register_maimai_commands(maimai_group):
     profile_command = maimai_group.command("profile", force_whitespace=True)
 
     @profile_command.handle()
-    async def handle_profile(event: Event):
+    async def handle_profile(bot: Bot, event: Event):
         user_id = event.get_user_id()
+        await ack_message(event, bot)
 
         bind_result = await ensure_user_bound(user_id, plugin_data.headers)
         if bind_result.status not in ["bound", "already_bound"]:
@@ -145,8 +149,9 @@ def register_maimai_commands(maimai_group):
     trend_command = maimai_group.command("trend", force_whitespace=True)
 
     @trend_command.handle()
-    async def handle_trend(event: Event):
+    async def handle_trend(bot: Bot, event: Event):
         user_id = event.get_user_id()
+        await ack_message(event, bot)
 
         bind_result = await ensure_user_bound(user_id, plugin_data.headers)
         if bind_result.status not in ["bound", "already_bound"]:
@@ -163,6 +168,7 @@ def register_maimai_commands(maimai_group):
     network_command = on_fullmatch(("断网", "网炸了？", "网炸了?", "网怎么样"), ignorecase=False)
 
     @network_command.handle()
-    async def handle_network_check(event: Event):
+    async def handle_network_check(bot: Bot, event: Event):
+        await ack_message(event, bot)
         screenshot_bytes = await get_page_screenshot()
         await finish_with(BotResponse(image=screenshot_bytes))

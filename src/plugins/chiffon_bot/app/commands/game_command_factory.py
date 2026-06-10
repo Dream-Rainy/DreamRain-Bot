@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 
 from nonebot import on_message, logger
-from nonebot.adapters import Event, Message
+from nonebot.adapters import Bot, Event, Message
 from nonebot.params import CommandArg, EventPlainText
 from nonebot.permission import SUPERUSER
 
@@ -17,6 +17,7 @@ from ...shared.game.adapter import DomainAdapter
 from ...shared.handlers.generic_random_song import generic_random_song
 from ...shared.handlers.generic_song_info import generic_song_info
 from ...shared.search.song_query import get_song_aliases
+from ._reaction import ack_message
 from ._response import finish_with
 
 
@@ -47,10 +48,11 @@ def register_game_commands(group, adapter: DomainAdapter) -> None:
     song_cmd = group.command("song", force_whitespace=True)
 
     @song_cmd.handle()
-    async def _song(event: Event, args: Message = CommandArg()):
+    async def _song(bot: Bot, event: Event, args: Message = CommandArg()):
         query = args.extract_plain_text().strip()
         if not query:
             await song_cmd.finish(f"查询条件不可以为空哟，例如：/{gc}.song 1")
+        await ack_message(event, bot)
         response = await generic_song_info(query, event.get_user_id(), event.message_id, adapter)
         await finish_with(response)
 
@@ -94,8 +96,9 @@ def register_game_commands(group, adapter: DomainAdapter) -> None:
     random_cmd = group.command("random", force_whitespace=True)
 
     @random_cmd.handle()
-    async def _random(event: Event, args: Message = CommandArg()):
+    async def _random(bot: Bot, event: Event, args: Message = CommandArg()):
         range_str = args.extract_plain_text().strip() or None
+        await ack_message(event, bot)
         response = await generic_random_song(range_str, event.get_user_id(), event.message_id, adapter)
         await finish_with(response)
 
@@ -130,7 +133,7 @@ def _register_natural_random(group, adapter: DomainAdapter) -> None:
     natural = on_message(priority=10, block=False)
 
     @natural.handle()
-    async def _natural_random(event: Event, plain_text: str = EventPlainText()):
+    async def _natural_random(bot: Bot, event: Event, plain_text: str = EventPlainText()):
         text = plain_text.strip()
 
         for pattern in adapter.natural_random_patterns:
@@ -141,5 +144,6 @@ def _register_natural_random(group, adapter: DomainAdapter) -> None:
             range_str = pattern.extract_range(m)
 
             logger.info(f"[{gc}] 自然语言随机乐曲: {text!r} -> 难度: {range_str!r}")
+            await ack_message(event, bot)
             response = await generic_random_song(range_str, event.get_user_id(), event.message_id, adapter)
             await finish_with(response)
