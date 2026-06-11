@@ -38,6 +38,12 @@ SPDX-FileCopyrightText = "noneplugin/nonebot-plugin-wordle contributors"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
+path = "src/plugins/kanna_note/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "SonderXiaoming/kanna_note contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
 path = "src/plugins/pokepoke_miss/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "pokepoke_miss contributors"

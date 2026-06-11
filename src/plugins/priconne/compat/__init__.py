@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 import re
 
-from nonebot import get_bot, get_driver, logger
+from nonebot import get_bot, get_driver, logger, require
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent, NoticeEvent
 from nonebot.matcher import Matcher
 from nonebot.plugin import on_message, on_notice
@@ -15,6 +15,8 @@ from src.plugins.platform_adapter.message import Message, MessageSegment, coerce
 from src.plugins.platform_adapter.sender import send_group, send_private, send_to_event
 
 from . import aiorequests
+
+require("nonebot_plugin_apscheduler")
 
 try:
     from nonebot_plugin_apscheduler import scheduler

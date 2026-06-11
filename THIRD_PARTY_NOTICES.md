@@ -71,6 +71,16 @@ release.
 - License: MIT
 - Local changes: included as local plugin code.
 
+### kanna_note
+
+- Path: `src/plugins/kanna_note/`
+- Source: <https://github.com/SonderXiaoming/kanna_note>
+- Copyright holder: SonderXiaoming/kanna_note contributors
+- License: Apache-2.0
+- License text: `src/plugins/kanna_note/LICENSE.txt`
+- Local changes: migrated and adapted for NoneBot, SQLAlchemy-based external
+  sqlite access, and project storage/runtime conventions.
+
 ### nonebot_plugin_pcrjjc
 
 - Path: `src/plugins/nonebot_plugin_pcrjjc/`
