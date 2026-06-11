@@ -361,10 +361,15 @@ async def schedule_remind_status(bot: HoshinoBot, ev: CQEvent):
 @sv.scheduled_job("cron", hour="11", minute="45", jitter=14)
 @sv.on_fullmatch("更新wiki数据库")
 async def update_data_base(bot=None, ev=None):
-    await update_pcr_database()
-    await init()
-    if bot and ev:
-        await bot.send(ev, "更新成功")
+    try:
+        await update_pcr_database()
+        await init()
+        if bot and ev:
+            await bot.send(ev, "更新成功")
+    except Exception as e:
+        logger.error(f"更新wiki数据库失败: {e}")
+        if bot and ev:
+            await bot.send(ev, f"更新失败: {e}")
 
 
 @sv.scheduled_job("cron", minute=0, hour="*")

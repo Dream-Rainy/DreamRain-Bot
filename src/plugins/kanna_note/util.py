@@ -28,7 +28,8 @@ phase_dict_reverse = {v: k for k, v in phase_dict.items()}
 async def download_stream(
     url: str, chunk_size: int = 1024
 ) -> AsyncGenerator[bytes, None]:
-    async with httpx.AsyncClient(timeout=10) as client:
+    timeout = httpx.Timeout(connect=15.0, read=120.0, write=30.0, pool=15.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("GET", url) as rsp:
             rsp.raise_for_status()
             async for chunk in rsp.aiter_bytes(chunk_size):

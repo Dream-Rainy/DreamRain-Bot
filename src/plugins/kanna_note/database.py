@@ -872,14 +872,12 @@ class PCRDatabase:
             )
             .join(
                 WaveGroupData,
-                WaveGroupData.wave_group_id.in_(
-                    [
-                        ClanBattle2MapData.wave_group_id_1,
-                        ClanBattle2MapData.wave_group_id_2,
-                        ClanBattle2MapData.wave_group_id_3,
-                        ClanBattle2MapData.wave_group_id_4,
-                        ClanBattle2MapData.wave_group_id_5,
-                    ]
+                or_(
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_1,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_2,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_3,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_4,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_5,
                 ),
                 isouter=True,
             )
@@ -898,7 +896,7 @@ class PCRDatabase:
                     ClanBattle2MapData.lap_num_from > 1,
                     ClanBattle2MapData.clan_battle_id < 1011,
                 ),
-                ClanBattleSchedule.release_month is not None,
+                ClanBattleSchedule.release_month.isnot(None),
                 case(
                     (clan_battle_id == 0, 1),
                     else_=(ClanBattle2MapData.clan_battle_id == clan_battle_id),
@@ -947,14 +945,12 @@ class PCRDatabase:
             )
             .join(
                 WaveGroupData,
-                WaveGroupData.wave_group_id.in_(
-                    [
-                        ClanBattle2MapData.wave_group_id_1,
-                        ClanBattle2MapData.wave_group_id_2,
-                        ClanBattle2MapData.wave_group_id_3,
-                        ClanBattle2MapData.wave_group_id_4,
-                        ClanBattle2MapData.wave_group_id_5,
-                    ]
+                or_(
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_1,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_2,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_3,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_4,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_5,
                 ),
                 isouter=True,
             )
@@ -973,7 +969,7 @@ class PCRDatabase:
                     ClanBattle2MapData.lap_num_from > 1,
                     ClanBattle2MapData.clan_battle_id < 1011,
                 ),
-                ClanBattleSchedule.release_month is not None,
+                ClanBattleSchedule.release_month.isnot(None),
             )
             .group_by(ClanBattle2MapData.clan_battle_id)
             .order_by(
@@ -1038,14 +1034,12 @@ class PCRDatabase:
             )
             .join(
                 WaveGroupData,
-                WaveGroupData.wave_group_id.in_(
-                    [
-                        ClanBattle2MapData.wave_group_id_1,
-                        ClanBattle2MapData.wave_group_id_2,
-                        ClanBattle2MapData.wave_group_id_3,
-                        ClanBattle2MapData.wave_group_id_4,
-                        ClanBattle2MapData.wave_group_id_5,
-                    ]
+                or_(
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_1,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_2,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_3,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_4,
+                    WaveGroupData.wave_group_id == ClanBattle2MapData.wave_group_id_5,
                 ),
                 isouter=True,
             )
