@@ -1,74 +1,38 @@
 from pathlib import Path
 from enum import Enum
-import shutil
 
-from nonebot import logger, require
+from nonebot import require
 
 require("nonebot_plugin_localstore")
-from nonebot_plugin_localstore import get_cache_dir, get_data_dir  # noqa: E402
+from nonebot_plugin_localstore import get_data_dir  # noqa: E402
 
 
 PLUGIN_NAME = "kanna_note"
-PLUGIN_ROOT = Path(__file__).parent
-RESOURCE_DIR = PLUGIN_ROOT / "resource"
-LEGACY_DATA_DIR = RESOURCE_DIR / "data"
-LEGACY_IMG_DIR = RESOURCE_DIR / "img"
 
 DATA_DIR = get_data_dir(PLUGIN_NAME)
-CACHE_DIR = get_cache_dir(PLUGIN_NAME)
-DB_DIR = DATA_DIR / "data"
-IMG_CACHE_DIR = CACHE_DIR / "img"
-
-
-def _copy_file_missing(src: Path, dst: Path) -> None:
-    if not src.exists() or dst.exists():
-        return
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-
-
-def _copy_tree_missing(src: Path, dst: Path) -> None:
-    if not src.exists():
-        return
-    for item in src.iterdir():
-        target = dst / item.name
-        if item.is_dir():
-            _copy_tree_missing(item, target)
-        elif not target.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, target)
+RESOURCE_DIR = DATA_DIR / "resource"
+DB_DIR = RESOURCE_DIR / "data"
+IMG_DIR = RESOURCE_DIR / "img"
+FONT_DIR = RESOURCE_DIR / "font"
 
 
 def _ensure_storage() -> None:
     for directory in (
         DATA_DIR,
+        RESOURCE_DIR,
         DB_DIR,
-        IMG_CACHE_DIR,
-        IMG_CACHE_DIR / "skill_icon",
-        IMG_CACHE_DIR / "fullcard",
-        IMG_CACHE_DIR / "equipment",
-        IMG_CACHE_DIR / "enemy",
-        IMG_CACHE_DIR / "teaser",
+        FONT_DIR,
+        IMG_DIR / "icon",
+        IMG_DIR / "skill_icon",
+        IMG_DIR / "fullcard",
+        IMG_DIR / "equipment",
+        IMG_DIR / "enemy",
+        IMG_DIR / "teaser",
     ):
         directory.mkdir(parents=True, exist_ok=True)
 
 
-def migrate_legacy_storage() -> None:
-    try:
-        _ensure_storage()
-        for filename in (
-            "pcr_cn.db",
-            "pcr_tw.db",
-            "pcr_jp.db",
-            "pcr_jp_supplement.db",
-            "temp.db",
-        ):
-            _copy_file_missing(LEGACY_DATA_DIR / filename, DB_DIR / filename)
-        _copy_file_missing(PLUGIN_ROOT / "schedule_push.json", DATA_DIR / "schedule_push.json")
-        for dirname in ("skill_icon", "fullcard", "equipment", "enemy", "teaser"):
-            _copy_tree_missing(LEGACY_IMG_DIR / dirname, IMG_CACHE_DIR / dirname)
-    except Exception as e:
-        logger.warning(f"kanna_note legacy storage migration failed: {e}")
+_ensure_storage()
 
 
 class FilePath(Enum):
@@ -82,22 +46,19 @@ class FilePath(Enum):
     temp_db = data / "temp.db"
     schedule_push = DATA_DIR / "schedule_push.json"
 
-    img = IMG_CACHE_DIR
-    icon = base / "img" / "icon"
+    img = IMG_DIR
+    icon = img / "icon"
     skill_icon = img / "skill_icon"
     fullcard = img / "fullcard"
     equipment = img / "equipment"
     enemy = img / "enemy"
     teaser = img / "teaser"
 
-    font = base / "font"
+    font = FONT_DIR
     font_fz = str(font / "方正综艺简体.ttf")
     font_ms_regular = str(font / "Microsoft-YaHei-Regular.ttc")
     font_ms_bold = str(font / "Microsoft-YaHei-Bold.ttc")
     font_jp = str(font / "A-OTF-GothicMB101Pro-DeBold-2.otf")
-
-
-migrate_legacy_storage()
 
 
 class FetchUrl(Enum):

@@ -25,12 +25,18 @@ from src.plugins.priconne import chara
 
 MARGIN = 30
 WIDTH = 400
-ALARM_CLOCK_ICON = (
-    Image.open(FilePath.icon.value / "alarm_clock.png").convert("RGBA").resize((35, 35))
-)
-HOURGLASS_ICON = (
-    Image.open(FilePath.icon.value / "hourglass.png").convert("RGBA").resize((25, 25))
-)
+
+
+def _load_icon(name: str, size: tuple[int, int]) -> Image.Image:
+    return Image.open(FilePath.icon.value / name).convert("RGBA").resize(size)
+
+
+def _alarm_clock_icon() -> Image.Image:
+    return _load_icon("alarm_clock.png", (35, 35))
+
+
+def _hourglass_icon() -> Image.Image:
+    return _load_icon("hourglass.png", (25, 25))
 
 
 def make_rounded_icon(icon: Image.Image, radius: int) -> Image.Image:
@@ -108,12 +114,12 @@ def draw_event_banner(
         if now < start:
             left_time = start - now  # 距离开始时间
             color = Color.purple.value
-            icon = HOURGLASS_ICON
+            icon = _hourglass_icon()
             padding = 5
         elif now < end:
             left_time = end - datetime.datetime.now()  # 距离结束时间
             color = Color.primary.value
-            icon = ALARM_CLOCK_ICON
+            icon = _alarm_clock_icon()
             padding = 0
 
         draw_text_with_base(
@@ -378,10 +384,11 @@ async def draw_birthday(event: BirthdayData):
 
     if left_time.days:
         birthday_length = int(font_cn.getlength(f"{event.month}月{event.day}日"))
+        hourglass_icon = _hourglass_icon()
         base.paste(
-            HOURGLASS_ICON,
+            hourglass_icon,
             (MARGIN + birthday_length + 60, 5),
-            HOURGLASS_ICON,
+            hourglass_icon,
         )
         left_text = f"{left_time.days}天"
         if left_time.seconds // 3600:

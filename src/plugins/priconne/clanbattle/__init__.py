@@ -664,7 +664,7 @@ async def resatrt_remind(bot, ev):
             pass
     await write_config(run_path, {})
 
-@sv.on_fullmatch("cal", "合刀", "尾刀计算")
+@sv.on_prefix("cal", "合刀", "尾刀计算")
 async def pcr_calculator_interface(bot, ev):
     msg = ev.message.extract_plain_text().strip()
     if len(msg) == 0:
