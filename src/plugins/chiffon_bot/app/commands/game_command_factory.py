@@ -1,7 +1,7 @@
 """通用命令工厂 — 基于 DomainAdapter 一键注册游戏命令。
 
 每个游戏只需调用 ``register_game_commands(group, adapter)`` 即可获得：
-help / song / alias / random / update / clean + 自然语言随机查询
+help / song / alias / random + 自然语言随机查询
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import re
 from nonebot import on_message, logger
 from nonebot.adapters import Bot, Event, Message
 from nonebot.params import CommandArg, EventPlainText
-from nonebot.permission import SUPERUSER
 
 from ...shared.game.adapter import DomainAdapter
 from ...shared.handlers.generic_random_song import generic_random_song
@@ -21,7 +20,12 @@ from ._reaction import ack_message
 from ._response import finish_with
 
 
-def register_game_commands(group, adapter: DomainAdapter) -> None:
+def register_game_commands(
+    group,
+    adapter: DomainAdapter,
+    *,
+    extra_help_lines: list[str] | None = None,
+) -> None:
     """为一组命令前缀注册该游戏的所有标准命令。
 
     Args:
@@ -35,11 +39,15 @@ def register_game_commands(group, adapter: DomainAdapter) -> None:
 
     @help_cmd.handle()
     async def _help():
+        extra = ""
+        if extra_help_lines:
+            extra = "".join(f"{line}\n" for line in extra_help_lines)
         await help_cmd.finish(
             f"[{adapter.display_name}] 帮助\n"
             f"查询乐曲信息：/{gc}.song [歌曲名/ID]\n"
             f"查询乐曲别名：/{gc}.alias [歌曲名/ID]\n"
             f"随机乐曲：/{gc}.random [难度范围]\n"
+            f"{extra}"
             f"  示例：13(定数13.0~13.5) / 13+(13.6~13.9)\n"
             f"       12-13 / 13.5 / 12-13+\n"
         )
@@ -101,26 +109,6 @@ def register_game_commands(group, adapter: DomainAdapter) -> None:
         await ack_message(event, bot)
         response = await generic_random_song(range_str, event.get_user_id(), event.message_id, adapter)
         await finish_with(response)
-
-    # ── update (SUPERUSER) ────────────────────────────────────────────────
-    update_cmd = group.command("update", force_whitespace=True, permission=SUPERUSER)
-
-    @update_cmd.handle()
-    async def _update():
-        try:
-            from ...shared.song_data_updater import refresh_song_data
-            is_updated, message = await refresh_song_data()
-        except Exception as e:
-            message = f"更新失败: {e}"
-        await update_cmd.finish(message)
-
-    # ── clean (SUPERUSER) ─────────────────────────────────────────────────
-    clean_cmd = group.command("clean", force_whitespace=True, permission=SUPERUSER)
-
-    @clean_cmd.handle()
-    async def _clean():
-        adapter.clear_image_cache()
-        await clean_cmd.finish(f"{adapter.display_name} 图片缓存已清除")
 
     # ── 自然语言随机查询 ──────────────────────────────────────────────────
     _register_natural_random(group, adapter)

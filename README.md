@@ -6,7 +6,7 @@
 
 ### 音游查分（chiffon_bot）
 
-- **舞萌 DX** — Best 50 / 歌曲详情 / 最近成绩 / 定数查分 / 版本别名
+- **舞萌 DX** — Best 50 / 歌曲详情 / 拍照曲绘查歌 / 最近成绩 / 定数查分 / 版本别名
 - **CHUNITHM** — Best 50 / 歌曲详情 / 搭档进度
 - **LXNS OAuth 绑定** — 通过 LXNS 平台绑定玩家账号
 - **自然语言识别** — 直接发送谱面封面图触发的相关查询
@@ -39,10 +39,11 @@
 
 ## 常用命令示例
 
-- maimai：`/mai.song テオ`、`/mai.b50`
+- maimai：`/mai.song テオ`、`/mai.pic`（附选曲截图或回复图片）、`/mai.b50`
 - CHUNITHM：`/chuni.song 1`
 - 账号系统：`/acc help`、`/acc.bind 123456789012345`
 - 活动系统：`/event.help`
+- 管理命令：`/admin.update`、`/admin.clean`（SUPERUSER）
 - 权限管理：`/perm`
 - 公主连结：`/猜头像`
 - 今日运势：`/今日运势`
@@ -76,8 +77,10 @@ uv run bot.py
 ```
 /mai.b50
 /mai.song テオ
+/mai.pic
 /chuni.song 1
 /acc help
+/admin.update
 ```
 
 ### 完整部署（Docker Compose）

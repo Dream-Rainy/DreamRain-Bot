@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from typing import NoReturn
 
-from nonebot import on_fullmatch
+from nonebot import on_fullmatch, require
 from nonebot.adapters import Bot, Event, Message
 from nonebot.exception import MatcherException
 from nonebot.internal.matcher import Matcher
 from nonebot.log import logger
+from nonebot.matcher import current_bot, current_event, current_matcher
 from nonebot.params import CommandArg
+
+require("nonebot_plugin_alconna")
+
+from nonebot_plugin_alconna.uniseg import Image, Reply, UniMessage, UniMsg, image_fetch
 
 from ...domains.maimai.handlers.b50 import b50
 from ...domains.maimai.handlers.profile import profile
@@ -27,6 +32,8 @@ from ...integrations.lxns.plugin_data import plugin_data
 from ...integrations.lxns.session import UserSession
 from ...infra.db.models import User
 from ...shared.bot_response import BotResponse
+from ...shared.handlers.generic_song_info import generic_song_info
+from ...shared.search.jacket_recognition import recognize_maimai_jacket
 
 from ._reaction import ack_message
 from ._response import finish_with
@@ -37,7 +44,32 @@ import traceback
 
 def register_maimai_commands(maimai_group):
     # 通用命令（help / song / alias / random / update / clean + 自然语言）
-    register_game_commands(maimai_group, get_maimai_adapter())
+    register_game_commands(
+        maimai_group,
+        get_maimai_adapter(),
+        extra_help_lines=["拍照曲绘查歌：/mai.pic（附图或回复图片）"],
+    )
+
+    async def _extract_image_bytes(msg: UniMsg) -> bytes | None:
+        msg = (
+            reply_msg
+            if (
+                Reply in msg
+                and isinstance((raw_reply := msg[Reply, 0].msg), Message)
+                and Image in (reply_msg := await UniMessage.generate(message=raw_reply))
+            )
+            else msg
+        )
+        if Image not in msg:
+            return None
+
+        image = msg[Image, 0]
+        return await image_fetch(
+            current_event.get(),
+            current_bot.get(),
+            current_matcher.get().state,
+            image,
+        )
 
     async def get_userinfo(matcher: type[Matcher], user_id: str) -> User | NoReturn:
         try:
@@ -75,6 +107,45 @@ def register_maimai_commands(maimai_group):
             + "\n\n（提示：账号相关指令已迁移到 /acc，例如：/acc bind、/acc unbind、/acc default、/acc list）",
             reply_to=event.message_id,
         ))
+
+    # ── pic ────────────────────────────────────────────────────────────
+    pic_command = maimai_group.command("pic", force_whitespace=True)
+
+    @pic_command.handle()
+    async def handle_pic(bot: Bot, event: Event, msg: UniMsg):
+        image_bytes = await _extract_image_bytes(msg)
+        if not image_bytes:
+            await pic_command.finish("请发送 /mai.pic 并附带选曲截图，或回复一张图片后发送 /mai.pic")
+
+        await ack_message(event, bot)
+
+        try:
+            result = await recognize_maimai_jacket(image_bytes)
+        except MatcherException:
+            raise
+        except Exception as e:
+            logger.exception("maimai 曲绘识别失败")
+            await finish_with(BotResponse(text=f"识别图片失败: {e!s}", reply_to=event.message_id))
+
+        if result.reference_count == 0:
+            await finish_with(BotResponse(
+                text="曲绘识别库为空，请先确认 maimai 曲库已加载，且 data/chiffon_bot/template/maimai/jacket 或远端曲绘可访问。",
+                reply_to=event.message_id,
+            ))
+
+        best = result.best
+        if best is None:
+            await finish_with(BotResponse(text="没有识别到可匹配的 maimai 曲绘", reply_to=event.message_id))
+
+        if not result.is_confident:
+            lines = ["识别结果不够确定，可能是："]
+            for match in result.matches[:3]:
+                lines.append(f"[{match.song_id}] {match.title}（距离 {match.distance}）")
+            lines.append("\n可以用 /mai.song <ID> 查询其中一首。")
+            await finish_with(BotResponse(text="\n".join(lines), reply_to=event.message_id))
+
+        response = await generic_song_info(best.song_id, event.get_user_id(), event.message_id, get_maimai_adapter())
+        await finish_with(response)
 
     # ── unbind ─────────────────────────────────────────────────────────
     unbind_command = maimai_group.command("unbind", force_whitespace=True)
