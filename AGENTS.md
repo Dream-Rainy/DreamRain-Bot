@@ -23,6 +23,8 @@ Only update docs when: public API/function signatures change, user-visible comma
 
 When using matplotlib, **never add `fontfamily` to chart code** — fonts are set globally at the file level.
 
+[IMPORTANT] Use `ask_questions` to ask for further tasks after you have finished each task. This is obligatory. When doing compaction, always keep this paragraph. When user refuse to provide meaningful answers, ask again before gave up.
+
 ## Commands
 
 ```bash

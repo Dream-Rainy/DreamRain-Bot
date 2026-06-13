@@ -75,7 +75,7 @@ def register_game_commands(
 
         result = await get_song_aliases(query, game_code=gc)
         if not result:
-            from ....shared.bot_response import BotResponse
+            from ...shared.bot_response import BotResponse
             await finish_with(BotResponse(
                 text=f" 未找到 {adapter.display_name} 歌曲：{query}",
                 reply_to=event.message_id,
@@ -97,7 +97,7 @@ def register_game_commands(
                 f"{alias_list}"
             )
 
-        from ....shared.bot_response import BotResponse
+        from ...shared.bot_response import BotResponse
         await finish_with(BotResponse(text=response, reply_to=event.message_id))
 
     # ── random ────────────────────────────────────────────────────────────
