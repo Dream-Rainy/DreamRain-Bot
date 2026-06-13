@@ -4,12 +4,12 @@ import traceback
 from dataclasses import dataclass
 from typing import Literal
 
-from ....infra.db.models import GameProfile, UserAccount
 from ....infra.http import http_client
+from ..account_store import TortoiseAccountStore
 from ..binding.schemas import LxnsBindRequest, LxnsOAuthCredential
-from ..binding.service import bind_upsert
 from ..constants import user_chunithm_player_url, user_maimai_player_url
 from ..oauth_client import oa_client
+from src.chiffon_data.integrations.lxns.binding import bind_upsert
 
 
 @dataclass(frozen=True)
@@ -47,22 +47,15 @@ async def _do_bind(*, qq: str, token_data: dict) -> OAuthBindResult:
         refresh_expiry=refresh_expiry,
     )
     req = LxnsBindRequest(qq=qq, credential=credential)
-    result = await bind_upsert(req, account_name=maimai_name or chuni_name or f"lxns_user_{qq}")
-
-    lxns_account = await UserAccount.get(platform="lxns", account_key=result.account_key)
-    game_profile = await GameProfile.get_or_none(account=lxns_account)
-    if game_profile is None:
-        game_profile = await GameProfile.create(account=lxns_account, platform="lxns")
-
-    if maimai_name:
-        game_profile.maimai_name = maimai_name
-    if maimai_friend_code:
-        game_profile.maimai_friend_code = maimai_friend_code
-    if chuni_name:
-        game_profile.chunithm_name = chuni_name
-    if chuni_friend_code:
-        game_profile.chunithm_friend_code = chuni_friend_code
-    await game_profile.save()
+    store = TortoiseAccountStore()
+    result = await bind_upsert(req, store, account_name=maimai_name or chuni_name or f"lxns_user_{qq}")
+    await store.upsert_game_profile(
+        account_key=result.account_key,
+        maimai_name=maimai_name if maimai_name else None,
+        maimai_friend_code=maimai_friend_code if maimai_friend_code else None,
+        chunithm_name=chuni_name if chuni_name else None,
+        chunithm_friend_code=chuni_friend_code if chuni_friend_code else None,
+    )
 
     return OAuthBindResult(status="bound", message="OAuth 绑定成功", account_key=result.account_key)
 

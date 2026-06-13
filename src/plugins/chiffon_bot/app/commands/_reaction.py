@@ -17,6 +17,17 @@ from src.plugins.platform_adapter.context import PlatformContext
 DEFAULT_ACK_EMOJI_ID = "124"
 
 
+def _fallback_platform(bot: Any) -> str:
+    adapter = getattr(bot, "adapter", None)
+    get_name = getattr(adapter, "get_name", None)
+    if not callable(get_name):
+        return "unknown"
+    try:
+        return str(get_name()).lower()
+    except Exception:
+        return "unknown"
+
+
 async def ack_message(event: Any, bot: Any, emoji_id: str | int = DEFAULT_ACK_EMOJI_ID) -> None:
     """Add a lightweight acknowledgement reaction to the triggering message.
 
@@ -25,14 +36,16 @@ async def ack_message(event: Any, bot: Any, emoji_id: str | int = DEFAULT_ACK_EM
     actual command flow.
     """
     ctx = PlatformContext.from_event(event, bot)
-    if "onebot" not in ctx.platform or ctx.message_id is None or ctx.is_private:
+    platform = ctx.platform if ctx.platform != "unknown" else _fallback_platform(bot)
+    message_id = ctx.message_id or getattr(event, "message_id", None)
+    if "onebot" not in platform or message_id is None:
         logger.info("当前平台或消息不支持消息确认表情，跳过")
         return
 
     try:
         await bot.call_api(
             "set_msg_emoji_like",
-            message_id=int(ctx.message_id),
+            message_id=int(message_id),
             emoji_id=str(emoji_id),
             set=True,
         )

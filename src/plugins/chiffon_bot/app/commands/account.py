@@ -274,8 +274,9 @@ def register_account_commands(acc_group):
 
             await default_command.finish(
                 "当前默认账号：\n"
-                + f"- lxns_account_key: {gp.account.account_name}\n" # type: ignore
-                + f"- maimai_friend_code: {gp.maimai_name or ''}" # type: ignore
+                + f"- lxns_account_key: {gp.account_key}\n"
+                + f"- account_name: {gp.account_name}\n"
+                + f"- maimai_friend_code: {gp.maimai_friend_code or ''}"
             )
 
         if action == "set":

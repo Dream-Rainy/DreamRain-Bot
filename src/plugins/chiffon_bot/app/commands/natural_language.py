@@ -8,7 +8,7 @@ from datetime import timedelta
 import re
 
 from nonebot import on_message
-from nonebot.adapters import Event
+from nonebot.adapters import Bot, Event
 from nonebot.internal.matcher import Matcher
 from nonebot.log import logger
 from nonebot.params import EventPlainText
@@ -19,6 +19,7 @@ from ...shared.game.adapter import DomainAdapter
 from ...shared.game.registry import iter_searchable_adapters
 from ...shared.handlers.generic_song_info import generic_song_info
 from ...shared.search.song_query import MatchType, SongQueryResult, search_song
+from ._reaction import ack_message
 from ._response import finish_with, send_with
 
 _DISAMBIGUATION_TIMEOUT_SECONDS = 30
@@ -191,6 +192,7 @@ def register_natural_language_commands() -> None:
 
     @song_query_handler.handle()
     async def handle_cross_game_song_query(
+        bot: Bot,
         event: Event,
         plain_text: str = EventPlainText(),
     ):
@@ -204,6 +206,7 @@ def register_natural_language_commands() -> None:
         if not adapters:
             return
 
+        await ack_message(event, bot)
         logger.info(f"[NL] 跨游戏查歌: {song_query!r}")
         raw_hits = await asyncio.gather(
             *(_search_adapter(adapter, song_query) for adapter in adapters)

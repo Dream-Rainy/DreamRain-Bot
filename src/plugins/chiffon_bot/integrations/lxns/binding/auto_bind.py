@@ -8,12 +8,11 @@ from typing import Literal
 
 from nonebot.log import logger
 
-from ....infra.db.models import GameProfile, UserAccount
 from ....infra.http.client import HttpClient
+from ..account_store import TortoiseAccountStore
 from ..constants import maimai_player_by_qq_url, maimai_player_url
-from ..session import LXNS_PLATFORM
 from .schemas import LxnsBindRequest, LxnsUniqueCodeCredential
-from .service import bind_upsert
+from src.chiffon_data.integrations.lxns.binding import bind_upsert
 
 
 _client = HttpClient()
@@ -28,13 +27,7 @@ class AutoBindResult:
 
 async def check_if_bound(qq: str) -> bool:
     """检查用户是否已经绑定了 LXNS 账号。"""
-    qq_link = await UserAccount.get_or_none(platform="qq", account_key=qq).prefetch_related("user")
-    if qq_link is None:
-        return False
-
-    user = qq_link.user
-    lxns_accounts = await UserAccount.filter(user=user, platform=LXNS_PLATFORM)
-    return len(lxns_accounts) > 0
+    return await TortoiseAccountStore().has_lxns_account(qq)
 
 
 async def auto_bind_by_qq(qq: str, headers: dict) -> AutoBindResult:
@@ -106,20 +99,15 @@ async def auto_bind_by_qq(qq: str, headers: dict) -> AutoBindResult:
         
         logger.debug(f"开始执行绑定操作: qq={qq}, friend_code={friend_code}, player_name={player_name}")
         # 执行绑定，使用从 API 获取的玩家名称作为 account_name
-        result = await bind_upsert(req, account_name=player_name if player_name else None)
+        store = TortoiseAccountStore()
+        result = await bind_upsert(req, store, account_name=player_name if player_name else None)
         logger.info(f"绑定操作完成: account_key={result.account_key}")
         
-        # 4. 获取或创建 GameProfile
-        lxns_account = await UserAccount.get(platform=LXNS_PLATFORM, account_key=result.account_key)
-        gp = await GameProfile.get_or_none(account=lxns_account)
-        if gp is None:
-            logger.debug(f"创建新的 GameProfile")
-            gp = await GameProfile.create(account=lxns_account, platform=LXNS_PLATFORM)
-        
-        # 5. 更新 GameProfile 信息
-        gp.maimai_name = player_name
-        gp.maimai_friend_code = friend_code
-        await gp.save()
+        await store.upsert_game_profile(
+            account_key=result.account_key,
+            maimai_name=player_name,
+            maimai_friend_code=friend_code,
+        )
         logger.info(f"GameProfile 已更新: maimai_name={player_name}, friend_code={friend_code}")
         
         return AutoBindResult(
