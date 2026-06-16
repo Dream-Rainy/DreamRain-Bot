@@ -9,12 +9,12 @@ from nonebot.adapters import Bot, Event, Message
 from nonebot.exception import MatcherException
 from nonebot.internal.matcher import Matcher
 from nonebot.log import logger
-from nonebot.matcher import current_bot, current_event, current_matcher
+from nonebot.matcher import current_bot, current_matcher
 from nonebot.params import CommandArg
 
 require("nonebot_plugin_alconna")
 
-from nonebot_plugin_alconna.uniseg import Image, Reply, UniMessage, UniMsg, image_fetch
+from nonebot_plugin_alconna.uniseg import Image, UniMessage, UniMsg, image_fetch
 
 from ...domains.maimai.handlers.b50 import b50
 from ...domains.maimai.handlers.profile import profile
@@ -42,6 +42,49 @@ from .game_command_factory import register_game_commands
 import traceback
 
 
+def _get_reply_message(event: Event) -> Message | None:
+    """Return OneBot V11 reply message when the adapter has resolved it."""
+
+    reply = getattr(event, "reply", None)
+    message = getattr(reply, "message", None)
+    return message if isinstance(message, Message) else None
+
+
+async def _select_image_message(
+    event: Event,
+    msg: UniMsg,
+    *,
+    bot: Bot | None = None,
+    adapter: str | None = None,
+) -> UniMsg | None:
+    """Select the current message image first, then the replied message image."""
+
+    if Image in msg:
+        return msg
+
+    reply_message = _get_reply_message(event)
+    if reply_message is None:
+        return None
+
+    reply_msg = await UniMessage.generate(message=reply_message, bot=bot, adapter=adapter)
+    return reply_msg if Image in reply_msg else None
+
+
+async def _extract_image_bytes(event: Event, msg: UniMsg) -> bytes | None:
+    bot = current_bot.get()
+    image_msg = await _select_image_message(event, msg, bot=bot)
+    if image_msg is None:
+        return None
+
+    image = image_msg[Image, 0]
+    return await image_fetch(
+        event,
+        bot,
+        current_matcher.get().state,
+        image,
+    )
+
+
 def register_maimai_commands(maimai_group):
     # 通用命令（help / song / alias / random / update / clean + 自然语言）
     register_game_commands(
@@ -49,27 +92,6 @@ def register_maimai_commands(maimai_group):
         get_maimai_adapter(),
         extra_help_lines=["拍照曲绘查歌：/mai.pic（附图或回复图片）"],
     )
-
-    async def _extract_image_bytes(msg: UniMsg) -> bytes | None:
-        msg = (
-            reply_msg
-            if (
-                Reply in msg
-                and isinstance((raw_reply := msg[Reply, 0].msg), Message)
-                and Image in (reply_msg := await UniMessage.generate(message=raw_reply))
-            )
-            else msg
-        )
-        if Image not in msg:
-            return None
-
-        image = msg[Image, 0]
-        return await image_fetch(
-            current_event.get(),
-            current_bot.get(),
-            current_matcher.get().state,
-            image,
-        )
 
     async def get_userinfo(matcher: type[Matcher], user_id: str) -> User | NoReturn:
         try:
@@ -113,7 +135,7 @@ def register_maimai_commands(maimai_group):
 
     @pic_command.handle()
     async def handle_pic(bot: Bot, event: Event, msg: UniMsg):
-        image_bytes = await _extract_image_bytes(msg)
+        image_bytes = await _extract_image_bytes(event, msg)
         if not image_bytes:
             await pic_command.finish("请发送 /mai.pic 并附带选曲截图，或回复一张图片后发送 /mai.pic")
 
