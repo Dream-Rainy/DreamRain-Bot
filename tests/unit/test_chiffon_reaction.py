@@ -24,7 +24,7 @@ async def test_ack_message_calls_napcat_emoji_like_for_onebot_v11():
     from src.plugins.chiffon_bot.app.commands._reaction import ack_message
 
     bot = FakeBot("OneBot V11")
-    event = SimpleNamespace(message_id=12345)
+    event = SimpleNamespace(message_id=12345, group_id=10000)
 
     await ack_message(event, bot, emoji_id=124)
 

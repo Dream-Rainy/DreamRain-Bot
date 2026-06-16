@@ -56,6 +56,10 @@ class Config(BaseModel):
     # 例如: {base_dir}/maimai/map/, {base_dir}/maimai/music/, {base_dir}/chunithm/music/
     # 如果路径为空或不可访问，将跳过 ingame 数据的解析
     ingame_data_base_dir: str = ""
+    # Reaction
+    # 消息确认表情的 emoji_id（NapCat OneBot V11 扩展）
+    ack_emoji_id: str = "128064"
+
     chiffon_bot_group_whitelist: list[int] = []
     """允许使用 chiffon_bot 指令的群聊白名单，留空表示不启用白名单"""
 

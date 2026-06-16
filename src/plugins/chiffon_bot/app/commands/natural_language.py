@@ -14,7 +14,7 @@ from nonebot.log import logger
 from nonebot.params import EventPlainText
 from nonebot.rule import Rule
 
-from plugins.chiffon_bot.app.commands._reaction import ack_message
+from ._reaction import ack_message
 
 from ...shared.bot_response import BotResponse
 from ...shared.game.adapter import DomainAdapter
