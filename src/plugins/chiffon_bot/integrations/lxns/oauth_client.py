@@ -175,17 +175,15 @@ class OauthClient:
         if not auth_code:
             raise ValueError("授权码不能为空")
 
-        if not self.redirect_uri:
-            raise ValueError("该绑定方式暂不可用")
-
         uri = oauth_token_url(base_url=self.base_url)
         data = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
             "grant_type": "authorization_code",
             "code": auth_code,
-            "redirect_uri": self.redirect_uri,
         }
+        if self.redirect_uri:
+            data["redirect_uri"] = self.redirect_uri
         if code_verifier:
             data["code_verifier"] = code_verifier
 

@@ -74,3 +74,31 @@ async def test_cleanup_expired_wait_bind_user(loaded_chiffon_bot, monkeypatch):
     oa_client.cleanup_wait_bind_user()
 
     assert oa_client.get_wait_bind_user(state) is None
+
+
+@pytest.mark.asyncio
+async def test_get_token_allows_missing_redirect_uri(loaded_chiffon_bot, monkeypatch):
+    """云端测试未配置 redirect_uri 时，token exchange 仍可走 mock HTTP。"""
+    from src.plugins.chiffon_bot.integrations.lxns.oauth_client import http_client
+    from src.plugins.chiffon_bot.integrations.lxns.oauth_client import oa_client
+
+    async def fake_post_json(url, *, json_data=None, **kwargs):
+        assert json_data is not None
+        assert "redirect_uri" not in json_data
+        return {
+            "data": {
+                "access_token": "token_without_redirect",
+                "refresh_token": "refresh_without_redirect",
+                "token_type": "Bearer",
+                "expires_in": 900,
+                "scope": "read_player",
+            }
+        }
+
+    monkeypatch.setattr(oa_client, "redirect_uri", "")
+    monkeypatch.setattr(http_client, "post_json", fake_post_json)
+
+    token_data = await oa_client.get_token("auth_code_without_redirect")
+
+    assert token_data["access_token"] == "token_without_redirect"
+    assert token_data["refresh_token"] == "refresh_without_redirect"

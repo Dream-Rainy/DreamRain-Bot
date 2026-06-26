@@ -5,9 +5,9 @@ from src.plugins.permission_admin.core import normalize_group_whitelist
 
 class Config(BaseModel):
     """Plugin Config Here"""
-    lxns_api_key: str
-    lxns_client_id: str
-    lxns_client_secret: str
+    lxns_api_key: str = ""
+    lxns_client_id: str = ""
+    lxns_client_secret: str = ""
 
     # LXNS / OAuth
     # 默认使用官方站点；如需自建/镜像可覆盖

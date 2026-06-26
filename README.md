@@ -187,7 +187,7 @@ docker compose -f docker-compose-dev.yml restart dreamrain-bot
 | `COMMAND_START` | 命令前缀，默认 `/` |
 | `COMMAND_SEP` | 命令层级分隔符，默认 `.`（如 `/mai.b50`） |
 | `db_engine` | 数据库引擎：`postgres` / `sqlite` |
-| `lxns_api_key` | LXNS API 密钥（音游查分必需） |
+| `lxns_api_key` | LXNS API 密钥（LXNS 查分/数据接口相关功能需要；未配置时插件仍可启动） |
 | `ONEBOT_ACCESS_TOKEN` | OneBot 鉴权 Token |
 
 完整配置项参见 [.env.example](./.env.example)。
