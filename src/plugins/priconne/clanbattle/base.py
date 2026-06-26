@@ -5,7 +5,7 @@ from .bigfun import get_boss_info,get_record
 from ..compat.convert2img import grid2imgb64
 from .._pcr_data import CHARA_NAME
 from ..util.text2img import image_draw
-from ..util.tools import load_config, lap2stage, stage_dict, rate_score, DATA_PATH
+from ..util.tools import load_config, lap2stage, stage_dict, rate_score, DATA_PATH, boss_max
 from ..storage import RUNGROUP_FILE
 try:
     from ..fendao.timeaxis import units2workid
@@ -48,6 +48,42 @@ def format_precent(num):
     if num < 0.00005:
         return "血皮"
     return f"{num*100:.2f}%"
+
+def historical_boss_status(progress):
+    records = progress["records"]
+    damage_by_boss = {}
+    latest_lap_by_boss = {}
+    for record in records:
+        lap = int(record["lap"])
+        boss = int(record["boss"])
+        damage = int(record["damage"])
+        damage_by_boss[(lap, boss)] = damage
+        latest_lap_by_boss[boss] = max(lap, latest_lap_by_boss.get(boss, 0))
+
+    if not latest_lap_by_boss:
+        return ""
+
+    default_lap = min(latest_lap_by_boss.values())
+    boss_rows = []
+    current_laps = []
+    for boss in range(1, 6):
+        lap = latest_lap_by_boss.get(boss, default_lap)
+        damage = damage_by_boss.get((lap, boss), 0)
+        max_hp = boss_max[stage_dict[lap2stage(lap)]][boss - 1]
+        if damage >= max_hp:
+            lap += 1
+            damage = 0
+            max_hp = boss_max[stage_dict[lap2stage(lap)]][boss - 1]
+        current_hp = max(max_hp - damage, 0)
+        current_laps.append(lap)
+        boss_rows.append(
+            f"{lap}周目{boss}王: "
+            f"HP: {format_bignum(current_hp)}/{format_bignum(max_hp)} "
+            f"{format_precent(current_hp / max_hp)}"
+        )
+
+    lap_num = min(current_laps)
+    return "当前进度：" + f"{lap2stage(lap_num)}面{stage_dict[lap2stage(lap_num)]}阶段\n" + "\n".join(boss_rows)
 
 def clanbattle_report(info, max_dao):
     player_info = {}

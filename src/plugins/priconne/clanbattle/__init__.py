@@ -227,17 +227,14 @@ async def delete_monitor(bot, ev):
 @sv.on_fullmatch('状态')
 async def daostate(bot, ev):
     group_id = ev.group_id
-    if group_id in clanbattle_info:
+    if group_id in clanbattle_info and clanbattle_info[group_id].loop_check:
         clan_info: ClanBattle = clanbattle_info[group_id]
         now = time.time()
         msg = f'当前排名：{clan_info.rank}\n监控状态：'
-        if clan_info.loop_check:
-            msg += '开启'
-            member_info = await bot.get_group_member_info(group_id=group_id, user_id=clan_info.qq_id)
-            msg += f'\n监控人为：{member_info["card"] or member_info["nickname"]}'
-            msg += "(高占用)" if now - clan_info.loop_check > 30 else ""
-        else:
-            msg += '关闭'
+        msg += '开启'
+        member_info = await bot.get_group_member_info(group_id=group_id, user_id=clan_info.qq_id)
+        msg += f'\n监控人为：{member_info["card"] or member_info["nickname"]}'
+        msg += "(高占用)" if now - clan_info.loop_check > 30 else ""
         msg += "\n" + clan_info.general_boss()
         await safe_send(bot, ev, msg)
 
@@ -253,7 +250,20 @@ async def daostate(bot, ev):
                     msg += f"->{i+1}：{name} {text} 已过去{format_time(now - apply_time)}\n"
         await safe_send(bot, ev, msg.strip())
     else:
-        await bot.send(ev, "未查询到本群当前进度，请开启出刀监控")
+        db = RecordDao(group_id)
+        progress = await db.get_historical_boss_progress()
+        if not progress:
+            await bot.send(ev, "未查询到本群当前进度，请开启出刀监控")
+            return
+        latest_time = time.strftime("%Y/%m/%d-%H:%M:%S", time.localtime(progress["latest_time"]))
+        msg = (
+            "当前排名：历史数据\n"
+            "监控状态：关闭\n"
+            "监控人为：历史数据\n"
+            f"历史记录时间：{latest_time}\n"
+            + historical_boss_status(progress)
+        )
+        await safe_send(bot, ev, msg)
 
 
 @sv.on_fullmatch('boss状态')

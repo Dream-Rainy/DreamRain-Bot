@@ -502,6 +502,33 @@ class RecordDao:
                 for row in rows
             ]
 
+    async def get_historical_boss_progress(self):
+        latest_time = await self.get_latest_time()
+        if not latest_time:
+            return None
+        date = pcr_date(latest_time)
+        start_day = date - timedelta(days=5)
+        async with get_session() as sess:
+            r = await sess.execute(
+                select(Record.lap, Record.boss, func.sum(Record.damage))
+                .where(
+                    Record.group_id == self.group_id,
+                    Record.time >= start_day.timestamp(),
+                    Record.time <= latest_time,
+                )
+                .group_by(Record.lap, Record.boss)
+            )
+            rows = r.fetchall()
+            if not rows:
+                return None
+            return {
+                "latest_time": latest_time,
+                "records": [
+                    {"lap": row[0], "boss": row[1], "damage": int(row[2] or 0)}
+                    for row in rows
+                ],
+            }
+
     async def get_latest_records(self, pcrid: int, time_val: int):
         start_day = pcr_date(datetime.now().timestamp())
         async with get_session() as sess:
