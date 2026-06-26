@@ -152,21 +152,33 @@ async def add_monitor(bot, ev):
                 clan_info.notice_fighter.clear()
 
                 if change:
+                    notice_progress = []
                     for history in clan_battle_top["damage_history"]:
                         if history["create_time"] > clan_info.latest_time:
                             clan_info.notice_dao.append(
                                 f'{history["name"]}对{history["lap_num"]}周目{history["order_num"]}王造成了{history["damage"]}点伤害。')
                             # 通知挂树，清空申请出刀
                             if history["kill"]:
-                                await safe_send(bot, ev, clan_info.general_boss())
-                                if offtree_text := await clan_info.tree.notify_tree(int(history["order_num"])):
-                                    clan_info.notice_tree.append(offtree_text)
-
-                                await clan_info.apply.clear_apply(history["order_num"])
+                                boss_order = int(history["order_num"])
+                                notice_progress.append(clan_info.general_boss())
+                                try:
+                                    if offtree_text := await clan_info.tree.notify_tree(boss_order):
+                                        clan_info.notice_tree.append(offtree_text)
+                                except Exception as e:
+                                    logger.opt(exception=e).warning(
+                                        f"通知下树失败，group_id={ev.group_id}, boss={boss_order}"
+                                    )
+                                try:
+                                    await clan_info.apply.clear_apply(boss_order)
+                                except Exception as e:
+                                    logger.opt(exception=e).warning(
+                                        f"清空申请出刀失败，group_id={ev.group_id}, boss={boss_order}"
+                                    )
 
                     clan_info.refresh_latest_time(clan_battle_top)
                     await safe_send(bot, ev, "\n".join(clan_info.notice_dao[::-1]))
                     clan_info.notice_dao.clear()
+                    await safe_send(bot, ev, "\n".join(notice_progress))
                     await safe_send(bot, ev, "\n".join(clan_info.notice_tree))
                     clan_info.notice_tree.clear()
 

@@ -2,6 +2,8 @@ import json
 import asyncio
 import os
 
+from nonebot import logger
+
 from ..storage import PRICONNE_DATA_DIR, STATIC_FONT_DIR, STATIC_IMG_DIR
 
 DATA_PATH = str(PRICONNE_DATA_DIR)
@@ -101,5 +103,10 @@ async def safe_send(bot, ev, msg):
         return
     try:
         await bot.send(ev, msg)
-    except:
-        pass
+    except Exception as e:
+        logger.opt(exception=e).warning(
+            "priconne safe_send failed: "
+            f"group_id={getattr(ev, 'group_id', None)}, "
+            f"user_id={getattr(ev, 'user_id', None)}, "
+            f"message={str(msg)[:120]!r}"
+        )
