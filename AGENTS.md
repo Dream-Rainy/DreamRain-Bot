@@ -33,9 +33,11 @@ When using matplotlib, **never add `fontfamily` to chart code** — fonts are se
 # 安装依赖
 uv sync
 
-# 本地调试（终端交互，无需 Docker / QQ）
-$env:ENABLE_CONSOLE_DEBUG = "1"; uv run bot.py
-# 等待 "Running NoneBot..." 后输入命令，如 /mai.b50
+# 本地调试（Web UI，无需 QQ / NapCat，走真实 OneBot V11 反向 WS）
+uv run bot.py
+cd src/submodule/onebot-v11-web-debugger
+uv run onebot-v11-web-debugger --connect ws://127.0.0.1:8080/onebot/v11/ws --self-id 10000
+# 打开 http://127.0.0.1:8088/ 后输入命令，如 /mai.b50
 
 # ── 完整验证 ──────────────────────────────────────────────────
 
@@ -75,22 +77,40 @@ uv run pytest tests/unit tests/integration tests/nonebot
 - Handler/matcher loading issues under NoneBot's test driver
 - Pure logic regressions without starting the full Docker stack
 
-### Manual Console Debug
+### Manual OneBot V11 Web Debug
 
-Console debug remains useful for manual exploration, but it is not the primary automated test gate.
+For local manual exploration without QQ/NapCat, prefer the standalone OneBot V11 Web Debugger in `src/submodule/onebot-v11-web-debugger`. It connects through the real OneBot V11 reverse WebSocket endpoint, so SAA, uniseg, reply segments, image segments, and OneBot-specific handlers use the normal adapter path.
 
 ```powershell
-$env:ENABLE_CONSOLE_DEBUG = "1"
 uv run bot.py
 ```
 
-Once the bot finishes loading (wait for `Running NoneBot...`), type commands directly:
+In another terminal:
+
+```powershell
+cd src/submodule/onebot-v11-web-debugger
+uv run onebot-v11-web-debugger --connect ws://127.0.0.1:8080/onebot/v11/ws --self-id 10000
+```
+
+Open `http://127.0.0.1:8088/`, then type commands:
+
 ```
 /mai.b50
 /mai.song テオ
 /chuni.song 1
 /acc help
 ```
+
+If `ONEBOT_ACCESS_TOKEN` is configured, pass `--access-token`. If the bot runs in Docker and needs to fetch uploaded debugger images, pass `--public-base-url http://host.docker.internal:8088`.
+
+Console debug remains a fallback for quick text-only checks:
+
+```powershell
+$env:ENABLE_CONSOLE_DEBUG = "1"
+uv run bot.py
+```
+
+Once the bot finishes loading, type commands directly in the terminal.
 
 ### Tier 2 — Dev Stack (final verification before reporting complete)
 

@@ -61,18 +61,27 @@
 - [uv](https://docs.astral.sh/uv/)（Python 包管理器，本地开发用）
 - Python >= 3.12
 
-### 本地调试（无需 QQ / Docker）
+### 本地调试（无需 QQ / NapCat）
 
 ```powershell
 # 安装依赖
 uv sync
 
-# 启动控制台调试模式
-$env:ENABLE_CONSOLE_DEBUG = "1"
+# 初始化 Web 调试器 submodule（首次拉取后需要）
+git submodule update --init --recursive src/submodule/onebot-v11-web-debugger
+
+# 启动 bot
 uv run bot.py
 ```
 
-等待 `Running NoneBot...` 后直接输入命令：
+另开一个终端启动 OneBot V11 Web Debugger：
+
+```powershell
+cd src/submodule/onebot-v11-web-debugger
+uv run onebot-v11-web-debugger --connect ws://127.0.0.1:8080/onebot/v11/ws --self-id 10000
+```
+
+打开 `http://127.0.0.1:8088/`，在页面里发送调试消息：
 
 ```
 /mai.b50
@@ -82,6 +91,17 @@ uv run bot.py
 /acc help
 /admin.update
 ```
+
+Web Debugger 通过真实 OneBot V11 反向 WebSocket 接入，因此 SAA、uniseg、回复段、图片段和 OneBot V11 事件类型都会走正常适配路径。若配置了 `ONEBOT_ACCESS_TOKEN`，启动 debugger 时追加 `--access-token <token>`；若 bot 在 Docker 中运行且需要读取上传图片，追加 `--public-base-url http://host.docker.internal:8088`。
+
+控制台调试仍可作为备用的纯文本入口：
+
+```powershell
+$env:ENABLE_CONSOLE_DEBUG = "1"
+uv run bot.py
+```
+
+等待 `Running NoneBot...` 后直接在终端输入命令。
 
 ### 完整部署（Docker Compose）
 

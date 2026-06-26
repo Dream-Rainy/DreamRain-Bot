@@ -1,3 +1,6 @@
 [submodule "src/submodule/autopcr"]
 	path = src/submodule/autopcr
 	url = https://github.com/cc004/autopcr.git
+[submodule "src/submodule/onebot-v11-web-debugger"]
+	path = src/submodule/onebot-v11-web-debugger
+	url = https://github.com/Dream-Rainy/onebot-v11-web-debugger.git
