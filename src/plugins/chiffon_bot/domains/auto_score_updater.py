@@ -6,8 +6,10 @@ from datetime import datetime, timezone
 from typing import Any
 from nonebot.log import logger
 
-from ..infra.db.models import Event, Team, User, UserAccount, QQ_PLATFORM
-from ..infra.http import http_client
+from arcade_helper import PlatformIdentity
+
+from ..infra.db.models import Event, Team
+from ..integrations.lxns.client import lxns_client
 from .score_validator import match_and_validate_records, update_team_scores
 
 
@@ -62,30 +64,36 @@ def filter_records_by_event_time(
 async def get_friend_code_by_qq(qq: str, dev_headers: dict[str, str]) -> str | None:
     """通过 QQ 号获取 friend_code"""
     try:
-        maimai_uri = f"https://maimai.lxns.net/api/v0/maimai/player/qq/{qq}"
-        response = await http_client.get_json(maimai_uri, headers=dev_headers)
-        
-        if response.get("success"):
-            return response["data"]["friend_code"]
-        return None
+        identity = PlatformIdentity.qq(qq)
+        await lxns_client.data.users.ensure_lxns_bound_by_qq_lookup(
+            identity=identity,
+            headers=dev_headers,
+        )
+        profile = await lxns_client.data.users.get_default_lxns_game_profile(identity)
+        if profile is None:
+            return None
+        return profile.maimai_friend_code or None
     except Exception as e:
         traceback.print_exc()
         logger.error(f"获取 friend_code 失败 (QQ: {qq}): {e}")
         return None
 
 
-async def get_recent_records(friend_code: str, dev_headers: dict[str, str]) -> list[dict[str, Any]]:
+async def get_recent_records(qq: str, dev_headers: dict[str, str]) -> list[dict[str, Any]]:
     """获取玩家的最近游玩记录"""
     try:
-        recents_uri = f"https://maimai.lxns.net/api/v0/maimai/player/{friend_code}/recents"
-        response = await http_client.get_json(recents_uri, headers=dev_headers)
-        
-        if response.get("success"):
-            return response["data"]
+        identity = PlatformIdentity.qq(qq)
+        player = await lxns_client.data.players.maimai.default_player(identity)
+        result = await player.recents(headers=dev_headers)
+        response = result.data.raw
+        if isinstance(response, dict) and response.get("success"):
+            data = response.get("data", [])
+            if isinstance(data, list):
+                return data
         return []
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"获取游玩记录失败 (friend_code: {friend_code}): {e}")
+        logger.error(f"获取游玩记录失败 (QQ: {qq}): {e}")
         return []
 
 
@@ -120,23 +128,21 @@ async def auto_update_team_scores(
     
     for member in members:
         # 获取成员的 QQ 号
-        qq_account = await UserAccount.get_or_none(
-            user=member,
-            platform=QQ_PLATFORM
+        qq = await lxns_client.data.users.get_platform_account_key_for_user(
+            user_id=member.id,
+            platform="qq",
         )
         
-        if not qq_account:
+        if not qq:
             continue
-        
-        qq = qq_account.account_key
-        
+
         # 获取 friend_code
         friend_code = await get_friend_code_by_qq(qq, dev_headers)
         if not friend_code:
             continue
         
         # 获取最近游玩记录
-        recent_records = await get_recent_records(friend_code, dev_headers)
+        recent_records = await get_recent_records(qq, dev_headers)
         if not recent_records:
             continue
         
@@ -171,7 +177,7 @@ async def auto_update_team_scores(
             current_scores = new_scores
             team_updated = True
             successful_members += 1
-            all_updates.extend([f"[{qq_account.account_name}]"] + updates)
+            all_updates.extend([f"[QQ_{qq}]"] + updates)
     
     # 保存更新
     if team_updated:

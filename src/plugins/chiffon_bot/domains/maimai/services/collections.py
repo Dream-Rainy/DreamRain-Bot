@@ -1,8 +1,6 @@
 from nonebot import logger
 
 from ....integrations.lxns.plugin_data import plugin_data
-from .song_data_updater import fetch_song_collection
-from .song_data_sync import sync_song_collections
 
 
 async def fetch_and_update_collections(song_id: int) -> list:
@@ -20,12 +18,14 @@ async def fetch_and_update_collections(song_id: int) -> list:
             logger.debug(f"从缓存获取乐曲 {song_id} 的收藏信息")
             return cached
 
-    collections = await fetch_song_collection(song_id)
+    from ....integrations.lxns.client import lxns_client
+
+    collections = await lxns_client.catalog.fetch_maimai_song_collections(song_id)
 
     if collections:
         if not hasattr(plugin_data, 'mai_collections_data'):
             plugin_data.mai_collections_data = {}
         plugin_data.mai_collections_data[song_id] = collections
-        await sync_song_collections(song_id, collections)
+        await lxns_client.catalog.sync_maimai_collections(song_id, collections)
 
     return collections

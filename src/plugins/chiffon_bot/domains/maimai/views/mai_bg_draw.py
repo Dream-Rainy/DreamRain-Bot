@@ -11,7 +11,7 @@ import os
 import aiohttp
 from nonebot import logger
 
-from ..schemas import MaiSongData
+from arcade_helper.games.maimai.schemas import MaiSongData
 
 from ....infra.html_render import template_to_pic
 

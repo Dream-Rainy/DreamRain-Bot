@@ -1,7 +1,7 @@
 """Shared game-domain contracts and adapter registry."""
 
 from .adapter import DomainAdapter, SongQueryAdapter
-from .db_song_adapter import DbSongAdapter
+from .catalog_song_adapter import CatalogSongAdapter
 from .metadata import NaturalRandomPattern
 from .registry import (
     get_domain_adapter,
@@ -14,7 +14,7 @@ from .registry import (
 )
 
 __all__ = [
-    "DbSongAdapter",
+    "CatalogSongAdapter",
     "DomainAdapter",
     "NaturalRandomPattern",
     "SongQueryAdapter",

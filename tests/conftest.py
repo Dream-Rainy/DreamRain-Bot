@@ -3,6 +3,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
 import nonebot
 import pytest
 import pytest_asyncio
@@ -10,7 +15,11 @@ from nonebug import NONEBOT_INIT_KWARGS
 from nonebot.plugin import get_plugin
 from tortoise import Tortoise
 
+from arcade_helper.storage.tortoise import MODEL_MODULE as ARCADE_HELPER_MODEL_MODULE
 from tests.fixtures.song_seed import seed_song_data
+
+
+BOT_MODEL_MODULE = "src.plugins.chiffon_bot.infra.db.models"
 
 
 def _drop_imported_module_tree(module_name: str) -> None:
@@ -73,7 +82,7 @@ async def seeded_song_db(tmp_path: Path, loaded_chiffon_bot):
             },
             "apps": {
                 "models": {
-                    "models": ["src.plugins.chiffon_bot.infra.db.models"],
+                    "models": [ARCADE_HELPER_MODEL_MODULE, BOT_MODEL_MODULE],
                     "default_connection": "default",
                 }
             },

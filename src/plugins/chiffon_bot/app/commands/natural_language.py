@@ -20,7 +20,9 @@ from ...shared.bot_response import BotResponse
 from ...shared.game.adapter import DomainAdapter
 from ...shared.game.registry import iter_searchable_adapters
 from ...shared.handlers.generic_song_info import generic_song_info
-from ...shared.search.song_query import MatchType, SongQueryResult, search_song
+from ...shared.search.catalog_search import search_song_with_audit
+from arcade_helper.search import MatchType, SongQueryResult
+from ._reaction import ack_message
 from ._response import finish_with, send_with
 
 _DISAMBIGUATION_TIMEOUT_SECONDS = 30
@@ -60,7 +62,7 @@ def _best_priority(results: list[SongQueryResult]) -> int | None:
 
 
 async def _search_adapter(adapter: DomainAdapter, query: str) -> _SearchHit | None:
-    results = await search_song(query, game_code=adapter.game_code)
+    results = await search_song_with_audit(query, game_code=adapter.game_code)
     priority = _best_priority(results)
     if priority is None:
         return None

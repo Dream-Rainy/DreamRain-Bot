@@ -15,7 +15,7 @@ from nonebot.params import CommandArg, EventPlainText
 from ...shared.game.adapter import DomainAdapter
 from ...shared.handlers.generic_random_song import generic_random_song
 from ...shared.handlers.generic_song_info import generic_song_info
-from ...shared.search.song_query import get_song_aliases
+from ...integrations.lxns.client import lxns_client
 from ._reaction import ack_message
 from ._response import finish_with
 
@@ -73,7 +73,7 @@ def register_game_commands(
         if not query:
             await alias_cmd.finish(f"请输入要查询的歌曲名或 ID，例如：/{gc}.alias 1")
 
-        result = await get_song_aliases(query, game_code=gc)
+        result = await lxns_client.data.catalog.get_song_aliases(gc, query)
         if not result:
             from ...shared.bot_response import BotResponse
             await finish_with(BotResponse(

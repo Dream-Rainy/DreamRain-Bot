@@ -2,23 +2,24 @@ import time
 
 from nonebot import logger
 
-from ....integrations.lxns.player_api import get_r50_data, get_user_data
+from arcade_helper import MaimaiPlayer
+
 from ....shared.bot_response import BotResponse
 from ..views import mai_bg_draw
 from ..services.score_utils import enhance_scores
 from ._timing import format_timing_msg
 
 
-async def r50(friend_code: str, headers: dict, user_id: str, message_id: int) -> BotResponse:
-    logger.debug(f"查询 R50: friend_code={friend_code}, user={user_id}")
+async def r50(player: MaimaiPlayer, headers: dict, user_id: str, message_id: int) -> BotResponse:
+    logger.debug(f"查询 R50: friend_code={player.friend_code}, user={user_id}")
     T = {}
     T["total_start"] = time.perf_counter()
 
     t_fetch = time.perf_counter()
-    user_data = await get_user_data(friend_code, headers)
-    recent_data = await get_r50_data(friend_code, headers)
+    user_data = (await player.profile(headers=headers)).data.raw
+    recent_data = (await player.recents(headers=headers)).data.raw
     if recent_data["code"] != 200:
-        logger.warning(f"查询 R50 失败: {friend_code} - {recent_data['message']}")
+        logger.warning(f"查询 R50 失败: {player.friend_code} - {recent_data['message']}")
         return BotResponse(text=f"查询失败, {recent_data['message']}")
 
     recent_data["data"] = await enhance_scores(recent_data["data"])

@@ -23,11 +23,8 @@ def test_resolve_adapter_choice_by_index_and_alias(loaded_chiffon_bot):
         _resolve_adapter_choice,
     )
     from src.plugins.chiffon_bot.shared.game import get_domain_adapter
-    from src.plugins.chiffon_bot.shared.search.song_query import (
-        MatchType,
-        SongQueryResult,
-    )
     from src.plugins.chiffon_bot.shared.song_data import SongData
+    from arcade_helper.search import MatchType, SongQueryResult
 
     mai = get_domain_adapter("maimai")
     chuni = get_domain_adapter("chunithm")

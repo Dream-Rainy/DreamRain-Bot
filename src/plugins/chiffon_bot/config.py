@@ -60,6 +60,11 @@ class Config(BaseModel):
     # 消息确认表情的 emoji_id（NapCat OneBot V11 扩展）
     ack_emoji_id: str = "128064"
 
+    # 曲库自动同步；启动时仍会先加载本地索引并触发一次后台同步
+    song_data_auto_sync_enabled: bool = True
+    song_data_auto_sync_interval_seconds: int = 86400
+    song_data_auto_sync_startup_delay_seconds: int = 300
+
     chiffon_bot_group_whitelist: list[int] = []
     """允许使用 chiffon_bot 指令的群聊白名单，留空表示不启用白名单"""
 

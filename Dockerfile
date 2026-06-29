@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
 FROM astral/uv:python3.12-bookworm-slim AS builder
-WORKDIR /build
-ENV UV_PROJECT_ENVIRONMENT=/build/.venv \
+WORKDIR /app
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_DEFAULT_INDEX="https://pypi.org/simple" \
     UV_COMPILE_BYTECODE=1 \
-    UV_CACHE_DIR=/build/.cache/uv \
+    UV_CACHE_DIR=/app/.cache/uv \
     CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \
     PATH="/usr/local/cargo/bin:$PATH" \
@@ -15,7 +15,8 @@ ENV UV_PROJECT_ENVIRONMENT=/build/.venv \
     UV_HTTP_TIMEOUT=120 \
     UV_LINK_MODE=copy
 
-RUN apt-get update && \
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
     apt-get install -y --no-install-recommends build-essential curl ca-certificates pkg-config libssl-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
@@ -25,22 +26,24 @@ RUN apt-get update && \
     cargo --version
 
 COPY pyproject.toml uv.lock* ./
-RUN --mount=type=cache,target=/build/.cache/uv \
+COPY src/submodule/arcade-helper ./src/submodule/arcade-helper
+RUN --mount=type=cache,target=/app/.cache/uv \
     uv sync --locked --no-dev && \
     uvx pip-licenses \
-        --python /build/.venv/bin/python \
+        --python /app/.venv/bin/python \
         --format=json \
         --with-urls \
         --with-authors \
         --with-description \
-        --output-file /build/DEPENDENCY_LICENSES.json
+        --output-file /app/DEPENDENCY_LICENSES.json
 
 FROM scratch AS dependency-licenses
-COPY --from=builder /build/DEPENDENCY_LICENSES.json /DEPENDENCY_LICENSES.json
+COPY --from=builder /app/DEPENDENCY_LICENSES.json /DEPENDENCY_LICENSES.json
 
 FROM astral/uv:python3.12-bookworm-slim
 
-RUN apt-get update && \
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         ffmpeg \
@@ -94,7 +97,7 @@ RUN groupadd -g ${GID} appuser && \
 WORKDIR /app
 
 # 复制文件
-COPY --from=builder --chown=${UID}:${GID} /build/.venv /app/.venv
+COPY --from=builder --chown=${UID}:${GID} /app/.venv /app/.venv
 
 RUN mkdir -p /app/config /app/data /app/logs /app/.cache && \
     chown -R ${UID}:${GID} /app/config /app/data /app/logs /app/.cache
@@ -103,7 +106,7 @@ COPY --chown=${UID}:${GID} src /app/src
 COPY --chown=${UID}:${GID} scripts /app/scripts
 COPY --chown=${UID}:${GID} bot.py /app/bot.py
 COPY --chown=${UID}:${GID} LICENSE README.md THIRD_PARTY_NOTICES.md REUSE.toml /usr/share/doc/dreamrain-bot/
-COPY --from=builder --chown=${UID}:${GID} /build/DEPENDENCY_LICENSES.json /usr/share/doc/dreamrain-bot/DEPENDENCY_LICENSES.json
+COPY --from=builder --chown=${UID}:${GID} /app/DEPENDENCY_LICENSES.json /usr/share/doc/dreamrain-bot/DEPENDENCY_LICENSES.json
 
 # 复制并设置入口脚本
 COPY entrypoint.sh /app/entrypoint.sh

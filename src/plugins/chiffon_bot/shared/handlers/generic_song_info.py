@@ -8,8 +8,8 @@ from nonebot import logger
 
 from ..bot_response import BotResponse
 from ..game.adapter import DomainAdapter
+from ..search.catalog_search import search_song_with_audit
 from ..search.result_message import build_fuzzy_list_message, build_match_hint_text
-from ..search.song_query import search_song
 
 
 async def generic_song_info(
@@ -22,7 +22,7 @@ async def generic_song_info(
     gc = adapter.game_code
     logger.debug(f"[{gc}] 查询乐曲: query={song_query!r}")
 
-    results = await search_song(song_query, game_code=gc)
+    results = await search_song_with_audit(song_query, game_code=gc)
 
     not_found = f"未找到该 {adapter.display_name} 乐曲"
     early_exit = build_fuzzy_list_message(results, message_id, not_found_text=not_found)

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from typing import NoReturn
-
 from nonebot import on_fullmatch, require
 from nonebot.adapters import Bot, Event, Message
 from nonebot.exception import MatcherException
-from nonebot.internal.matcher import Matcher
 from nonebot.log import logger
 from nonebot.matcher import current_bot, current_matcher
 from nonebot.params import CommandArg
@@ -22,15 +19,10 @@ from ...domains.maimai.handlers.r50 import r50
 from ...domains.maimai.handlers.trend import generate_trend_plot
 from ...domains.maimai.handlers.network import get_page_screenshot
 from ...domains.maimai.maimai_adapter import get_maimai_adapter
-from ...integrations.lxns.binding import ensure_user_bound
-from ...integrations.lxns.use_cases.bind import bind_by_friend_code
-from ...integrations.lxns.use_cases.default_account import (
-    get_default_lxns_game_profile_by_qq,
-)
-from ...integrations.lxns.use_cases.unbind import unbind_lxns_for_qq
+from ...integrations.lxns.client import lxns_client
 from ...integrations.lxns.plugin_data import plugin_data
-from ...integrations.lxns.session import UserSession
-from ...infra.db.models import User
+from arcade_helper.core.errors import AccountNotBoundError, DefaultAccountNotFoundError
+from arcade_helper.users import PlatformIdentity
 from ...shared.bot_response import BotResponse
 from ...shared.handlers.generic_song_info import generic_song_info
 from ...shared.search.jacket_recognition import recognize_maimai_jacket
@@ -120,7 +112,10 @@ def register_maimai_commands(maimai_group):
             )
 
         try:
-            result = await bind_by_friend_code(qq=user_id, friend_code=friend_code)
+            result = await lxns_client.data.users.bind_lxns_by_friend_code(
+                identity=PlatformIdentity.qq(user_id),
+                friend_code=friend_code,
+            )
         except MatcherException:
             raise
 
@@ -130,8 +125,23 @@ def register_maimai_commands(maimai_group):
             reply_to=event.message_id,
         ))
 
+    async def _ensure_default_maimai_player(event: Event, matcher):
+        user_id = event.get_user_id()
+        identity = PlatformIdentity.qq(user_id)
+        bind_result = await lxns_client.data.users.ensure_lxns_bound_by_qq_lookup(
+            identity=identity,
+            headers=plugin_data.headers,
+        )
+        if bind_result.status not in ["bound", "already_bound"]:
+            await matcher.finish(f"自动绑定失败：{bind_result.message}")
+
+        try:
+            return await lxns_client.data.players.maimai.default_player(identity)
+        except (AccountNotBoundError, DefaultAccountNotFoundError):
+            await matcher.finish("未绑定或未设置 maimai 好友码，请先绑定后再试")
+
     # ── pic ────────────────────────────────────────────────────────────
-    pic_command = maimai_group.command("pic", force_whitespace=True)
+    pic_command = maimai_group.command("pic", force_whitespace=False)
 
     @pic_command.handle()
     async def handle_pic(bot: Bot, event: Event, msg: UniMsg):
@@ -175,7 +185,7 @@ def register_maimai_commands(maimai_group):
     @unbind_command.handle()
     async def handle_unbind(event: Event):
         user_id = event.get_user_id()
-        result = await unbind_lxns_for_qq(qq=user_id)
+        result = await lxns_client.data.users.unbind_lxns(PlatformIdentity.qq(user_id))
         await unbind_command.finish(
             result.message
             + "\n\n（提示：账号相关指令已迁移到 /acc，例如：/acc bind、/acc unbind、/acc default、/acc list）"
@@ -189,15 +199,8 @@ def register_maimai_commands(maimai_group):
         user_id = event.get_user_id()
         await ack_message(event, bot)
 
-        bind_result = await ensure_user_bound(user_id, plugin_data.headers)
-        if bind_result.status not in ["bound", "already_bound"]:
-            await b50_command.finish(f"自动绑定失败：{bind_result.message}")
-
-        gp = await get_default_lxns_game_profile_by_qq(user_id)
-        friend_code = gp.maimai_friend_code if gp else None
-        if not friend_code:
-            await b50_command.finish("未绑定或未设置 maimai 好友码，请先绑定后再试")
-        response = await b50(str(friend_code), plugin_data.headers, user_id, event.message_id)
+        player = await _ensure_default_maimai_player(event, b50_command)
+        response = await b50(player, plugin_data.headers, user_id, event.message_id)
         await finish_with(response)
 
     # ── r50 ────────────────────────────────────────────────────────────
@@ -208,15 +211,8 @@ def register_maimai_commands(maimai_group):
         user_id = event.get_user_id()
         await ack_message(event, bot)
 
-        bind_result = await ensure_user_bound(user_id, plugin_data.headers)
-        if bind_result.status not in ["bound", "already_bound"]:
-            await r50_command.finish(f"自动绑定失败：{bind_result.message}")
-
-        gp = await get_default_lxns_game_profile_by_qq(user_id)
-        friend_code = gp.maimai_friend_code if gp else None
-        if not friend_code:
-            await r50_command.finish("未绑定或未设置 maimai 好友码，请先绑定后再试")
-        response = await r50(str(friend_code), plugin_data.headers, user_id, event.message_id)
+        player = await _ensure_default_maimai_player(event, r50_command)
+        response = await r50(player, plugin_data.headers, user_id, event.message_id)
         await finish_with(response)
 
     # ── profile ────────────────────────────────────────────────────────
@@ -227,15 +223,8 @@ def register_maimai_commands(maimai_group):
         user_id = event.get_user_id()
         await ack_message(event, bot)
 
-        bind_result = await ensure_user_bound(user_id, plugin_data.headers)
-        if bind_result.status not in ["bound", "already_bound"]:
-            await profile_command.finish(f"自动绑定失败：{bind_result.message}")
-
-        gp = await get_default_lxns_game_profile_by_qq(user_id)
-        friend_code = gp.maimai_friend_code if gp else None
-        if not friend_code:
-            await profile_command.finish("未绑定或未设置 maimai 好友码，请先绑定后再试")
-        response = await profile(str(friend_code), plugin_data.headers, user_id, event.message_id)
+        player = await _ensure_default_maimai_player(event, profile_command)
+        response = await profile(player, plugin_data.headers, user_id, event.message_id)
         await finish_with(response)
 
     # ── trend ──────────────────────────────────────────────────────────
@@ -246,15 +235,8 @@ def register_maimai_commands(maimai_group):
         user_id = event.get_user_id()
         await ack_message(event, bot)
 
-        bind_result = await ensure_user_bound(user_id, plugin_data.headers)
-        if bind_result.status not in ["bound", "already_bound"]:
-            await trend_command.finish(f"自动绑定失败：{bind_result.message}")
-
-        gp = await get_default_lxns_game_profile_by_qq(user_id)
-        friend_code = gp.maimai_friend_code if gp else None
-        if not friend_code:
-            await trend_command.finish("未绑定或未设置 maimai 好友码，请先绑定后再试")
-        response = await generate_trend_plot(str(friend_code), plugin_data.headers)
+        player = await _ensure_default_maimai_player(event, trend_command)
+        response = await generate_trend_plot(player, plugin_data.headers)
         await finish_with(response)
 
     # ── network ────────────────────────────────────────────────────────

@@ -26,7 +26,7 @@ def _b50_user_data() -> dict[str, Any]:
 
 @pytest.fixture()
 def maimai_render_modules(loaded_chiffon_bot):
-    from src.plugins.chiffon_bot.domains.maimai.schemas import MaiSongData
+    from arcade_helper.games.maimai.schemas import MaiSongData
     from src.plugins.chiffon_bot.domains.maimai.views import mai_bg_draw
 
     return MaiSongData, mai_bg_draw
@@ -104,7 +104,7 @@ def test_maimai_asset_root_matches_runtime_data_dir(maimai_render_modules) -> No
 
 
 def test_build_maimai_jacket_image_name_branches(loaded_chiffon_bot) -> None:
-    from src.plugins.chiffon_bot.domains.maimai.services.maimai_data_fetcher import (
+    from arcade_helper.games.maimai.data_fetcher import (
         build_maimai_jacket_image_name,
     )
 
@@ -127,9 +127,7 @@ def test_build_maimai_jacket_image_name_branches(loaded_chiffon_bot) -> None:
 
 
 def test_music_xml_parser_reads_cue_name_id(tmp_path: Path) -> None:
-    from src.plugins.chiffon_bot.domains.maimai.services.music_xml_parser import (
-        parse_music_xml,
-    )
+    from arcade_helper.games.maimai.music_xml_parser import parse_music_xml
 
     music_xml = tmp_path / "Music.xml"
     music_xml.write_text(

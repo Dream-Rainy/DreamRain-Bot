@@ -27,6 +27,10 @@ secrets/
 **/resource/
 .env.prod
 *data/
+!src/chiffon_data/
+!src/chiffon_data/**
+src/chiffon_data/**/__pycache__/
+src/chiffon_data/**/*.py[oc]
 
 docker-compose*.yml
 !docker-compose*.example.yml
@@ -37,3 +41,7 @@ Dockerfile.dev
 .cursor
 alembic.ini
 migrations/
+
+notebooks/
+docs/ai/
+.nonebot-adapter-web/

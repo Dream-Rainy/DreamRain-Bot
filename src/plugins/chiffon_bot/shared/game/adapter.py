@@ -7,7 +7,7 @@ adapter implementation.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
+from typing import Iterable, Mapping, Protocol, runtime_checkable
 
 from ..song_data import SongData
 from .metadata import NaturalRandomPattern
@@ -72,28 +72,6 @@ class DomainAdapter(SongQueryAdapter, Protocol):
     natural_random_patterns: list[NaturalRandomPattern]
     level_names: list[str]
     difficulty_types: list[str]
-    temp_id_threshold: int
-
-    def get_db_song_model(self) -> type:
-        """Return the Tortoise ORM song model for this game."""
-        ...
-
-    def get_db_alias_model(self) -> type:
-        """Return the Tortoise ORM alias model for this game."""
-        ...
-
-    def song_to_db_defaults(self, song: SongData) -> dict[str, Any]:
-        """Map a song model to update_or_create defaults."""
-        ...
-
-    def song_from_db_row(self, row: Any, aliases: list[str]) -> SongData:
-        """Map a DB row plus aliases back into a game-specific song model."""
-        ...
-
-    async def load_song_index_from_db(self) -> dict[int, str]:
-        """Load lightweight song index from DB."""
-        ...
-
     async def render_song_image(self, song_data: SongData) -> bytes:
         """Render a song-info image."""
         ...

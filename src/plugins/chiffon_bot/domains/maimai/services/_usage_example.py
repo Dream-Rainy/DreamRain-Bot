@@ -5,18 +5,8 @@
 
 # 在你的指令处理器中，可以这样使用：
 
-from src.plugins.chiffon_bot.domains.maimai.services import (
-    search_song,
-    SongQueryResult,
-    MatchType,
-    get_song_with_difficulty,
-)
-from src.plugins.chiffon_bot.domains.maimai.services.song_data_updater import (
-    fetch_song_collection,
-)
-from src.plugins.chiffon_bot.domains.maimai.services.song_data_sync import (
-    sync_song_collections,
-)
+from arcade_helper.search import MatchType, SongQueryResult
+from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client
 from src.plugins.chiffon_bot.integrations.lxns.plugin_data import plugin_data
 
 
@@ -29,7 +19,7 @@ async def example_search_handler(user_input: str):
     - 别名：如 "标39"、"初音未来"
     - 模糊搜索：如 "初音"、"miku"
     """
-    results = await search_song(user_input)
+    results = await lxns_client.data.catalog.search_song("maimai", user_input)
     
     if not results:
         return "未找到匹配的乐曲"
@@ -63,7 +53,7 @@ async def fetch_and_update_collections(song_id: int) -> list:
             return cached
     
     # 从 API 获取
-    collections = await fetch_song_collection(song_id)
+    collections = await lxns_client.catalog.fetch_maimai_song_collections(song_id)
     
     if collections:
         # 更新到内存缓存
@@ -72,7 +62,7 @@ async def fetch_and_update_collections(song_id: int) -> list:
         plugin_data.mai_collections_data[song_id] = collections
         
         # 更新到数据库
-        await sync_song_collections(song_id, collections)
+        await lxns_client.catalog.sync_maimai_collections(song_id, collections)
     
     return collections
 
@@ -156,7 +146,12 @@ async def example_get_chart_info(song_id: int, chart_type: str = "standard", lev
         chart_type: "standard" 或 "dx"
         level_index: 0=Basic, 1=Advanced, 2=Expert, 3=Master, 4=Re:Master
     """
-    song = await get_song_with_difficulty(song_id, chart_type, level_index)
+    song = await lxns_client.data.catalog.get_song_with_difficulty(
+        "maimai",
+        song_id,
+        song_type=chart_type,
+        level_index=level_index,
+    )
     
     if not song:
         return "未找到乐曲"
