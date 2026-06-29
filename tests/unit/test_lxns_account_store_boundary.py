@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from src.chiffon_data.integrations.lxns.accounts import StoredGameProfile, StoredLxnsAccount
-from src.chiffon_data.integrations.lxns.binding import (
+from arcade_helper.integrations.lxns.accounts import StoredGameProfile, StoredLxnsAccount
+from arcade_helper.integrations.lxns.binding import (
     LxnsBindRequest,
     LxnsUniqueCodeCredential,
     bind_upsert,

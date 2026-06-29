@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from nonebot.permission import SUPERUSER
 
+from ....integrations.lxns.client import lxns_client
 from ....shared.game.registry import iter_domain_adapters
-from ....shared.song_data_updater import refresh_song_data
 
 
 def register_admin_commands(admin_group) -> None:
@@ -16,7 +16,7 @@ def register_admin_commands(admin_group) -> None:
     @update_cmd.handle()
     async def _update():
         try:
-            _is_updated, message = await refresh_song_data()
+            _is_updated, message = await lxns_client.catalog.refresh_song_data(manual=True)
         except Exception as e:
             message = f"更新失败: {e}"
         await update_cmd.finish(message)

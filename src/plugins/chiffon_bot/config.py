@@ -56,6 +56,12 @@ class Config(BaseModel):
     # 例如: {base_dir}/maimai/map/, {base_dir}/maimai/music/, {base_dir}/chunithm/music/
     # 如果路径为空或不可访问，将跳过 ingame 数据的解析
     ingame_data_base_dir: str = ""
+
+    # 曲库自动同步；启动时仍会先加载本地索引并触发一次后台同步
+    song_data_auto_sync_enabled: bool = True
+    song_data_auto_sync_interval_seconds: int = 86400
+    song_data_auto_sync_startup_delay_seconds: int = 300
+
     chiffon_bot_group_whitelist: list[int] = []
     """允许使用 chiffon_bot 指令的群聊白名单，留空表示不启用白名单"""
 

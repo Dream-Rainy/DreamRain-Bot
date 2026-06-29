@@ -12,16 +12,8 @@ from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 from nonebot.rule import Rule
 
-from ...integrations.lxns.use_cases.bind import bind_by_friend_code
-from ...integrations.lxns.oauth_client import oa_client
-from ...integrations.lxns.sse_client import sse_client
-from ...integrations.lxns.use_cases.bind_oauth import bind_by_oauth_code
-from ...integrations.lxns.use_cases.default_account import (
-    get_default_lxns_game_profile_by_qq,
-    set_default_lxns_account_for_qq,
-)
-from ...integrations.lxns.use_cases.unbind import unbind_lxns_for_qq
-from ...infra.db.models import GameProfile, QQ_PLATFORM, UserAccount
+from ...integrations.lxns.client import lxns_client
+from arcade_helper.users import PlatformIdentity
 from ...shared.bot_response import BotResponse
 from ._response import finish_with, send_with
 
@@ -122,7 +114,7 @@ async def _wait_for_oauth_code_from_sse_or_message(
     state: str,
     timeout_seconds: int,
 ) -> str | None:
-    sse_future = sse_client.register(state)
+    sse_future = await lxns_client.sse.register_for_oauth(state)
     manual_future, manual_matcher = _register_manual_oauth_code_waiter(
         user_id=user_id,
         session_id=event.get_session_id(),
@@ -146,7 +138,7 @@ async def _wait_for_oauth_code_from_sse_or_message(
             return None
         return completed.result()
     finally:
-        sse_client.unregister(state)
+        lxns_client.sse.unregister(state)
         _destroy_matcher(manual_matcher)
         if not manual_future.done():
             manual_future.cancel()
@@ -177,20 +169,23 @@ def register_account_commands(acc_group):
 
         # 有 friend_code → 传统绑定
         if friend_code:
-            result = await bind_by_friend_code(qq=user_id, friend_code=friend_code)
+            result = await lxns_client.data.users.bind_lxns_by_friend_code(
+                identity=PlatformIdentity.qq(user_id),
+                friend_code=friend_code,
+            )
             await finish_with(BotResponse(text=result.message, reply_to=event.message_id))
 
         # 无参数 → OAuth 流程
-        if not oa_client.redirect_uri:
+        if not lxns_client.oauth.redirect_uri:
             await bind_command.finish(
                 "OAuth 未配置 redirect_uri 或 relay_url，暂不可用"
             )
 
-        state = oa_client.add_wait_bind_user(user_id)
-        bind_uri = oa_client.get_bind_uri(state)
+        flow = lxns_client.data.auth.start_lxns_oauth(PlatformIdentity.qq(user_id))
+        state = flow.state
         await send_with(BotResponse(
             text="已生成 OAuth 授权链接，请在浏览器中打开完成授权：\n"
-            + f"{bind_uri}\n"
+            + f"{flow.bind_uri}\n"
             + "也可以直接在当前会话发送授权后的 code 或包含 code 的回调 URL。",
             reply_to=event.message_id,
         ))
@@ -199,12 +194,16 @@ def register_account_commands(acc_group):
             event=event,
             user_id=user_id,
             state=state,
-            timeout_seconds=oa_client.state_ttl_seconds,
+            timeout_seconds=flow.timeout_seconds,
         )
         if code is None:
             await finish_with(BotResponse(text="OAuth 绑定超时，请重试", reply_to=event.message_id))
 
-        result = await bind_by_oauth_code(qq=user_id, code=code, state=state)
+        result = await lxns_client.data.auth.complete_lxns_oauth(
+            identity=PlatformIdentity.qq(user_id),
+            code=code,
+            state=state,
+        )
 
         if result.status == "bound":
             account_key = result.account_key
@@ -223,9 +222,9 @@ def register_account_commands(acc_group):
     @oauth_status_command.handle()
     async def handle_oauth_status(event: Event):
         user_id = event.get_user_id()
-        oa_client.cleanup_wait_bind_user()
+        identity = PlatformIdentity.qq(user_id)
 
-        result = oa_client.get_bind_result_by_user(user_id)
+        result = lxns_client.data.auth.get_lxns_bind_result(identity)
         if result is not None:
             account_key = result.get("account_key") or ""
             await finish_with(BotResponse(
@@ -235,10 +234,7 @@ def register_account_commands(acc_group):
                 reply_to=event.message_id,
             ))
 
-        pending_state = next(
-            (state for state, data in oa_client.wait_bind_user.items() if data.get("user_id_hash") == user_id),
-            None,
-        )
+        pending_state = lxns_client.data.auth.get_lxns_pending_state(identity)
         if pending_state is not None:
             await finish_with(BotResponse(
                 text="当前 OAuth 授权仍在等待回调完成，请稍后重试。",
@@ -252,7 +248,7 @@ def register_account_commands(acc_group):
     @unbind_command.handle()
     async def handle_unbind(event: Event):
         user_id = event.get_user_id()
-        result = await unbind_lxns_for_qq(qq=user_id)
+        result = await lxns_client.data.users.unbind_lxns(PlatformIdentity.qq(user_id))
         await unbind_command.finish(result.message)
 
     default_command = acc_group.command("default", force_whitespace=True)
@@ -268,7 +264,7 @@ def register_account_commands(acc_group):
         action = parts[0].lower()
 
         if action == "show":
-            gp = await get_default_lxns_game_profile_by_qq(user_id)
+            gp = await lxns_client.data.users.get_default_lxns_game_profile(PlatformIdentity.qq(user_id))
             if gp is None:
                 await default_command.finish("尚未绑定 LXNS 账号")
 
@@ -284,7 +280,10 @@ def register_account_commands(acc_group):
                 await default_command.finish("用法：/acc default set <lxns_account_key>")
 
             account_key = parts[1]
-            await set_default_lxns_account_for_qq(qq=user_id, lxns_account_key=account_key)
+            await lxns_client.data.users.set_default_lxns_account(
+                identity=PlatformIdentity.qq(user_id),
+                account_key=account_key,
+            )
             await default_command.finish("默认账号已更新")
 
         await default_command.finish("用法：/acc default show | /acc default set <lxns_account_key>")
@@ -295,19 +294,14 @@ def register_account_commands(acc_group):
     async def handle_list(event: Event):
         user_id = event.get_user_id()
 
-        qq_link = await UserAccount.get_or_none(platform=QQ_PLATFORM, account_key=user_id).prefetch_related("user")
-        if qq_link is None:
-            await list_command.finish("尚未绑定 LXNS 账号")
-
-        lxns_accounts = await UserAccount.filter(user=qq_link.user, platform="lxns").order_by("id") # type: ignore
+        lxns_accounts = await lxns_client.data.users.list_lxns_accounts(PlatformIdentity.qq(user_id))
         if not lxns_accounts:
             await list_command.finish("尚未绑定 LXNS 账号")
 
         lines: list[str] = []
         for acc in lxns_accounts:
-            gp = await GameProfile.get_or_none(account=acc)
-            friend_code = gp.maimai_friend_code if gp else ""
-            lines.append(f"- {acc.account_key}  {friend_code}")
+            default_marker = " *" if acc.is_default else ""
+            lines.append(f"- {acc.account_key}{default_marker}  {acc.maimai_friend_code}")
 
         logger.debug(f"[acc.list] qq={user_id} accounts={len(lxns_accounts)}")
         await list_command.finish("已绑定账号：\n" + "\n".join(lines))

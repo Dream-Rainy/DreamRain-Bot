@@ -1,6 +1,11 @@
 import traceback
 from tortoise import Tortoise
 
+from arcade_helper.storage.tortoise import MODEL_MODULE as ARCADE_HELPER_MODEL_MODULE
+
+
+BOT_MODEL_MODULE = "src.plugins.chiffon_bot.infra.db.models"
+
 _ENGINE_BACKENDS: dict[str, str] = {
     "sqlite": "tortoise.backends.sqlite",
     "postgres": "tortoise.backends.asyncpg",
@@ -39,7 +44,7 @@ async def init(*, db_url: str | None = None, db_settings: dict | None = None):
         "connections": {"default": db_settings},
         "apps": {
             "models": {
-                "models": ["src.plugins.chiffon_bot.infra.db.models"],
+                "models": [ARCADE_HELPER_MODEL_MODULE, BOT_MODEL_MODULE],
                 "default_connection": "default",
             }
         },

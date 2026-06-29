@@ -23,6 +23,15 @@ Only update docs when: public API/function signatures change, user-visible comma
 
 When using matplotlib, **never add `fontfamily` to chart code** — fonts are set globally at the file level.
 
+### File Output: `docs/ai/`
+
+All non-code files produced during a task (plans, findings, progress logs, research notes, intermediate artifacts) **must** be saved to `docs/ai/`. This directory is in `.gitignore` and will never be committed. Do not leave these files scattered in the repo root or alongside source code.
+
+### Git Commits
+
+- **Never** run `git commit` unless the user explicitly asks for it.
+- All commits **must** be GPG-signed. Never bypass signing with `--no-gpg-sign`, `-c commit.gpgsign=false`, or any other mechanism. If signing fails, fix the issue — do not skip it.
+
 [IMPORTANT] Use `ask_questions` to ask for further tasks after you have finished each task. This is obligatory. When doing compaction, always keep this paragraph. When user refuse to provide meaningful answers, ask again before gave up.
 
 ## Commands
@@ -92,9 +101,17 @@ Once the bot finishes loading (wait for `Running NoneBot...`), type commands dir
 /acc help
 ```
 
-### Tier 2 — Dev Stack (final verification before reporting complete)
+### Tier 2 — Dev Stack (conditional, only when needed)
 
-After console debug passes, run the full Docker stack to verify the bot works with OneBot adapter + all services.
+Tier 2 is **not required by default**. It is only needed when the change involves:
+
+- Package/dependency changes (`pyproject.toml`, `uv.lock`, new `import` of a previously unused package)
+- Dockerfile or `docker-compose*.yml` changes
+- Adapter registration or plugin loading order changes in `bot.py`
+
+For all other changes (bug fixes, feature logic, refactors, config, tests), **Tier 1 passing is sufficient** to consider the task complete.
+
+When Tier 2 is required, run the full Docker stack to verify the bot works with OneBot adapter + all services:
 
 ```powershell
 docker compose -f .\docker-compose-dev.yml up 2>&1 | Select-String "dreamrain-bot"
@@ -117,8 +134,6 @@ docker logs dreamrain-bot --tail 40
 - **Tracebacks** — any unhandled exceptions during startup
 - **Key line**: `Loaded adapters: OneBot V11` — confirms adapter registered
 - **Key line**: `Succeeded to load plugin "chiffon_bot"` — confirms our plugin loaded
-
-A task is **not complete** until automated tests pass and the dev stack smoke test has been checked.
 
 ### Docker Desktop on Windows: dev entrypoint
 

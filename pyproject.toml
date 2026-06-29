@@ -15,6 +15,7 @@ dependencies = [
     "annotated-types==0.7.0",
     "anyio==4.6.2.post1",
     "apscheduler==3.11.0",
+    "arcade-helper[storage-tortoise,sse]",
     "arclet-alconna==1.8.34",
     "arclet-alconna-tools==0.7.10",
     "async-timeout==5.0.1",
@@ -167,6 +168,9 @@ asyncio_mode = "auto"
 testpaths = [
     "tests",
 ]
+
+[tool.uv.sources]
+arcade-helper = { path = "src/submodule/arcade-helper", editable = true }
 
 [[tool.uv.index]]
 url = "https://pypi.org/simple"

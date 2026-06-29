@@ -5,7 +5,7 @@ from typing import Any
 
 
 def test_build_chuni_jacket_image_name_branches(loaded_chiffon_bot) -> None:
-    from src.plugins.chiffon_bot.domains.chunithm.services.chunithm_data_fetcher import (
+    from arcade_helper.games.chunithm.data_fetcher import (
         build_chuni_jacket_image_name,
     )
 
@@ -29,9 +29,7 @@ def test_build_chuni_jacket_image_name_branches(loaded_chiffon_bot) -> None:
 
 
 def test_chuni_music_xml_parser_reads_jaket_file(tmp_path: Path) -> None:
-    from src.plugins.chiffon_bot.domains.chunithm.services.music_xml_parser import (
-        parse_music_xml,
-    )
+    from arcade_helper.games.chunithm.music_xml_parser import parse_music_xml
 
     music_xml = tmp_path / "Music.xml"
     music_xml.write_text(
@@ -55,7 +53,7 @@ async def test_chuni_song_info_render_uses_chuni_data_asset_root(
     loaded_chiffon_bot,
     monkeypatch,
 ) -> None:
-    from src.plugins.chiffon_bot.domains.chunithm.schemas import ChuniSongData
+    from arcade_helper.games.chunithm.schemas import ChuniSongData
     from src.plugins.chiffon_bot.domains.chunithm.views import chuni_bg_draw
 
     captured: dict[str, Any] = {}

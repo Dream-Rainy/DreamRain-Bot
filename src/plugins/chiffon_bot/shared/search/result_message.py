@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
+from arcade_helper.search import SongQueryResult
+
 from ..bot_response import BotResponse
 from ..song_data import SongData
-from .song_query import SongQueryResult
 
 
 def _get_artist(song_data: SongData) -> str:

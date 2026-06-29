@@ -1,3 +1,12 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_SRC_ROOT = Path(__file__).resolve().parents[2]
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
 from nonebot import get_plugin_config, get_driver, CommandGroup, logger
 from nonebot.plugin import PluginMetadata
 
@@ -14,10 +23,9 @@ from .app.commands.maimai import register_maimai_commands
 from .app.commands.chunithm import register_chunithm_commands
 from .app.commands.event import register_event_commands, register_event_rank_matcher
 from .app.commands.natural_language import register_natural_language_commands
-from .integrations.lxns.sse_client import sse_client
+from .integrations.lxns.client import lxns_client
 
 from .infra.db.connect import init as init_db, close as close_db
-from .shared.song_data_updater import refresh_song_data
 
 __plugin_meta__ = PluginMetadata(
     name="src/plugins/chiffon_bot",
@@ -55,9 +63,10 @@ driver = get_driver()
 @driver.on_startup
 async def init():
     await init_db()
-    await sse_client.start()
+    await lxns_client.data.lifecycle.start()
     logger.info("开始初始化乐曲数据...")
-    is_updated, msg = await refresh_song_data()
+    is_updated, msg = await lxns_client.catalog.refresh_song_data()
+    lxns_client.catalog.start_auto_sync()
     if is_updated:
         logger.info(f"乐曲数据初始化完成: {msg}")
     else:
@@ -66,5 +75,7 @@ async def init():
 
 @driver.on_shutdown
 async def close():
-    await sse_client.stop()
+    await lxns_client.catalog.stop_auto_sync()
+    await lxns_client.sse.stop()
+    await lxns_client.data.lifecycle.stop()
     await close_db()

@@ -1,7 +1,5 @@
 from typing import Any
 
-from .song_data_sync import load_mai_song_by_id_from_db
-
 
 async def enhance_scores(data):
     """将乐曲成绩列表中的每条记录与谱面数据合并。
@@ -14,7 +12,9 @@ async def enhance_scores(data):
     async def enhance_item(item):
         song_id = item["id"]
         if song_id not in song_cache:
-            song_cache[song_id] = await load_mai_song_by_id_from_db(song_id)
+            from ....integrations.lxns.client import lxns_client
+
+            song_cache[song_id] = await lxns_client.catalog.get_song_by_id("maimai", song_id)
         song_data = song_cache[song_id]
         if song_data is None:
             return dict(item)

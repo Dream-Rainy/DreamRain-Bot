@@ -17,83 +17,76 @@ def _load_quality_cases() -> list[dict]:
     return rows
 
 
-@pytest.fixture(autouse=True)
-def quality_adapter(app):
-    from typing import Mapping
+@pytest.fixture
+def quality_search():
+    from arcade_helper.search import SongSearchService
+    from arcade_helper.search.song_query import invalidate_alias_cache
+    from arcade_helper.core.song import SongData
 
-    from src.plugins.chiffon_bot.shared.game.registry import register_game_adapter
-    from src.plugins.chiffon_bot.shared.search.song_query import invalidate_alias_cache
-    from src.plugins.chiffon_bot.shared.song_data import SongData
-
-    class _QualityAdapter:
-        game_code = "quality"
-
+    class _QualityRepository:
         def __init__(self) -> None:
-            self.songs = {
-                1001: SongData(id=1001, title="Summer is over", artist="test"),
-                1002: SongData(id=1002, title="ERIS -Legend of Gaidelia-", artist="test"),
+            self.songs_by_game = {
+                "quality": {
+                    1001: SongData(id=1001, title="Summer is over", artist="test"),
+                    1002: SongData(id=1002, title="ERIS -Legend of Gaidelia-", artist="test"),
+                }
             }
-            self.aliases: dict[int, list[str]] = {
+            self.aliases_by_game: dict[str, dict[int, list[str]]] = {}
+            self.aliases_by_game["quality"] = {
                 song_id: [song.title]
-                for song_id, song in self.songs.items()
+                for song_id, song in self.songs_by_game["quality"].items()
             }
 
-        def get_song_store(self) -> Mapping[int, SongData]:
-            return self.songs
+        async def get_song_by_id(self, game_code: str, song_id: int) -> SongData | None:
+            return self.songs_by_game[game_code].get(song_id)
 
-        def get_song_index(self) -> Mapping[int, str]:
+        async def load_all_songs(self, game_code: str) -> dict[int, SongData]:
+            return self.songs_by_game[game_code]
+
+        async def load_song_index(self, game_code: str) -> dict[int, str]:
             return {
                 song_id: song.title
-                for song_id, song in self.songs.items()
+                for song_id, song in self.songs_by_game[game_code].items()
             }
 
-        def get_song_title(self, song_data: SongData) -> str:
-            return song_data.title
-
-        async def get_song_by_id(self, song_id: int) -> SongData | None:
-            return self.songs.get(song_id)
-
-        async def load_all_songs(self) -> Mapping[int, SongData]:
-            return self.songs
-
-        async def query_alias_exact(self, alias_lower: str) -> list[tuple[int, str]]:
+        async def query_alias_exact(self, game_code: str, alias_lower: str) -> list[tuple[int, str]]:
             matches: list[tuple[int, str]] = []
-            for song_id, aliases in self.aliases.items():
+            for song_id, aliases in self.aliases_by_game[game_code].items():
                 for alias in aliases:
                     if alias.lower() == alias_lower:
                         matches.append((song_id, alias))
             return matches
 
-        async def load_alias_records(self) -> list[tuple[int, str]]:
+        async def load_alias_records(self, game_code: str) -> list[tuple[int, str]]:
             return [
                 (song_id, alias)
-                for song_id, aliases in self.aliases.items()
+                for song_id, aliases in self.aliases_by_game[game_code].items()
                 for alias in aliases
             ]
 
-        async def get_song_aliases_for_song_id(self, song_id: int) -> list[str]:
-            return self.aliases.get(song_id, [])
+        async def get_song_aliases_for_song_id(self, game_code: str, song_id: int) -> list[str]:
+            return self.aliases_by_game[game_code].get(song_id, [])
 
         async def get_song_with_difficulty(
             self,
+            game_code: str,
             song_id: int,
             song_type: str = "standard",
             level_index: int = 3,
         ) -> dict | None:
             return None
 
-    register_game_adapter("quality", _QualityAdapter())
+    repository = _QualityRepository()
+    service = SongSearchService(repository)
     invalidate_alias_cache("quality")
-    yield
+    yield service
     invalidate_alias_cache("quality")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", _load_quality_cases())
-async def test_song_search_quality_cases(case: dict):
-    from src.plugins.chiffon_bot.shared.search.song_query import search_song
-
-    results = await search_song(case["query"], game_code=case["game"])
+async def test_song_search_quality_cases(quality_search, case: dict):
+    results = await quality_search.search_song(case["query"], game_code=case["game"])
     result_ids = [result.song_id for result in results]
 
     if case.get("expected_empty") is True:
@@ -114,14 +107,20 @@ async def test_song_search_quality_cases(case: dict):
 
 
 @pytest.mark.asyncio
-async def test_song_search_audit_writes_editable_history(monkeypatch, tmp_path: Path):
-    from src.plugins.chiffon_bot.shared.search.song_query import search_song
+async def test_song_search_audit_writes_editable_history(quality_search, monkeypatch, tmp_path: Path):
+    from src.plugins.chiffon_bot.shared.search.catalog_search import search_song_with_audit
+    from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client
+
+    class _Catalog:
+        async def search_song(self, game_code: str, query: str | int):
+            return await quality_search.search_song(query, game_code=game_code)
 
     audit_path = tmp_path / "song-search-history.jsonl"
     monkeypatch.setenv("SONG_SEARCH_AUDIT_LOG", "1")
     monkeypatch.setenv("SONG_SEARCH_AUDIT_PATH", str(audit_path))
+    monkeypatch.setattr(lxns_client.data, "catalog", _Catalog())
 
-    results = await search_song("eris", game_code="quality")
+    results = await search_song_with_audit("eris", game_code="quality")
 
     assert results
     rows = [

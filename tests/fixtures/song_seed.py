@@ -70,7 +70,7 @@ CHUNI_DIFFICULTIES = {
 
 
 async def seed_song_data() -> None:
-    from src.plugins.chiffon_bot.infra.db.models import (
+    from arcade_helper.storage.tortoise import (
         ChuniSong,
         ChuniSongAlias,
         MaiSong,

@@ -5,15 +5,16 @@ import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.dates import AutoDateLocator, DateFormatter
 
-from ....integrations.lxns.player_api import get_trend_data
+from arcade_helper import MaimaiPlayer
+
 from ....shared.bot_response import BotResponse
 
 rcParams["font.sans-serif"] = ["SimHei"]
 rcParams["axes.unicode_minus"] = False
 
 
-async def generate_trend_plot(friend_code: str, headers: dict) -> BotResponse:
-    trend_data = await get_trend_data(friend_code, headers)
+async def generate_trend_plot(player: MaimaiPlayer, headers: dict) -> BotResponse:
+    trend_data = (await player.trend(headers=headers)).data.raw
     dates = []
     totals = []
     standard_totals = []

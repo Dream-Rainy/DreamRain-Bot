@@ -9,10 +9,12 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.log import logger
 
-from ...infra.db.models import Event as DbEvent, Team, ensure_user_by_qq, UserAccount, QQ_PLATFORM
+from arcade_helper.users import PlatformIdentity
+
+from ...infra.db.models import Event as DbEvent, Team
 from ...domains.score_validator import format_song_key
 from ...domains.auto_score_updater import auto_update_event_scores
-from ...domains.maimai.services.song_data_sync import load_mai_song_by_id_from_db
+from ...integrations.lxns.client import lxns_client
 from ...shared.bot_response import BotResponse
 from ._response import finish_with, send_with
 
@@ -26,6 +28,17 @@ def _group_id_from_event(event: BotEvent) -> str | None:
 
 def _is_group_event(event: BotEvent) -> bool:
     return getattr(event, "group_id", None) is not None
+
+
+async def _ensure_chiffon_user_for_qq(qq: str):
+    return await lxns_client.data.users.ensure_user_model_for_platform(PlatformIdentity.qq(qq))
+
+
+async def _qq_account_key_for_user_id(user_id: int) -> str | None:
+    return await lxns_client.data.users.get_platform_account_key_for_user(
+        user_id=user_id,
+        platform="qq",
+    )
 
 
 async def is_admin(bot: Bot, event: BotEvent) -> bool:
@@ -293,7 +306,7 @@ def register_event_commands(event_group):
             group_id = str(event.group_id)
 
         # 创建赛事
-        user = await ensure_user_by_qq(user_id)
+        user = await _ensure_chiffon_user_for_qq(user_id)
         new_event = await DbEvent.create(
             name=name,
             group_id=group_id,
@@ -503,7 +516,7 @@ def register_event_commands(event_group):
             await team_create_command.finish(f"队伍 '{team_name}' 已存在")
 
         # 创建队伍
-        user = await ensure_user_by_qq(user_id)
+        user = await _ensure_chiffon_user_for_qq(user_id)
         new_team = await Team.create(
             name=team_name,
             real_name=real_name,
@@ -567,7 +580,7 @@ def register_event_commands(event_group):
             await team_join_command.finish("只有赛事主群才能加入队伍")
 
         # 确保用户存在
-        user = await ensure_user_by_qq(user_id)
+        user = await _ensure_chiffon_user_for_qq(user_id)
 
         # 检查是否已经是成员
         members = await team.members.all()  # type: ignore
@@ -620,7 +633,7 @@ def register_event_commands(event_group):
             await team_leave_command.finish("只有赛事主群才能退出队伍")
 
         # 确保用户存在
-        user = await ensure_user_by_qq(user_id)
+        user = await _ensure_chiffon_user_for_qq(user_id)
 
         # 检查是否是成员
         members = await team.members.all()  # type: ignore
@@ -668,7 +681,7 @@ def register_event_commands(event_group):
             await team_rename_command.finish("只有赛事主群才能修改队伍名称")
 
         # 确保用户存在
-        user = await ensure_user_by_qq(user_id)
+        user = await _ensure_chiffon_user_for_qq(user_id)
 
         # 权限检查：只有队长（创建者）或管理员可以改名
         is_captain = team.created_by.id == user.id  # type: ignore
@@ -720,7 +733,7 @@ def register_event_commands(event_group):
             await team_delete_command.finish("只有赛事主群才能删除队伍")
 
         # 确保用户存在
-        user = await ensure_user_by_qq(user_id)
+        user = await _ensure_chiffon_user_for_qq(user_id)
 
         # 权限检查：只有队长（创建者）或管理员可以删除
         is_captain = team.created_by.id == user.id  # type: ignore
@@ -837,9 +850,9 @@ def register_event_commands(event_group):
             info_lines.append("\n成员列表：")
             for i, member in enumerate(members, 1):
                 # 获取该用户的 QQ 账号
-                qq_account = await UserAccount.get_or_none(user=member, platform=QQ_PLATFORM)  # type: ignore
-                if qq_account:
-                    info_lines.append(f"  {i}. {qq_account.account_key}")  # type: ignore
+                qq_account_key = await _qq_account_key_for_user_id(int(member.id))  # type: ignore
+                if qq_account_key:
+                    info_lines.append(f"  {i}. {qq_account_key}")
                 else:
                     info_lines.append(f"  {i}. 用户#{member.id}")  # type: ignore
 
@@ -1044,7 +1057,7 @@ def register_event_commands(event_group):
         target_song = songs[song_index]
         song_key = format_song_key(target_song)
 
-        song_info = await load_mai_song_by_id_from_db(target_song['id'])
+        song_info = await lxns_client.catalog.get_song_by_id("maimai", target_song['id'])
         if song_info is None:
             await submit_command.finish(f"未找到课题曲数据：{target_song.get('song_name')}")
         if target_song['type'] == 'standard':

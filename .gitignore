@@ -41,3 +41,7 @@ Dockerfile.dev
 .cursor
 alembic.ini
 migrations/
+
+notebooks/
+docs/ai/
+.nonebot-adapter-web/

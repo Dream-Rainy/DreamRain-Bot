@@ -45,6 +45,9 @@ stubs
 .fnsync_temp_dir
 dev_run
 src/submodule/
+!src/submodule/
+!src/submodule/arcade-helper/
+!src/submodule/arcade-helper/**
 docker-compose*.yml
 !docker-compose*.example.yml
 tests
