@@ -7,6 +7,7 @@ def test_lxns_client_wires_single_data_client(loaded_chiffon_bot):
     assert lxns_client.data.auth.lxns_oauth is lxns_client.oauth
     assert lxns_client.data.accounts is lxns_client.accounts
     assert lxns_client.catalog.songs is lxns_client.songs
+    assert lxns_client.data.arcade_songs_provider.cache_dir is not None
 
 
 def test_lxns_client_exposes_player_service(loaded_chiffon_bot):

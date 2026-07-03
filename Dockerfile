@@ -26,9 +26,14 @@ RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.li
     cargo --version
 
 COPY pyproject.toml uv.lock* ./
+COPY src/submodule/arcade-helper/pyproject.toml src/submodule/arcade-helper/README.md ./src/submodule/arcade-helper/
+RUN mkdir -p src/submodule/arcade-helper/src/arcade_helper && \
+    touch src/submodule/arcade-helper/src/arcade_helper/__init__.py
+RUN --mount=type=cache,target=/app/.cache/uv \
+    uv sync --locked --no-dev --no-install-project --no-install-package arcade-helper
 COPY src/submodule/arcade-helper ./src/submodule/arcade-helper
 RUN --mount=type=cache,target=/app/.cache/uv \
-    uv sync --locked --no-dev && \
+    uv sync --locked --no-dev --no-install-project && \
     uvx pip-licenses \
         --python /app/.venv/bin/python \
         --format=json \

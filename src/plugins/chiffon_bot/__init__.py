@@ -19,6 +19,7 @@ from .domains.chunithm import chunithm_adapter as _  # noqa: F401
 
 from .app.commands.account import register_account_commands
 from .app.commands.admin import register_admin_commands
+from .app.commands.arcade import register_arcade_commands
 from .app.commands.maimai import register_maimai_commands
 from .app.commands.chunithm import register_chunithm_commands
 from .app.commands.event import register_event_commands, register_event_rank_matcher
@@ -51,6 +52,9 @@ register_account_commands(account_group)
 
 admin_group = CommandGroup("admin", prefix_aliases=True, priority=5)
 register_admin_commands(admin_group)
+
+arcade_group = CommandGroup("arcade", prefix_aliases=True, priority=5)
+register_arcade_commands(arcade_group)
 
 event_group = CommandGroup("event", prefix_aliases=True, priority=5)
 register_event_commands(event_group)

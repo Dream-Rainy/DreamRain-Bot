@@ -8,6 +8,7 @@
 
 - **舞萌 DX** — Best 50 / 歌曲详情 / 拍照曲绘查歌 / 最近成绩 / 定数查分 / 版本别名
 - **CHUNITHM** — Best 50 / 歌曲详情 / 搭档进度
+- **通用街机曲库** — 通过 arcade-songs 查询更多音游曲目（文字输出）
 - **LXNS OAuth 绑定** — 通过 LXNS 平台绑定玩家账号
 - **自然语言识别** — 直接发送谱面封面图触发的相关查询
 
@@ -41,6 +42,7 @@
 
 - maimai：`/mai.song テオ`、`/mai.pic`（附选曲截图或回复图片）、`/mai.b50`
 - CHUNITHM：`/chuni.song 1`
+- 通用街机曲库：`/arcade.song sdvx FLOWER`、`查歌 ongeki モンダイナイトリッパー！`
 - 账号系统：`/acc help`、`/acc.bind 123456789012345`
 - 活动系统：`/event.help`
 - 管理命令：`/admin.update`、`/admin.clean`（SUPERUSER）

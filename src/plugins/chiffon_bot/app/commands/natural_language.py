@@ -15,6 +15,7 @@ from nonebot.params import EventPlainText
 from nonebot.rule import Rule
 
 from ._reaction import ack_message
+from .arcade import query_arcade_song
 
 from ...shared.bot_response import BotResponse
 from ...shared.game.adapter import DomainAdapter
@@ -41,6 +42,11 @@ _PRIORITY: dict[MatchType, int] = {
 _SONG_PATTERNS = [
     r"^(.+?)是什么歌[？?]?$",
     r"^(.+?)是啥歌[？?]?$",
+]
+
+_ARCADE_SONG_PATTERNS = [
+    r"^查歌\s+([a-z0-9_-]+)\s+(.+)$",
+    r"^([a-z0-9_-]+)\s+(.+?)(?:是什么歌|是啥歌)[？?]?$",
 ]
 
 
@@ -74,6 +80,18 @@ def _extract_song_query(text: str) -> str | None:
         match = re.match(pattern, text)
         if match:
             return match.group(1).strip()
+    return None
+
+
+def _extract_arcade_song_query(text: str) -> tuple[str, str] | None:
+    for pattern in _ARCADE_SONG_PATTERNS:
+        match = re.match(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        game_code = match.group(1).strip().lower()
+        query = match.group(2).strip()
+        if game_code and query:
+            return game_code, query
     return None
 
 
@@ -200,6 +218,13 @@ def register_natural_language_commands() -> None:
         plain_text: str = EventPlainText(),
     ):
         text = plain_text.strip()
+        arcade_query = _extract_arcade_song_query(text)
+        if arcade_query is not None:
+            game_code, query = arcade_query
+            await ack_message(event, bot)
+            logger.info(f"[NL] arcade-songs 查歌: {game_code} {query!r}")
+            await finish_with(await query_arcade_song(game_code, query, event.message_id))
+
         song_query = _extract_song_query(text)
 
         if not song_query or not (1 <= len(song_query) <= 50):

@@ -229,8 +229,15 @@ class HttpClient:
         *,
         headers: Mapping[str, str] | None = None,
         params: Any | None = None,
+        force_refresh: bool = False,
+        cache: bool = True,
     ) -> bytes:
         """下载二进制内容（如图片）。"""
+        cache_key = f"bytes:{build_cache_key(url, headers=headers, params=params, json_data=None)}"
+        if cache and not force_refresh and self._cache is not None and cache_key in self._cache:
+            logger.debug(f"HTTP 缓存命中: GET {url}")
+            return self._cache[cache_key]
+
         last_exc: Exception | None = None
         delays = [0.0] + self._retry.delays()
         for attempt, delay in enumerate(delays, 1):
@@ -242,6 +249,8 @@ class HttpClient:
                     async with session.get(url, headers=headers, params=params) as resp:
                         resp.raise_for_status()
                         data = await resp.read()
+                        if cache and self._cache is not None:
+                            self._cache.set(cache_key, data, self._cache_ttl)
                         logger.debug(f"HTTP 请求成功: GET {url} (status: {resp.status}, size: {len(data)} bytes)")
                         return data
             except Exception as e:  # noqa: BLE001

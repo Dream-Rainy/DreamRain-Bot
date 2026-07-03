@@ -10,6 +10,7 @@ from ..bot_response import BotResponse
 from ..game.adapter import DomainAdapter
 from ..search.catalog_search import search_song_with_audit
 from ..search.result_message import build_fuzzy_list_message, build_match_hint_text
+from .song_text import format_song_text_detail, load_song_jacket_bytes
 
 
 async def generic_song_info(
@@ -51,4 +52,6 @@ async def generic_song_info(
     except Exception as e:
         traceback.print_exc()
         logger.error(f"[{gc}] 渲染乐曲信息图片失败: {e}")
-        return BotResponse(text=f"渲染图片失败: {e!s}", reply_to=message_id)
+        image = await load_song_jacket_bytes(gc, result)
+        text = "图片渲染失败，已改用文本结果。\n\n" + "\n".join(format_song_text_detail(gc, result))
+        return BotResponse(text=text, image=image, reply_to=message_id, suffix=hint)

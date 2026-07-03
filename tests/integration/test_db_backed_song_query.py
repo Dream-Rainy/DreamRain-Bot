@@ -70,6 +70,7 @@ async def test_tortoise_song_store_queries_seeded_catalog(seeded_song_db):
 async def test_tortoise_song_store_syncs_song_catalog(seeded_song_db):
     from arcade_helper.games.maimai.schemas import MaiSongData
     from arcade_helper.storage.tortoise import TortoiseSongStore
+    from arcade_helper.storage.tortoise.models import MaiSongAlias
 
     store = TortoiseSongStore()
     song_id = 2026
@@ -94,6 +95,25 @@ async def test_tortoise_song_store_syncs_song_catalog(seeded_song_db):
         "sync-test",
         "Sync Test Song",
     ]
+
+    updated = MaiSongData(
+        id=song_id,
+        title="Updated Sync Test Song",
+        artist="tester",
+        category="niconico",
+        bpm=180,
+        version="PRiSM",
+        image_name="jacket/UI_Jacket_002026.png",
+        aliases=["sync-test", "new-alias"],
+        difficulties=MAI_DIFFICULTIES,
+    )
+    await store.sync_songs("maimai", {song_id: updated})
+
+    loaded = await store.get_song_by_id("maimai", song_id)
+    assert loaded is not None
+    assert loaded.title == "Updated Sync Test Song"
+    assert await MaiSongAlias.filter(song_id=song_id, alias="sync-test").count() == 1
+    assert "new-alias" in await store.get_song_aliases_for_song_id("maimai", song_id)
 
 
 async def test_search_uses_index_and_loads_full_song_on_demand(seeded_song_db, song_indexes):

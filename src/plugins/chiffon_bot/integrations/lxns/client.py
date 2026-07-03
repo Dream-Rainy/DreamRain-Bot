@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from nonebot import get_plugin_config, logger
 
 from arcade_helper import ArcadeHelperClient
@@ -44,6 +46,7 @@ class BotLxnsClient:
             lxns_oauth_relay_url=getattr(self._config, "lxns_oauth_relay_url", ""),
             account_store=self.accounts,
             song_store=self.songs,
+            local_data_dir=Path("data") / "chiffon_bot" / "arcade-helper",
         )
         if self.data.lxns.oauth is None:
             raise RuntimeError("LXNS OAuth client was not initialized")

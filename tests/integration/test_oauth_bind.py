@@ -15,7 +15,7 @@ BOT_MODEL_MODULE = "src.plugins.chiffon_bot.infra.db.models"
 
 @pytest_asyncio.fixture
 async def oauth_db(tmp_path):
-    """初始化 Tortoise（仅 User/UserAccount/GameProfile 表），不种子数据。"""
+    """初始化 Tortoise 账号相关表，不种子数据。"""
     db_path = tmp_path / "oauth.sqlite3"
     await Tortoise.init(
         {
@@ -43,10 +43,10 @@ async def oauth_db(tmp_path):
 
 @pytest.mark.asyncio
 async def test_do_bind_creates_account_and_profile(loaded_chiffon_bot, oauth_db):
-    """bind_lxns_token_data 应创建 User → UserAccount → GameProfile 链路。"""
+    """bind_lxns_token_data 应创建 User → ProviderAccount → Credential/Profile 链路。"""
     from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client
     from arcade_helper.users import PlatformIdentity
-    from arcade_helper.storage.tortoise import GameProfile, QQ_PLATFORM, UserAccount
+    from arcade_helper.storage.tortoise import GameProfile, ProviderAccount, ProviderCredential, QQ_PLATFORM, UserAccount
 
     await lxns_client.data.lifecycle.start()
 
@@ -75,10 +75,13 @@ async def test_do_bind_creates_account_and_profile(loaded_chiffon_bot, oauth_db)
     qq_link = await UserAccount.get_or_none(platform=QQ_PLATFORM, account_key="12345678")
     assert qq_link is not None
 
-    # 验证 LXNS UserAccount 已创建（记在同一个 User 下）
-    lxns_account = await UserAccount.get_or_none(platform="lxns", account_key=result.lxns_account_key)
+    # 验证 LXNS ProviderAccount 已创建（记在同一个 User 下）
+    lxns_account = await ProviderAccount.get_or_none(provider="lxns", account_key=result.lxns_account_key)
     assert lxns_account is not None
     assert lxns_account.is_default
+
+    credential = await ProviderCredential.get_or_none(account=lxns_account, credential_method="oa")
+    assert credential is not None
 
     # 验证 GameProfile（挂在 LXNS account 上）
     gp = await GameProfile.get_or_none(account=lxns_account)
@@ -94,7 +97,7 @@ async def test_bind_by_oauth_code_success(loaded_chiffon_bot, oauth_db):
     """complete_lxns_oauth（回调路径）端到端应成功。"""
     from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client
     from arcade_helper.users import PlatformIdentity
-    from arcade_helper.storage.tortoise import GameProfile, QQ_PLATFORM, UserAccount
+    from arcade_helper.storage.tortoise import GameProfile, ProviderAccount, ProviderCredential, QQ_PLATFORM, UserAccount
 
     await lxns_client.data.lifecycle.start()
 
@@ -130,8 +133,11 @@ async def test_bind_by_oauth_code_success(loaded_chiffon_bot, oauth_db):
     qq_link = await UserAccount.get_or_none(platform=QQ_PLATFORM, account_key=qq)
     assert qq_link is not None
 
-    lxns_account = await UserAccount.get_or_none(platform="lxns", account_key=result.account_key)
+    lxns_account = await ProviderAccount.get_or_none(provider="lxns", account_key=result.account_key)
     assert lxns_account is not None
+
+    credential = await ProviderCredential.get_or_none(account=lxns_account, credential_method="oa")
+    assert credential is not None
 
     gp = await GameProfile.get_or_none(account=lxns_account)
     assert gp is not None

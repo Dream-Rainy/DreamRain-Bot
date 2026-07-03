@@ -1,7 +1,10 @@
 import traceback
 from tortoise import Tortoise
 
-from arcade_helper.storage.tortoise import MODEL_MODULE as ARCADE_HELPER_MODEL_MODULE
+from arcade_helper.storage.tortoise import (
+    MODEL_MODULE as ARCADE_HELPER_MODEL_MODULE,
+    migrate_tortoise_account_store_v2,
+)
 
 
 BOT_MODEL_MODULE = "src.plugins.chiffon_bot.infra.db.models"
@@ -68,6 +71,8 @@ async def init(*, db_url: str | None = None, db_settings: dict | None = None):
         traceback.print_exc()
         # 如果迁移失败，回退到生成 schema（保持向后兼容）
         await Tortoise.generate_schemas()
+
+    await migrate_tortoise_account_store_v2()
 
 
 async def close():
