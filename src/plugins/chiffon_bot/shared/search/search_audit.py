@@ -21,6 +21,7 @@ _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _DEFAULT_AUDIT_PATH = Path("data") / "chiffon_bot" / "song_search_history.jsonl"
 _VALID_CANDIDATE_STATUSES = {"pending", "accepted", "rejected"}
+_NON_ALIAS_MATCH_TYPES = {"exact_id", "exact_title", "exact_alias"}
 _AUDIT_LOCK = threading.RLock()
 _ACCEPTED_ALIAS_CACHE: dict[
     tuple[str, str],
@@ -111,11 +112,13 @@ def _alias_candidate(
     if not result_rows:
         return None
     top = result_rows[0]
+    if str(top.get("match_type") or "") in _NON_ALIAS_MATCH_TYPES:
+        return None
     song_id = top.get("song_id")
     if song_id is None:
         return None
     alias = str(query).strip()
-    if not alias:
+    if not alias or alias.isdigit():
         return None
     alias_key = alias.lower()
     if any(
@@ -447,6 +450,7 @@ def record_search_history(
 
         path = _audit_path()
         top = result_rows[0] if result_rows else None
+        top_match_type = top.get("match_type") if top else None
         record = {
             "schema_version": 1,
             "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -458,7 +462,7 @@ def record_search_history(
             "prefix_retry_used": prefix_retry_used,
             "retry_query": retry_query,
             "top_song_id": top.get("song_id") if top else None,
-            "top_match_type": top.get("match_type") if top else None,
+            "top_match_type": top_match_type,
             "top_score": top.get("score") if top else None,
             "is_suspicious": suspicious,
             "alias_candidate": _alias_candidate(
@@ -466,7 +470,7 @@ def record_search_history(
                 result_rows,
                 game_code=game_code,
                 path=path,
-            ) if suspicious else None,
+            ) if suspicious or top_match_type == "embedding" else None,
             "results": result_rows,
             "expected_top_id": None,
             "expected_include_ids": [],

@@ -201,7 +201,7 @@ docker compose -f docker-compose-dev.yml restart dreamrain-bot
 
 ## 查歌可靠性
 
-查歌会优先使用确定性结果：ID、标题、别名、归一化标题、简繁/拼音/罗马音和 BM25。只有这些都没有结果时，才会使用可选 embedding 兜底；embedding 默认关闭，不影响普通部署。
+查歌会优先使用确定性结果：ID、标题、别名、归一化标题、简繁/拼音/罗马音和模糊匹配。BM25 只作为候选召回；如果 BM25 返回多个分数接近的候选，会先尝试可选 embedding 语义匹配，并要求 top1 与 top2 拉开差距后才接管，避免宽泛抢答。普通无结果场景也会使用 embedding 兜底；embedding 默认关闭，不影响普通部署。
 
 SUPERUSER 可用 `/admin.search` 维护搜索日志驱动的别名修正：
 

@@ -48,6 +48,13 @@ def quality_search():
                     1016: SongData(id=1016, title="Lemon", artist="Kenshi Yonezu"),
                     1017: SongData(id=1017, title="Ｆｏｏ－Ｂａｒ", artist="a"),
                     1018: SongData(id=1018, title="Foo Bar", artist="b"),
+                    1019: SongData(id=1019, title="己経忍不住了", artist="good-cool"),
+                    1020: SongData(id=1020, title="不可説不可説転", artist="OSTER project"),
+                    1021: SongData(id=1021, title="お仕置き忍のテーマ", artist="test"),
+                    1022: SongData(id=1022, title="如同高贵绽放的花朵", artist="test"),
+                    1023: SongData(id=1023, title="花は折りたし梢は高し", artist="test"),
+                    1024: SongData(id=1024, title="花見で一杯", artist="test"),
+                    2000: SongData(id=2000, title="1002", artist="test"),
                 }
             }
             self.aliases_by_game: dict[str, dict[int, list[str]]] = {}
@@ -288,6 +295,40 @@ def test_song_search_audit_skips_pending_for_accepted_alias(monkeypatch, tmp_pat
     assert rows[-1]["alias_candidate"] is None
 
 
+def test_song_search_audit_skips_alias_candidate_for_exact_matches(monkeypatch, tmp_path: Path):
+    from src.plugins.chiffon_bot.shared.search.search_audit import record_search_history
+
+    audit_path = tmp_path / "history.jsonl"
+    monkeypatch.setenv("SONG_SEARCH_AUDIT_LOG", "1")
+    monkeypatch.setenv("SONG_SEARCH_AUDIT_PATH", str(audit_path))
+
+    for query, match_type in [("76", "exact_id"), ("QQ", "exact_title"), ("blue", "exact_alias")]:
+        record_search_history(
+            query=query,
+            game_code="quality",
+            trace_id=f"{query}:exact",
+            results=[
+                SimpleNamespace(
+                    song_id=1005,
+                    title="Blue Noise",
+                    match_type=SimpleNamespace(value=match_type),
+                    match_score=100.0,
+                    matched_text=query,
+                    song_data=SimpleNamespace(artist="Sakuzyo"),
+                )
+            ],
+            duration_ms=1.0,
+        )
+
+    rows = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 3
+    assert all(row["alias_candidate"] is None for row in rows)
+
+
 def test_song_search_audit_always_records_embedding_match(monkeypatch, tmp_path: Path):
     from src.plugins.chiffon_bot.shared.search.search_audit import record_search_history
 
@@ -320,6 +361,7 @@ def test_song_search_audit_always_records_embedding_match(monkeypatch, tmp_path:
     assert len(rows) == 1
     assert rows[0]["top_match_type"] == "embedding"
     assert rows[0]["top_score"] == 95.0
+    assert rows[0]["alias_candidate"]["alias"] == "semantic blue"
 
 
 def test_song_search_audit_disabled_suppresses_embedding_match(monkeypatch, tmp_path: Path):
@@ -635,6 +677,35 @@ async def test_embedding_fallback_returns_local_vector_match(quality_search, mon
 
     assert results
     assert results[0].song_id == 1005
+    assert results[0].match_type is MatchType.EMBEDDING
+
+
+@pytest.mark.asyncio
+async def test_uncertain_bm25_defers_to_embedding(quality_search, monkeypatch):
+    from arcade_helper.search import MatchType, SongQueryResult
+    import arcade_helper.search.song_query as song_query_module
+
+    blue_noise = quality_search.repository.songs_by_game["quality"][1005]
+    red_noise = quality_search.repository.songs_by_game["quality"][1006]
+
+    async def fake_bm25(query: str, threshold: float = 80.0, *, game_code: str = "maimai"):
+        return [
+            SongQueryResult(1005, "Blue Noise", MatchType.BM25, 95.0, "Blue Noise", blue_noise),
+            SongQueryResult(1006, "Red Noise", MatchType.BM25, 94.0, "Red Noise", red_noise),
+        ]
+
+    async def fake_embedding(query: str, *, game_code: str = "maimai"):
+        return [
+            SongQueryResult(1006, "Red Noise", MatchType.EMBEDDING, 96.0, query, red_noise),
+        ]
+
+    monkeypatch.setattr(song_query_module, "_query_song_bm25", fake_bm25)
+    monkeypatch.setattr(song_query_module, "_query_song_embedding", fake_embedding)
+
+    results = await quality_search.search_song("zzzz semantic miss", game_code="quality")
+
+    assert results
+    assert results[0].song_id == 1006
     assert results[0].match_type is MatchType.EMBEDDING
 
 

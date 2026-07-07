@@ -206,6 +206,8 @@ async def search_song_by_embedding(
     *,
     path: Path | None = None,
     embedder: Embedder = embed_texts,
+    threshold: float | None = None,
+    min_margin: float | None = None,
 ) -> list[SongQueryResult]:
     if not embedding_enabled():
         return []
@@ -228,19 +230,26 @@ async def search_song_by_embedding(
     query_vector = query_vectors[0]
 
     scored: list[tuple[float, dict[str, Any]]] = []
-    threshold = embedding_threshold()
+    effective_threshold = embedding_threshold() if threshold is None else float(threshold)
     for row in song_rows:
         vector = _vector_from_row(row)
         if vector is None:
             continue
         score = _cosine_similarity(query_vector, vector) * 100.0
-        if score >= threshold:
-            scored.append((score, row))
+        scored.append((score, row))
 
     scored.sort(key=lambda item: item[0], reverse=True)
+    if not scored or scored[0][0] < effective_threshold:
+        return []
+    if min_margin is not None and len(scored) > 1 and scored[0][0] - scored[1][0] < float(min_margin):
+        return []
+
     results: list[SongQueryResult] = []
     seen: set[int] = set()
-    for score, row in scored[:10]:
+    limit = 1 if min_margin is not None else 10
+    for score, row in scored[:limit]:
+        if score < effective_threshold:
+            break
         song_id = int(row["song_id"])
         if song_id in seen:
             continue

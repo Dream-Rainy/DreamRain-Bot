@@ -304,6 +304,49 @@ async def test_bot_catalog_search_uses_embedding_fallback(
 
 
 @pytest.mark.asyncio
+async def test_bot_catalog_search_defers_uncertain_bm25_to_embedding(
+    loaded_chiffon_bot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.plugins.chiffon_bot.integrations.lxns.catalog as catalog_module
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.integrations.lxns.catalog import BotCatalogClient
+
+    blue_noise = SongData(id=1005, title="Blue Noise", artist="Sakuzyo")
+    red_noise = SongData(id=1006, title="Red Noise", artist="Other")
+    bm25_results = [
+        SongQueryResult(1005, "Blue Noise", MatchType.BM25, 95.0, "Blue Noise", blue_noise),
+        SongQueryResult(1006, "Red Noise", MatchType.BM25, 94.0, "Red Noise", red_noise),
+    ]
+    embedding_results = [
+        SongQueryResult(1006, "Red Noise", MatchType.EMBEDDING, 96.0, "semantic miss", red_noise),
+    ]
+
+    class _Search:
+        async def search_song(self, query: str | int, *, game_code: str):
+            return bm25_results
+
+    class _Data:
+        catalog = object()
+
+    async def fake_embedding(catalog, game_code: str, query: str, **kwargs):
+        assert kwargs == {"threshold": 55.0, "min_margin": 4.0}
+        return embedding_results
+
+    monkeypatch.setattr(catalog_module, "search_song_by_embedding", fake_embedding)
+
+    catalog = BotCatalogClient(
+        _Data(),  # type: ignore[arg-type]
+        song_store=object(),  # type: ignore[arg-type]
+        logger=_Logger(),
+        auto_sync_enabled=False,
+    )
+    catalog.search = _Search()  # type: ignore[assignment]
+
+    assert await catalog.search_song("popn", "semantic miss") == embedding_results
+
+
+@pytest.mark.asyncio
 async def test_rebuild_search_embeddings_uses_arcade_catalog_for_generic_game(
     loaded_chiffon_bot,
     monkeypatch: pytest.MonkeyPatch,

@@ -7,7 +7,7 @@ import traceback
 from typing import Any
 
 from arcade_helper import ArcadeHelperClient
-from arcade_helper.search import SongQueryResult, SongSearchService
+from arcade_helper.search import MatchType, SongQueryResult, SongSearchService
 from arcade_helper.storage.tortoise import TortoiseSongStore
 
 from ...shared.game.adapter import DomainAdapter
@@ -25,6 +25,14 @@ from .plugin_data import plugin_data
 
 
 _DB_GAME_CODES = {"maimai", "chunithm"}
+_UNCERTAIN_BM25_EMBEDDING_THRESHOLD = 55.0
+_UNCERTAIN_BM25_EMBEDDING_MIN_MARGIN = 4.0
+
+
+def _is_uncertain_bm25(results: list[SongQueryResult]) -> bool:
+    if len(results) < 2 or results[0].match_type is not MatchType.BM25:
+        return False
+    return (results[0].match_score - results[1].match_score) < 8.0
 
 
 class BotCatalogClient:
@@ -95,13 +103,22 @@ class BotCatalogClient:
         query: str | int,
     ) -> list[SongQueryResult]:
         results = await self.search.search_song(query, game_code=game_code)
-        if results or isinstance(query, int):
+        if isinstance(query, int):
             return results
+        if results and not _is_uncertain_bm25(results):
+            return results
+        kwargs = {}
+        if results:
+            kwargs = {
+                "threshold": _UNCERTAIN_BM25_EMBEDDING_THRESHOLD,
+                "min_margin": _UNCERTAIN_BM25_EMBEDDING_MIN_MARGIN,
+            }
         try:
-            return await search_song_by_embedding(self, game_code, str(query))
+            embedding_results = await search_song_by_embedding(self, game_code, str(query), **kwargs)
         except Exception as e:
             self.logger.warning(f"[{game_code}] embedding 搜索失败，已跳过: {e}")
-            return []
+            return results
+        return embedding_results or results
 
     async def rebuild_search_embeddings(self, game_code: str) -> dict[str, Any]:
         gc = str(game_code).strip().lower()

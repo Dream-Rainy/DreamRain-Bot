@@ -85,6 +85,94 @@ async def test_embedding_cache_rebuild_and_search(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
+async def test_embedding_cache_rejects_close_top_matches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src.plugins.chiffon_bot.shared.search import embedding_cache
+
+    class _Catalog:
+        songs = {
+            1005: SongData(id=1005, title="Blue Noise", artist="Sakuzyo"),
+            1006: SongData(id=1006, title="Red Noise", artist="Other"),
+        }
+
+        async def get_song_by_id(self, game_code: str, song_id: int) -> Any:
+            return self.songs.get(song_id)
+
+    path = tmp_path / "embeddings.jsonl"
+    rows = [
+        {"game": "quality", "song_id": 1005, "title": "Blue Noise", "vector": [1.0, 0.0]},
+        {"game": "quality", "song_id": 1006, "title": "Red Noise", "vector": [0.999, 0.045]},
+    ]
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    async def query_embedder(texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0]]
+
+    monkeypatch.setattr(embedding_cache, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(embedding_cache, "embedding_path", lambda: path)
+
+    results = await embedding_cache.search_song_by_embedding(
+        _Catalog(),
+        "quality",
+        "semantic blue",
+        embedder=query_embedder,
+        threshold=55.0,
+        min_margin=4.0,
+    )
+
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_embedding_cache_margin_mode_returns_top_match_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src.plugins.chiffon_bot.shared.search import embedding_cache
+
+    class _Catalog:
+        songs = {
+            1005: SongData(id=1005, title="Blue Noise", artist="Sakuzyo"),
+            1006: SongData(id=1006, title="Red Noise", artist="Other"),
+        }
+
+        async def get_song_by_id(self, game_code: str, song_id: int) -> Any:
+            return self.songs.get(song_id)
+
+    path = tmp_path / "embeddings.jsonl"
+    rows = [
+        {"game": "quality", "song_id": 1005, "title": "Blue Noise", "vector": [1.0, 0.0]},
+        {"game": "quality", "song_id": 1006, "title": "Red Noise", "vector": [0.8, 0.6]},
+    ]
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    async def query_embedder(texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0]]
+
+    monkeypatch.setattr(embedding_cache, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(embedding_cache, "embedding_path", lambda: path)
+
+    results = await embedding_cache.search_song_by_embedding(
+        _Catalog(),
+        "quality",
+        "semantic blue",
+        embedder=query_embedder,
+        threshold=55.0,
+        min_margin=4.0,
+    )
+
+    assert [result.song_id for result in results] == [1005]
+
+
+@pytest.mark.asyncio
 async def test_embedding_cache_rebuild_batches_requests(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from src.plugins.chiffon_bot.shared.search import embedding_cache
 
