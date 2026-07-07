@@ -45,7 +45,7 @@
 - 通用街机曲库：`/arcade.song sdvx FLOWER`、`查歌 ongeki モンダイナイトリッパー！`
 - 账号系统：`/acc help`、`/acc.bind 123456789012345`
 - 活动系统：`/event.help`
-- 管理命令：`/admin.update`、`/admin.clean`（SUPERUSER）
+- 管理命令：`/admin.update`、`/admin.clean`、`/admin.search pending`（SUPERUSER）
 - 权限管理：`/perm`
 - 公主连结：`/猜头像`
 - 今日运势：`/今日运势`
@@ -190,9 +190,33 @@ docker compose -f docker-compose-dev.yml restart dreamrain-bot
 | `COMMAND_SEP` | 命令层级分隔符，默认 `.`（如 `/mai.b50`） |
 | `db_engine` | 数据库引擎：`postgres` / `sqlite` |
 | `lxns_api_key` | LXNS API 密钥（LXNS 查分/数据接口相关功能需要；未配置时插件仍可启动） |
+| `song_search_embedding_enabled` | 是否启用查歌 embedding 兜底，默认 `false` |
+| `song_search_embedding_endpoint` | 本地 embedding HTTP 端点，默认 `http://127.0.0.1:11434/api/embed` |
+| `song_search_embedding_model` | embedding 模型名，例如 `bge-m3` / `embeddinggemma` |
+| `song_search_embedding_path` | embedding JSONL 缓存路径 |
+| `song_search_embedding_threshold` | embedding 命中阈值，默认 `80.0` |
 | `ONEBOT_ACCESS_TOKEN` | OneBot 鉴权 Token |
 
 完整配置项参见 [.env.example](./.env.example)。
+
+## 查歌可靠性
+
+查歌会优先使用确定性结果：ID、标题、别名、归一化标题、简繁/拼音/罗马音和 BM25。只有这些都没有结果时，才会使用可选 embedding 兜底；embedding 默认关闭，不影响普通部署。
+
+SUPERUSER 可用 `/admin.search` 维护搜索日志驱动的别名修正：
+
+```text
+/admin.search pending [数量]
+/admin.search show <line>
+/admin.search accept <line>
+/admin.search reject <line>
+/admin.search export accepted [数量]
+/admin.search import <JSONL路径>
+/admin.search embedding status
+/admin.search embedding rebuild <game>
+```
+
+`accepted` alias 会参与后续搜索；`pending` 和 `rejected` 不会影响用户查询。MusicBrainz 只通过离线工具生成 pending 候选，不会在用户查歌时实时请求外部服务。
 
 ## 项目结构
 

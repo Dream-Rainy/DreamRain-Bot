@@ -96,6 +96,37 @@ async def test_arcade_song_response_uses_cloudfront_cover_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_query_arcade_song_uses_audited_search(monkeypatch):
+    from src.plugins.chiffon_bot.app.commands import arcade as module
+
+    result = _song_result()
+    calls = []
+
+    async def fake_search(query, *, game_code: str):
+        calls.append((game_code, query))
+        return [result]
+
+    async def fake_sites():
+        return []
+
+    async def fake_build(game_code, results, message_id, *, arcade_sites=None):
+        assert game_code == "sdvx"
+        assert results == [result]
+        assert message_id == 123
+        assert arcade_sites == []
+        return module.BotResponse(text="ok", reply_to=message_id)
+
+    monkeypatch.setattr(module, "search_song_with_audit", fake_search)
+    monkeypatch.setattr(module.lxns_client.data.catalog.arcade_songs, "sites", fake_sites)
+    monkeypatch.setattr(module, "build_arcade_song_response", fake_build)
+
+    response = await module.query_arcade_song("sdvx", "FLOWER", 123)
+
+    assert response.text == "ok"
+    assert calls == [("sdvx", "FLOWER")]
+
+
+@pytest.mark.asyncio
 async def test_generic_song_info_falls_back_to_text(monkeypatch):
     from src.plugins.chiffon_bot.shared.handlers import generic_song_info as module
 

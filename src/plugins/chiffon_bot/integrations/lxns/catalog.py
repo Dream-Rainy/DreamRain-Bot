@@ -7,10 +7,24 @@ import traceback
 from typing import Any
 
 from arcade_helper import ArcadeHelperClient
+from arcade_helper.search import SongQueryResult, SongSearchService
 from arcade_helper.storage.tortoise import TortoiseSongStore
 
 from ...shared.game.adapter import DomainAdapter
+from ...shared.search.search_audit import (
+    accepted_alias_records,
+    accepted_aliases_for_song_id,
+    query_accepted_alias_exact,
+)
+from ...shared.search.embedding_cache import (
+    rebuild_song_embeddings,
+    rebuild_song_embeddings_from_songs,
+    search_song_by_embedding,
+)
 from .plugin_data import plugin_data
+
+
+_DB_GAME_CODES = {"maimai", "chunithm"}
 
 
 class BotCatalogClient:
@@ -30,6 +44,7 @@ class BotCatalogClient:
         self.data = data
         self.songs = song_store
         self.service = data.catalog
+        self.search = SongSearchService(self)
         self.logger = logger
         self.auto_sync_enabled = auto_sync_enabled
         self.auto_sync_interval_seconds = max(60, int(auto_sync_interval_seconds))
@@ -69,22 +84,87 @@ class BotCatalogClient:
         return await self.service.fetch_maimai_song_collections(song_id)
 
     async def get_song_by_id(self, game_code: str, song_id: int):
-        return await self.service.get_song_by_id(game_code, song_id)
+        if self._uses_db_catalog(game_code):
+            return await self.service.get_song_by_id(game_code, song_id)
+        songs = await self.data.catalog.arcade_songs.catalog(game_code)
+        return songs.get(song_id)
+
+    async def search_song(
+        self,
+        game_code: str,
+        query: str | int,
+    ) -> list[SongQueryResult]:
+        results = await self.search.search_song(query, game_code=game_code)
+        if results or isinstance(query, int):
+            return results
+        try:
+            return await search_song_by_embedding(self, game_code, str(query))
+        except Exception as e:
+            self.logger.warning(f"[{game_code}] embedding 搜索失败，已跳过: {e}")
+            return []
+
+    async def rebuild_search_embeddings(self, game_code: str) -> dict[str, Any]:
+        gc = str(game_code).strip().lower()
+        if gc in {"maimai", "chunithm"}:
+            return await rebuild_song_embeddings(self, gc)
+
+        songs = await self.data.catalog.arcade_songs.catalog(gc)
+        alias_records = [
+            (song_id, alias)
+            for song_id, song in songs.items()
+            for alias in (getattr(song, "aliases", None) or [])
+        ]
+        return await rebuild_song_embeddings_from_songs(gc, songs, alias_records=alias_records)
+
+    async def get_song_aliases(self, game_code: str, song_query: str | int) -> dict | None:
+        return await self.search.get_song_aliases(song_query, game_code=game_code)
 
     async def load_all_songs(self, game_code: str):
-        return await self.service.load_all_songs(game_code)
+        if self._uses_db_catalog(game_code):
+            return await self.service.load_all_songs(game_code)
+        return await self.data.catalog.arcade_songs.catalog(game_code)
 
     async def load_song_index(self, game_code: str) -> dict[int, str]:
-        return await self.service.load_song_index(game_code)
+        if self._uses_db_catalog(game_code):
+            return await self.service.load_song_index(game_code)
+        songs = await self.data.catalog.arcade_songs.catalog(game_code)
+        return {song_id: song.title for song_id, song in songs.items()}
 
     async def query_alias_exact(self, game_code: str, alias_lower: str) -> list[tuple[int, str]]:
-        return await self.service.query_alias_exact(game_code, alias_lower)
+        if self._uses_db_catalog(game_code):
+            records = await self.service.query_alias_exact(game_code, alias_lower)
+        else:
+            songs = await self.data.catalog.arcade_songs.catalog(game_code)
+            records = [
+                (song_id, alias)
+                for song_id, song in songs.items()
+                for alias in (getattr(song, "aliases", None) or [])
+                if alias.lower() == alias_lower
+            ]
+        records.extend(query_accepted_alias_exact(game_code, alias_lower))
+        return self._dedupe_alias_records(records)
 
     async def load_alias_records(self, game_code: str) -> list[tuple[int, str]]:
-        return await self.service.load_alias_records(game_code)
+        if self._uses_db_catalog(game_code):
+            records = await self.service.load_alias_records(game_code)
+        else:
+            songs = await self.data.catalog.arcade_songs.catalog(game_code)
+            records = [
+                (song_id, alias)
+                for song_id, song in songs.items()
+                for alias in (getattr(song, "aliases", None) or [])
+            ]
+        records.extend(accepted_alias_records(game_code))
+        return self._dedupe_alias_records(records)
 
     async def get_song_aliases_for_song_id(self, game_code: str, song_id: int) -> list[str]:
-        return await self.service.get_song_aliases_for_song_id(game_code, song_id)
+        if self._uses_db_catalog(game_code):
+            aliases = await self.service.get_song_aliases_for_song_id(game_code, song_id)
+        else:
+            song = await self.get_song_by_id(game_code, song_id)
+            aliases = list(getattr(song, "aliases", None) or []) if song is not None else []
+        aliases.extend(accepted_aliases_for_song_id(game_code, song_id))
+        return self._dedupe_aliases(aliases)
 
     async def get_song_with_difficulty(
         self,
@@ -112,6 +192,35 @@ class BotCatalogClient:
             self.service.invalidate_search_cache(game_code)
         except Exception as e:
             self.logger.warning(f"[{game_code}] 失效别名缓存失败（可忽略，下次 TTL 到期会自动刷新）: {e}")
+
+    @staticmethod
+    def _dedupe_alias_records(records: list[tuple[int, str]]) -> list[tuple[int, str]]:
+        result: list[tuple[int, str]] = []
+        seen: set[tuple[int, str]] = set()
+        for song_id, alias in records:
+            key = (int(song_id), str(alias).lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append((int(song_id), str(alias)))
+        return result
+
+    @staticmethod
+    def _dedupe_aliases(aliases: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for alias in aliases:
+            text = str(alias)
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(text)
+        return result
+
+    @staticmethod
+    def _uses_db_catalog(game_code: str) -> bool:
+        return str(game_code).strip().lower() in _DB_GAME_CODES
 
     async def _sync_adapter_from_remote(self, adapter: DomainAdapter) -> bool:
         gc = adapter.game_code

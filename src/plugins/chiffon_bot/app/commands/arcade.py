@@ -12,6 +12,7 @@ from arcade_helper.search import SongQueryResult
 from ...integrations.lxns.client import lxns_client
 from ...shared.bot_response import BotResponse
 from ...shared.handlers.song_text import format_song_text_detail, load_song_jacket_bytes
+from ...shared.search.catalog_search import search_song_with_audit
 from ._response import finish_with
 
 
@@ -27,7 +28,7 @@ def parse_arcade_song_args(text: str) -> tuple[str, str] | None:
 
 async def query_arcade_song(game_code: str, query: str | int, message_id: int) -> BotResponse:
     try:
-        results = await lxns_client.data.catalog.arcade_songs.search(game_code, query)
+        results = await search_song_with_audit(query, game_code=game_code)
     except Exception as e:  # noqa: BLE001
         return BotResponse(text=f"查询 {game_code} 曲库失败: {e}", reply_to=message_id)
     try:

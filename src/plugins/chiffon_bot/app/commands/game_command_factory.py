@@ -73,7 +73,7 @@ def register_game_commands(
         if not query:
             await alias_cmd.finish(f"请输入要查询的歌曲名或 ID，例如：/{gc}.alias 1")
 
-        result = await lxns_client.data.catalog.get_song_aliases(gc, query)
+        result = await lxns_client.catalog.get_song_aliases(gc, query)
         if not result:
             from ...shared.bot_response import BotResponse
             await finish_with(BotResponse(

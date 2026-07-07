@@ -65,6 +65,13 @@ class Config(BaseModel):
     song_data_auto_sync_interval_seconds: int = 86400
     song_data_auto_sync_startup_delay_seconds: int = 300
 
+    # Song search embedding fallback
+    song_search_embedding_enabled: bool = False
+    song_search_embedding_endpoint: str = "http://127.0.0.1:11434/api/embed"
+    song_search_embedding_model: str = "embeddinggemma"
+    song_search_embedding_path: str = "data/chiffon_bot/song_search_embeddings.jsonl"
+    song_search_embedding_threshold: float = 80.0
+
     chiffon_bot_group_whitelist: list[int] = []
     """允许使用 chiffon_bot 指令的群聊白名单，留空表示不启用白名单"""
 

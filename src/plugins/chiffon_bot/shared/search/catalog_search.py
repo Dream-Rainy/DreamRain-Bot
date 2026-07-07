@@ -38,7 +38,7 @@ async def search_song_with_audit(
     gc = _normalize_game_code(game_code)
     trace_id = _build_trace_id(query)
     started_at = monotonic()
-    results = await lxns_client.data.catalog.search_song(gc, query)
+    results = await lxns_client.catalog.search_song(gc, query)
     record_search_history(
         query=query,
         game_code=gc,
