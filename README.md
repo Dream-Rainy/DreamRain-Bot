@@ -191,17 +191,63 @@ docker compose -f docker-compose-dev.yml restart dreamrain-bot
 | `db_engine` | 数据库引擎：`postgres` / `sqlite` |
 | `lxns_api_key` | LXNS API 密钥（LXNS 查分/数据接口相关功能需要；未配置时插件仍可启动） |
 | `song_search_embedding_enabled` | 是否启用查歌 embedding 兜底，默认 `false` |
-| `song_search_embedding_endpoint` | 本地 embedding HTTP 端点，默认 `http://127.0.0.1:11434/api/embed` |
-| `song_search_embedding_model` | embedding 模型名，例如 `bge-m3` / `embeddinggemma` |
+| `song_search_embedding_endpoint` | 本地 embedding HTTP 端点，兼容 Ollama `/api/embed` 和 Hugging Face TEI `/embed`，默认 `http://127.0.0.1:11434/api/embed` |
+| `song_search_embedding_model` | embedding 模型名，例如 `Qwen/Qwen3-Embedding-0.6B` / `bge-m3` / `embeddinggemma` |
 | `song_search_embedding_path` | embedding JSONL 缓存路径 |
 | `song_search_embedding_threshold` | embedding 命中阈值，默认 `80.0` |
+| `song_search_reranker_enabled` | 是否启用查歌 reranker 精排，默认 `false` |
+| `song_search_reranker_endpoint` | 本地 reranker HTTP 端点，兼容 Hugging Face TEI `/rerank`，默认 `http://127.0.0.1:11435/rerank` |
+| `song_search_reranker_model` | reranker 模型名，例如 `Alibaba-NLP/gte-multilingual-reranker-base` / `bge-reranker-v2-m3` |
+| `song_search_reranker_threshold` | reranker top1 最低分，默认 `0.0` |
+| `song_search_reranker_min_margin` | reranker top1/top2 最小分差，默认 `0.0` |
 | `ONEBOT_ACCESS_TOKEN` | OneBot 鉴权 Token |
 
 完整配置项参见 [.env.example](./.env.example)。
 
 ## 查歌可靠性
 
-查歌会优先使用确定性结果：ID、标题、别名、归一化标题、简繁/拼音/罗马音和模糊匹配。BM25 只作为候选召回；如果 BM25 返回多个分数接近的候选，会先尝试可选 embedding 语义匹配，并要求 top1 与 top2 拉开差距后才接管，避免宽泛抢答。普通无结果场景也会使用 embedding 兜底；embedding 默认关闭，不影响普通部署。
+查歌会优先使用确定性结果：ID、标题、别名、归一化标题、简繁/拼音/罗马音和模糊匹配。BM25 只作为候选召回；如果 BM25 返回多个分数接近的候选，会先尝试可选 reranker 精排，再尝试 embedding 语义匹配，并要求 top1 与 top2 拉开差距后才接管，避免宽泛抢答。普通无结果场景也会使用 embedding 兜底；reranker 和 embedding 默认关闭，不影响普通部署。
+
+推荐基准方案是 TEI 跑 Qwen3 dense embedding，再用 GTE multilingual reranker 做重排：
+
+```powershell
+docker compose --profile search-ai up -d tei-embedding tei-reranker
+```
+
+容器内 `.env.prod` 可配置为：
+
+```env
+song_search_embedding_enabled=true
+song_search_embedding_endpoint=http://tei-embedding/embed
+song_search_embedding_model=Qwen/Qwen3-Embedding-0.6B
+song_search_reranker_enabled=true
+song_search_reranker_endpoint=http://tei-reranker/rerank
+song_search_reranker_model=Alibaba-NLP/gte-multilingual-reranker-base
+```
+
+如果在宿主机上测试，可使用 `http://127.0.0.1:11434/embed` 和 `http://127.0.0.1:11435/rerank`。如果使用 Ollama embedding endpoint，请把 `song_search_embedding_endpoint` 改成对应的 `/api/embed` 地址。切换 embedding 模型后需要重新执行 `/admin.search embedding rebuild <game>`。
+
+`Qwen/Qwen3-Reranker-0.6B` 暂不作为 TEI 基准模型；TEI 对它的加载兼容性不稳。后续如要评估 Qwen3 reranker，优先考虑 vLLM `/rerank` 作为实验路线。
+
+如需直接使用 FlagEmbedding 做 BGE-M3/BGE-Reranker 实验，可启动最小 HTTP 服务：
+
+```powershell
+uv sync --extra bge-service
+uv run uvicorn tools.bge_m3_service:app --host 0.0.0.0 --port 11436
+```
+
+然后配置：
+
+```env
+song_search_embedding_enabled=true
+song_search_embedding_endpoint=http://127.0.0.1:11436/embed
+song_search_embedding_model=bge-m3
+song_search_reranker_enabled=true
+song_search_reranker_endpoint=http://127.0.0.1:11436/rerank
+song_search_reranker_model=bge-reranker-v2-m3
+```
+
+bot 主链路只消费 dense embedding；`tools.bge_m3_service` 仍保留 `/embed-hybrid` 作为 BGE-M3 sparse / ColBERT 实验入口，但默认搜索链路不读取这些字段。BM25 仍保留为召回层，不建议直接停用。
 
 SUPERUSER 可用 `/admin.search` 维护搜索日志驱动的别名修正：
 

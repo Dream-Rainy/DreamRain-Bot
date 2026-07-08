@@ -21,6 +21,7 @@ from ...shared.search.embedding_cache import (
     rebuild_song_embeddings_from_songs,
     search_song_by_embedding,
 )
+from ...shared.search.reranker import rerank_song_results
 from .plugin_data import plugin_data
 
 
@@ -107,6 +108,14 @@ class BotCatalogClient:
             return results
         if results and not _is_uncertain_bm25(results):
             return results
+        if results:
+            try:
+                reranked_results = await rerank_song_results(self, game_code, str(query), results)
+            except Exception as e:
+                self.logger.warning(f"[{game_code}] reranker 搜索失败，已跳过: {e}")
+            else:
+                if reranked_results:
+                    return reranked_results
         kwargs = {}
         if results:
             kwargs = {

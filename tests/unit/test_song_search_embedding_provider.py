@@ -32,6 +32,29 @@ async def test_ollama_embed_provider_parses_api_embed_response() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tei_embed_provider_parses_direct_vector_response() -> None:
+    from src.plugins.chiffon_bot.shared.search.embedding_provider import embed_texts
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload == {
+            "inputs": ["alpha", "beta"],
+            "truncate": True,
+        }
+        return httpx.Response(200, json=[[1, 0], [0, 1]])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        vectors = await embed_texts(
+            ["alpha", "beta"],
+            endpoint="http://tei.test/embed",
+            model="bge-m3",
+            client=client,
+        )
+
+    assert vectors == [[1.0, 0.0], [0.0, 1.0]]
+
+
+@pytest.mark.asyncio
 async def test_embedding_cache_rebuild_and_search(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from arcade_helper.search import MatchType
     from src.plugins.chiffon_bot.shared.search import embedding_cache

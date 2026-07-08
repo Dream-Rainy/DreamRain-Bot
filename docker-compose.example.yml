@@ -89,6 +89,99 @@ services:
     networks:
       - qq
 
+  # Optional: TEI dense embedding service.
+  # Start with: docker compose --profile search-ai up -d tei-embedding
+  # In .env.prod for dreamrain-bot container, use:
+  #   song_search_embedding_endpoint=http://tei-embedding/embed
+  # For host-side testing, use: http://127.0.0.1:${TEI_EMBEDDING_PORT:-11434}/embed
+  #
+  # NVIDIA GPU:
+  #   Set TEI_EMBEDDING_IMAGE to a CUDA image, for example:
+  #     ghcr.io/huggingface/text-embeddings-inference:cuda-latest
+  #     ghcr.io/huggingface/text-embeddings-inference:1.9
+  #     ghcr.io/huggingface/text-embeddings-inference:86-1.9
+  #   Then uncomment the 'deploy' section below.
+  #
+  # AMD ROCm:
+  #   Use a TEI ROCm image/build matching your ROCm stack, then uncomment:
+  #     the 'devices' and 'group_add' sections below.
+  tei-embedding:
+    hostname: tei-embedding
+    image: "${TEI_EMBEDDING_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}"
+    container_name: dreamrain-tei-embedding
+    profiles:
+      - search-ai
+    command:
+      - --model-id
+      - "${TEI_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
+      - --port
+      - "80"
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HUB_ENABLE_HF_TRANSFER: "${HF_HUB_ENABLE_HF_TRANSFER:-1}"
+    ports:
+      - "${TEI_EMBEDDING_PORT:-11434}:80"
+    volumes:
+      - "${TEI_DATA_DIR:-./runtime/tei-data}:/data"
+    # ---- NVIDIA GPU Acceleration ----
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # ---- AMD ROCm Acceleration ----
+    # devices:
+    #   - /dev/kfd:/dev/kfd
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    networks:
+      - qq
+
+  # Optional: TEI reranker service.
+  # Start with: docker compose --profile search-ai up -d tei-reranker
+  # In .env.prod for dreamrain-bot container, use:
+  #   song_search_reranker_endpoint=http://tei-reranker/rerank
+  # For host-side testing, use: http://127.0.0.1:${TEI_RERANKER_PORT:-11435}/rerank
+  # GPU usage is the same as tei-embedding; override TEI_RERANKER_IMAGE and uncomment
+  # the relevant NVIDIA 'deploy' or ROCm device section below.
+  tei-reranker:
+    hostname: tei-reranker
+    image: "${TEI_RERANKER_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}"
+    container_name: dreamrain-tei-reranker
+    profiles:
+      - search-ai
+    command:
+      - --model-id
+      - "${TEI_RERANKER_MODEL:-Alibaba-NLP/gte-multilingual-reranker-base}"
+      - --port
+      - "80"
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HUB_ENABLE_HF_TRANSFER: "${HF_HUB_ENABLE_HF_TRANSFER:-1}"
+    ports:
+      - "${TEI_RERANKER_PORT:-11435}:80"
+    volumes:
+      - "${TEI_DATA_DIR:-./runtime/tei-data}:/data"
+    # ---- NVIDIA GPU Acceleration ----
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # ---- AMD ROCm Acceleration ----
+    # devices:
+    #   - /dev/kfd:/dev/kfd
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    networks:
+      - qq
+
 networks:
   qq:
     driver: bridge
