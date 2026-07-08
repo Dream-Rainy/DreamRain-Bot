@@ -210,7 +210,7 @@ async def test_embedding_cache_rebuild_batches_requests(monkeypatch: pytest.Monk
         return [[float(len(batches)), float(index)] for index, _text in enumerate(texts)]
 
     path = tmp_path / "embeddings.jsonl"
-    monkeypatch.setattr(embedding_cache, "_EMBEDDING_REBUILD_BATCH_SIZE", 2)
+    monkeypatch.setattr(embedding_cache, "embedding_rebuild_batch_size", lambda: 2)
     monkeypatch.setattr(embedding_cache, "embedding_path", lambda: path)
     monkeypatch.setattr(embedding_cache, "embedding_model", lambda: "test-model")
 

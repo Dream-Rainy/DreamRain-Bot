@@ -71,6 +71,7 @@ class Config(BaseModel):
     song_search_embedding_model: str = "embeddinggemma"
     song_search_embedding_path: str = "data/chiffon_bot/song_search_embeddings.jsonl"
     song_search_embedding_threshold: float = 80.0
+    song_search_embedding_rebuild_batch_size: int = 32
     song_search_reranker_enabled: bool = False
     song_search_reranker_endpoint: str = "http://127.0.0.1:11435/rerank"
     song_search_reranker_model: str = "bge-reranker-v2-m3"

@@ -20,7 +20,7 @@ from .embedding_provider import embed_texts, embedding_model
 
 DEFAULT_EMBEDDING_PATH = Path("data") / "chiffon_bot" / "song_search_embeddings.jsonl"
 DEFAULT_EMBEDDING_THRESHOLD = 80.0
-_EMBEDDING_REBUILD_BATCH_SIZE = 128
+_EMBEDDING_REBUILD_BATCH_SIZE = 32
 
 Embedder = Callable[[list[str]], Awaitable[list[list[float]]]]
 
@@ -36,6 +36,11 @@ def embedding_path() -> Path:
 
 def embedding_threshold() -> float:
     return float(get_plugin_config(Config).song_search_embedding_threshold)
+
+
+def embedding_rebuild_batch_size() -> int:
+    configured = int(get_plugin_config(Config).song_search_embedding_rebuild_batch_size)
+    return configured if configured > 0 else _EMBEDDING_REBUILD_BATCH_SIZE
 
 
 def build_embedding_text(title: str, artist: str = "", aliases: list[str] | None = None) -> str:
@@ -175,8 +180,9 @@ async def rebuild_song_embeddings_from_songs(
         texts.append(text)
 
     vectors: list[list[float]] = []
-    for start in range(0, len(texts), _EMBEDDING_REBUILD_BATCH_SIZE):
-        vectors.extend(await embedder(texts[start:start + _EMBEDDING_REBUILD_BATCH_SIZE]))
+    batch_size = embedding_rebuild_batch_size()
+    for start in range(0, len(texts), batch_size):
+        vectors.extend(await embedder(texts[start:start + batch_size]))
     if len(vectors) != len(metadata):
         raise ValueError(f"embedding count mismatch: expected {len(metadata)}, got {len(vectors)}")
 

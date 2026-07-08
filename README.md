@@ -195,6 +195,7 @@ docker compose -f docker-compose-dev.yml restart dreamrain-bot
 | `song_search_embedding_model` | embedding 模型名，例如 `Qwen/Qwen3-Embedding-0.6B` / `bge-m3` / `embeddinggemma` |
 | `song_search_embedding_path` | embedding JSONL 缓存路径 |
 | `song_search_embedding_threshold` | embedding 命中阈值，默认 `80.0` |
+| `song_search_embedding_rebuild_batch_size` | rebuild embedding 时每批请求条数，默认 `32`；如调大 TEI `--max-client-batch-size` 可同步调大 |
 | `song_search_reranker_enabled` | 是否启用查歌 reranker 精排，默认 `false` |
 | `song_search_reranker_endpoint` | 本地 reranker HTTP 端点，兼容 Hugging Face TEI `/rerank`，默认 `http://127.0.0.1:11435/rerank` |
 | `song_search_reranker_model` | reranker 模型名，例如 `Alibaba-NLP/gte-multilingual-reranker-base` / `bge-reranker-v2-m3` |
