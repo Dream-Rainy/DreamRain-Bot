@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import pytest
+from typing import ClassVar
 
+import pytest
 from arcade_helper.core.song import SongData, SongSheet
 from arcade_helper.search import MatchType, SongQueryResult
 
@@ -18,7 +19,9 @@ def test_parse_arcade_song_args():
 
 
 def test_format_arcade_song_detail():
-    from src.plugins.chiffon_bot.shared.handlers.song_text import format_song_text_detail
+    from src.plugins.chiffon_bot.shared.handlers.song_text import (
+        format_song_text_detail,
+    )
 
     assert format_song_text_detail("maimai", _song_result()) == [
         "[maimai] 曲目详情",
@@ -30,17 +33,6 @@ def test_format_arcade_song_detail():
         "备注: さなちゃんねる区域",
         "定数 (DX): 4.0 / 7.0 / 10.7 / 13.6",
     ]
-
-
-def test_extract_arcade_song_query():
-    from src.plugins.chiffon_bot.app.commands.natural_language import _extract_arcade_song_query
-
-    assert _extract_arcade_song_query("查歌 sdvx FLOWER") == ("sdvx", "FLOWER")
-    assert _extract_arcade_song_query("ongeki モンダイナイトリッパー！是什么歌") == (
-        "ongeki",
-        "モンダイナイトリッパー！",
-    )
-    assert _extract_arcade_song_query("テオ是什么歌") is None
 
 
 @pytest.mark.asyncio

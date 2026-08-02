@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import timedelta
-import re
 
+from arcade_helper.search import MatchType, SongQueryResult
 from nonebot import on_message
 from nonebot.adapters import Bot, Event
 from nonebot.internal.matcher import Matcher
@@ -14,17 +15,15 @@ from nonebot.log import logger
 from nonebot.params import EventPlainText
 from nonebot.rule import Rule
 
-from ._reaction import ack_message
-from .arcade import query_arcade_song
-
+from ...integrations.lxns.client import lxns_client
 from ...shared.bot_response import BotResponse
 from ...shared.game.adapter import DomainAdapter
 from ...shared.game.registry import iter_searchable_adapters
 from ...shared.handlers.generic_song_info import generic_song_info
 from ...shared.search.catalog_search import search_song_with_audit
-from arcade_helper.search import MatchType, SongQueryResult
 from ._reaction import ack_message
 from ._response import finish_with, send_with
+from .arcade import query_arcade_song
 
 _DISAMBIGUATION_TIMEOUT_SECONDS = 30
 
@@ -44,10 +43,7 @@ _SONG_PATTERNS = [
     r"^(.+?)是啥歌[？?]?$",
 ]
 
-_ARCADE_SONG_PATTERNS = [
-    r"^查歌\s+([a-z0-9_-]+)\s+(.+)$",
-    r"^([a-z0-9_-]+)\s+(.+?)(?:是什么歌|是啥歌)[？?]?$",
-]
+_ARCADE_SONG_PATTERN = r"^查歌\s+(\S+)\s+(.+)$"
 
 
 @dataclass(frozen=True)
@@ -84,15 +80,12 @@ def _extract_song_query(text: str) -> str | None:
 
 
 def _extract_arcade_song_query(text: str) -> tuple[str, str] | None:
-    for pattern in _ARCADE_SONG_PATTERNS:
-        match = re.match(pattern, text, re.IGNORECASE)
-        if not match:
-            continue
-        game_code = match.group(1).strip().lower()
-        query = match.group(2).strip()
-        if game_code and query:
-            return game_code, query
-    return None
+    match = re.match(_ARCADE_SONG_PATTERN, text, re.IGNORECASE)
+    if not match:
+        return None
+    game_code = match.group(1).strip().lower()
+    query = match.group(2).strip()
+    return (game_code, query) if game_code and query else None
 
 
 def _build_conflict_message(
@@ -218,7 +211,9 @@ def register_natural_language_commands() -> None:
         plain_text: str = EventPlainText(),
     ):
         text = plain_text.strip()
-        arcade_query = _extract_arcade_song_query(text)
+        arcade_query = _extract_arcade_song_query(
+            text, valid_codes=await _known_arcade_song_codes()
+        )
         if arcade_query is not None:
             game_code, query = arcade_query
             await ack_message(event, bot)
