@@ -79,13 +79,33 @@ def _extract_song_query(text: str) -> str | None:
     return None
 
 
-def _extract_arcade_song_query(text: str) -> tuple[str, str] | None:
+async def _known_arcade_song_codes() -> set[str] | None:
+    """Fetch known arcade-songs game codes; ``None`` disables code filtering."""
+    try:
+        sites = await lxns_client.data.catalog.arcade_songs.sites()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[NL] 获取 arcade-songs 站点列表失败，跳过游戏代码校验: {e}")
+        return None
+    return {
+        str(site["gameCode"]).strip().lower()
+        for site in sites
+        if isinstance(site, dict) and site.get("gameCode")
+    }
+
+
+def _extract_arcade_song_query(
+    text: str, valid_codes: set[str] | None = None
+) -> tuple[str, str] | None:
     match = re.match(_ARCADE_SONG_PATTERN, text, re.IGNORECASE)
     if not match:
         return None
     game_code = match.group(1).strip().lower()
     query = match.group(2).strip()
-    return (game_code, query) if game_code and query else None
+    if not game_code or not query:
+        return None
+    if valid_codes is not None and game_code not in valid_codes:
+        return None
+    return game_code, query
 
 
 def _build_conflict_message(
