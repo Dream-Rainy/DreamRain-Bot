@@ -50,31 +50,30 @@ def format_precent(num):
     return f"{num*100:.2f}%"
 
 def historical_boss_status(progress):
+    """根据各 boss 累计伤害倒推当前周目与剩余血量。"""
     records = progress["records"]
-    damage_by_boss = {}
-    latest_lap_by_boss = {}
+    total_damage_by_boss = {}
     for record in records:
-        lap = int(record["lap"])
         boss = int(record["boss"])
         damage = int(record["damage"])
-        damage_by_boss[(lap, boss)] = damage
-        latest_lap_by_boss[boss] = max(lap, latest_lap_by_boss.get(boss, 0))
+        total_damage_by_boss[boss] = total_damage_by_boss.get(boss, 0) + damage
 
-    if not latest_lap_by_boss:
+    if not total_damage_by_boss:
         return ""
 
-    default_lap = min(latest_lap_by_boss.values())
     boss_rows = []
     current_laps = []
     for boss in range(1, 6):
-        lap = latest_lap_by_boss.get(boss, default_lap)
-        damage = damage_by_boss.get((lap, boss), 0)
-        max_hp = boss_max[stage_dict[lap2stage(lap)]][boss - 1]
-        if damage >= max_hp:
-            lap += 1
-            damage = 0
+        total_damage = total_damage_by_boss.get(boss, 0)
+        lap = 1
+        remaining = total_damage
+        while True:
             max_hp = boss_max[stage_dict[lap2stage(lap)]][boss - 1]
-        current_hp = max(max_hp - damage, 0)
+            if remaining < max_hp:
+                break
+            remaining -= max_hp
+            lap += 1
+        current_hp = max_hp - remaining
         current_laps.append(lap)
         boss_rows.append(
             f"{lap}周目{boss}王: "

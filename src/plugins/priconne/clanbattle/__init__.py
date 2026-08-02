@@ -303,6 +303,15 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                 clan_info.error_count = 0
                 await clan_info.add_record(clan_battle_top["damage_history"], loop_num)
 
+                # 保存最新状态快照，供离线「状态」命令展示
+                if group_id in run_group:
+                    run_group[group_id]["snapshot"] = {
+                        "time": int(time.time()),
+                        "rank": clan_info.rank,
+                        "boss": clan_info.general_boss(),
+                    }
+                    await _save_run_group()
+
             except Exception as e:
                 print(traceback.format_exc())
                 clan_info.loop_check = False
@@ -388,18 +397,16 @@ async def daostate(bot, ev):
                     msg += f"->{i+1}：{name} {text} 已过去{format_time(now - apply_time)}\n"
         await safe_send(bot, ev, msg.strip())
     else:
-        db = RecordDao(group_id)
-        progress = await db.get_historical_boss_progress()
-        if not progress:
-            await bot.send(ev, "未查询到本群当前进度，请开启出刀监控")
+        snapshot = (await load_config(run_path)).get(str(group_id), {}).get("snapshot")
+        if not snapshot:
+            await bot.send(ev, "未查询到本群历史状态，请开启出刀监控")
             return
-        latest_time = time.strftime("%Y/%m/%d-%H:%M:%S", time.localtime(progress["latest_time"]))
+        latest_time = time.strftime("%Y/%m/%d-%H:%M:%S", time.localtime(snapshot["time"]))
         msg = (
-            "当前排名：历史数据\n"
             "监控状态：关闭\n"
-            "监控人为：历史数据\n"
             f"历史记录时间：{latest_time}\n"
-            + historical_boss_status(progress)
+            f"历史排名：{snapshot['rank']}\n"
+            + snapshot["boss"]
         )
         await safe_send(bot, ev, msg)
 
