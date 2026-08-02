@@ -71,6 +71,15 @@ class AutopcrRemoteClient:
     async def gacha_current(self) -> RemoteResult:
         return await self._request("GET", "bot/gacha/current")
 
+    async def labyrinth_guilds(self) -> list[dict[str, Any]]:
+        payload = await self._request_json("GET", "bot/labyrinth/guilds")
+        if not isinstance(payload, list):
+            raise AutopcrRemoteError("远端黎明界公会数据格式错误")
+        for item in payload:
+            if not isinstance(item, dict) or not isinstance(item.get("guild_id"), int):
+                raise AutopcrRemoteError("远端黎明界公会数据格式错误")
+        return [dict(item) for item in payload]
+
     async def user_info(self, qq: str) -> dict[str, Any]:
         payload = await self._request_json("GET", f"bot/users/{qq}")
         if not isinstance(payload, dict):
@@ -176,8 +185,8 @@ class AutopcrRemoteClient:
                 )
                 return await self._result_from_response(response)
             if status in {"failed", "timeout"}:
-                detail = payload.get("error") or status
-                raise AutopcrRemoteError(f"远端 autopcr job {status}: {detail}")
+                detail = str(payload.get("error") or f"远端 autopcr job {status}")
+                raise AutopcrRemoteError(detail)
             if time.monotonic() >= deadline:
                 raise AutopcrRemoteError(f"远端 autopcr job 等待超时: {job_id}")
 
@@ -191,6 +200,9 @@ class AutopcrRemoteClient:
                 response = await client.request(method, url, headers=self._headers(), **kwargs)
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
+                detail = _error_detail_message(exc.response)
+                if detail:
+                    raise AutopcrRemoteError(detail) from exc
                 detail = exc.response.text.strip() or exc.response.reason_phrase
                 raise AutopcrRemoteError(f"远端 autopcr 返回 {exc.response.status_code}: {detail}") from exc
             except httpx.RequestError as exc:
@@ -216,6 +228,21 @@ class AutopcrRemoteClient:
     def _account_path(self, qq: str, alias: str | None, suffix: str) -> str:
         account = quote(alias or "_default", safe="")
         return f"bot/users/{qq}/accounts/{account}/{suffix}"
+
+
+def _error_detail_message(response: httpx.Response) -> str | None:
+    content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+    if "json" not in content_type:
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if isinstance(payload, dict):
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return None
 
 
 def _messages_from_payload(payload: Any) -> list[RemoteMessage]:

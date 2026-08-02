@@ -234,6 +234,16 @@ async def _run_bridge_job(job: BridgeJob, work: Callable[[], Awaitable[Response]
         job.status = "timeout"
         job.updated_at = time.time()
         autopcr_logger.warning(f"bridge job {job.job_id} {job.name}: {job.error}")
+    except FileNotFoundError:
+        parts = job.name.split(":", 2)
+        qid = parts[1] if len(parts) > 1 else ""
+        if qid:
+            job.error = f"未找到{qid}的账号，请发送【#配置日常】进行配置"
+        else:
+            job.error = "未找到账号配置数据，请发送【#配置日常】进行配置"
+        job.status = "failed"
+        job.updated_at = time.time()
+        autopcr_logger.warning(f"bridge job {job.job_id} {job.name}: {job.error}")
     except Exception as e:
         job.error = str(e)
         job.status = "failed"
@@ -903,14 +913,18 @@ def install_bot_bridge(server: HttpServer):
         return acc, False
 
     def resolve_account_name(mgr, account_name: str):
+        if account_name == BATCHINFO:
+            return account_name
         if account_name != "_default":
+            if account_name not in mgr.accounts():
+                raise AccountException(f"未找到昵称为【{account_name}】的账号")
             return account_name
         if mgr.default_account:
             return mgr.default_account
         accounts = list(mgr.accounts())
         if len(accounts) == 1:
             return accounts[0]
-        raise AccountException("No default account")
+        raise AccountException("存在多账号且未找到默认账号，请指定昵称")
 
     async def get_context():
         data = await quart_request.get_json(silent=True) or {}
@@ -1036,20 +1050,23 @@ def install_bot_bridge(server: HttpServer):
         if qid not in set(usermgr.qids()):
             return jsonify({"message": f"未找到{qid}的账号，请发送【#配置日常】进行配置"}), 404
 
-        async with usermgr.load(qid, readonly=True) as mgr:
-            accounts = []
-            for alias in mgr.accounts():
-                async with mgr.load(alias, readonly=True) as acc:
-                    item = acc.generate_result_info()
-                    item["alias"] = alias
-                    accounts.append(item)
+        try:
+            async with usermgr.load(qid, readonly=True) as mgr:
+                accounts = []
+                for alias in mgr.accounts():
+                    async with mgr.load(alias, readonly=True) as acc:
+                        item = acc.generate_result_info()
+                        item["alias"] = alias
+                        accounts.append(item)
 
-            return jsonify({
-                "qq": qid,
-                "default_account": mgr.default_account,
-                "accounts": accounts,
-                "clan": mgr.secret.clan,
-            })
+                return jsonify({
+                    "qq": qid,
+                    "default_account": mgr.default_account,
+                    "accounts": accounts,
+                    "clan": mgr.secret.clan,
+                })
+        except (AccountException, FileNotFoundError):
+            return jsonify({"message": f"未找到{qid}的账号，请发送【#配置日常】进行配置"}), 404
 
     @server.api.route("/bot/runtime/status", methods=["GET"])
     @require_bot_token
@@ -1060,6 +1077,15 @@ def install_bot_bridge(server: HttpServer):
     @require_bot_token
     async def bot_gacha_current():
         return text_msg("\n".join(db.get_mirai_gacha()))
+
+    @server.api.route("/bot/labyrinth/guilds", methods=["GET"])
+    @require_bot_token
+    async def bot_labyrinth_guilds():
+        guilds = [
+            {"guild_id": guild.guild_id, "guild_name": guild.guild_name}
+            for guild in db.labyrinth_enter_guild.values()
+        ]
+        return jsonify(guilds)
 
     @server.api.route("/bot/users/<string:qid>/daily", methods=["POST"])
     @require_bot_token

@@ -48,6 +48,7 @@ sv_help = f"""
 - {prefix}查装备 [<rank>] [fav] 查询缺口装备，rank为数字，只查询>=rank的角色缺口装备，fav表示只查询favorite的角色
 - {prefix}查深域 查询深域通关情况
 - {prefix}查公会深域 查询公会深域通关情况
+- {prefix}黎明界开局 <公会名> 重新进入黎明界刷开局路线，公会名可只打部分字
 - {prefix}刷图推荐 [<rank>] [fav] 查询缺口装备的刷图推荐，格式同上
 - {prefix}公会支援 查询公会支援角色配置
 - {prefix}卡池 查看当前卡池
@@ -314,6 +315,10 @@ async def _target_qq_for_operation(botev: BotEvent) -> str:
     sender_qq = await botev.send_qq()
     if sender_qq != target_qq and not await botev.is_admin():
         await botev.finish("只有管理员可以操作他人账号")
+    try:
+        await remote.user_info(target_qq)
+    except AutopcrRemoteError as exc:
+        await botev.finish(str(exc))
     return target_qq
 
 
@@ -1144,6 +1149,26 @@ async def find_talent_quest(botev: BotEvent) -> dict[str, Any]:
 
 @register_tool("查公会深域", "find_clan_talent_quest")
 async def find_clan_talent_quest(botev: BotEvent) -> dict[str, Any]:
+    return {}
+
+
+@register_tool("黎明界开局", "labyrinth_start_reroll")
+async def labyrinth_start_reroll(botev: BotEvent) -> dict[str, Any]:
+    try:
+        guilds = await remote.labyrinth_guilds()
+    except AutopcrRemoteError:
+        guilds = []
+    if not guilds:
+        await botev.finish("无法从远端获取黎明界公会列表，远端服务可能未更新，请稍后重试")
+    msg = await botev.message()
+    pattern = msg[0] if msg else ""
+    names = [str(guild.get("guild_name") or "").replace(r"\n", "") for guild in guilds]
+    if pattern:
+        for index, name in enumerate(names):
+            if pattern in name:
+                del msg[0]
+                return {"labyrinth_reroll_guild_id": guilds[index]["guild_id"]}
+    await botev.finish("未找到公会，请输入包含以下公会名字：" + "\n".join(names))
     return {}
 
 

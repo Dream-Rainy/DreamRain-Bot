@@ -342,6 +342,214 @@ async def test_autopcr_remote_job_failure_raises(app, monkeypatch):
             httpx.Response(
                 202,
                 headers={"content-type": "application/json"},
-                json={"job_id": "job-2", "status": "running"},
+                json={"job_id": "job-2", "status": "failed", "error": "boom"},
             )
         )
+
+
+async def test_autopcr_labyrinth_reroll_parser(app, monkeypatch):
+    _load_autopcr()
+
+    from src.plugins.autopcr import handlers
+
+    async def fake_guilds():
+        return [
+            {"guild_id": 1, "guild_name": "美食殿堂"},
+            {"guild_id": 2, "guild_name": "破晓\n之星"},
+        ]
+
+    monkeypatch.setattr(handlers.remote, "labyrinth_guilds", fake_guilds)
+
+    class FakeBotEvent:
+        def __init__(self, message):
+            self._message = message
+
+        async def message(self):
+            return self._message
+
+    botev = FakeBotEvent(["破晓"])
+    result = await handlers.tool_info["黎明界开局"].config_parser(botev)
+
+    assert result == {"labyrinth_reroll_guild_id": 2}
+    assert botev._message == []
+
+
+async def test_autopcr_labyrinth_reroll_parser_missing_guild(app, monkeypatch):
+    _load_autopcr()
+
+    from src.plugins.autopcr import handlers
+
+    async def fake_guilds():
+        return [{"guild_id": 1, "guild_name": "美食殿堂"}]
+
+    monkeypatch.setattr(handlers.remote, "labyrinth_guilds", fake_guilds)
+
+    class FakeBotEvent:
+        def __init__(self, message):
+            self._message = message
+            self.finished_message = None
+
+        async def message(self):
+            return self._message
+
+        async def finish(self, msg):
+            self.finished_message = msg
+            raise RuntimeError(msg)
+
+    for tokens in (["不知道"], []):
+        botev = FakeBotEvent(list(tokens))
+        with pytest.raises(RuntimeError, match="未找到公会"):
+            await handlers.tool_info["黎明界开局"].config_parser(botev)
+        assert "美食殿堂" in botev.finished_message
+
+
+async def test_autopcr_remote_labyrinth_guilds_payload(app):
+    _load_autopcr()
+
+    import httpx
+
+    from src.plugins.autopcr.remote import AutopcrRemoteClient, AutopcrRemoteError
+
+    client = object.__new__(AutopcrRemoteClient)
+
+    async def fake_request_json(method, path, **kwargs):
+        assert (method, path) == ("GET", "bot/labyrinth/guilds")
+        return [{"guild_id": 5, "guild_name": "咲恋救济院"}]
+
+    client._request_json = fake_request_json
+    assert await client.labyrinth_guilds() == [{"guild_id": 5, "guild_name": "咲恋救济院"}]
+
+    async def bad_request_json(method, path, **kwargs):
+        return {"guild_id": 5}
+
+    client._request_json = bad_request_json
+    with pytest.raises(AutopcrRemoteError, match="公会数据格式错误"):
+        await client.labyrinth_guilds()
+
+
+async def test_autopcr_remote_error_prefers_message_body(app, monkeypatch):
+    _load_autopcr()
+
+    import httpx
+
+    from src.plugins.autopcr import remote as remote_module
+    from src.plugins.autopcr.remote import AutopcrRemoteClient, AutopcrRemoteError
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def request(self, method, url, **kwargs):
+            return httpx.Response(
+                404,
+                headers={"content-type": "application/json"},
+                json={"message": "未找到123的账号，请发送【#配置日常】进行配置"},
+                request=httpx.Request(method, url),
+            )
+
+    monkeypatch.setattr(remote_module.httpx, "AsyncClient", FakeClient)
+
+    client = AutopcrRemoteClient.__new__(AutopcrRemoteClient)
+    client.base_url = "https://autopcr.example/api/"
+    client.public_base_url = "https://autopcr.example/"
+    client.token = ""
+    client.timeout = 1.0
+
+    with pytest.raises(AutopcrRemoteError) as exc_info:
+        await client._send("GET", "bot/users/123")
+
+    assert str(exc_info.value) == "未找到123的账号，请发送【#配置日常】进行配置"
+
+
+async def test_autopcr_target_qq_requires_admin_for_others(app):
+    _load_autopcr()
+
+    from src.plugins.autopcr import handlers
+
+    class FakeBotEvent:
+        def __init__(self):
+            self.finished_message = None
+
+        async def target_qq(self):
+            return "456"
+
+        async def send_qq(self):
+            return "123"
+
+        async def is_admin(self):
+            return False
+
+        async def finish(self, msg):
+            self.finished_message = msg
+            raise RuntimeError(msg)
+
+    botev = FakeBotEvent()
+    with pytest.raises(RuntimeError, match="只有管理员可以操作他人账号"):
+        await handlers._target_qq_for_operation(botev)
+    assert botev.finished_message == "只有管理员可以操作他人账号"
+
+
+async def test_autopcr_target_qq_unknown_account(app, monkeypatch):
+    _load_autopcr()
+
+    from src.plugins.autopcr import handlers
+    from src.plugins.autopcr.remote import AutopcrRemoteError
+
+    async def fake_user_info(qq):
+        raise AutopcrRemoteError(f"未找到{qq}的账号，请发送【#配置日常】进行配置")
+
+    monkeypatch.setattr(handlers.remote, "user_info", fake_user_info)
+
+    class FakeBotEvent:
+        def __init__(self):
+            self.finished_message = None
+
+        async def target_qq(self):
+            return "456"
+
+        async def send_qq(self):
+            return "456"
+
+        async def is_admin(self):
+            return False
+
+        async def finish(self, msg):
+            self.finished_message = msg
+            raise RuntimeError(msg)
+
+    botev = FakeBotEvent()
+    with pytest.raises(RuntimeError, match="未找到456的账号"):
+        await handlers._target_qq_for_operation(botev)
+    assert botev.finished_message == "未找到456的账号，请发送【#配置日常】进行配置"
+
+
+async def test_autopcr_target_qq_happy_path(app, monkeypatch):
+    _load_autopcr()
+
+    from src.plugins.autopcr import handlers
+
+    async def fake_user_info(qq):
+        return {"qq": qq, "accounts": []}
+
+    monkeypatch.setattr(handlers.remote, "user_info", fake_user_info)
+
+    class FakeBotEvent:
+        async def target_qq(self):
+            return "123"
+
+        async def send_qq(self):
+            return "123"
+
+        async def is_admin(self):
+            return False
+
+        async def finish(self, msg):
+            raise AssertionError(f"unexpected finish: {msg}")
+
+    assert await handlers._target_qq_for_operation(FakeBotEvent()) == "123"
