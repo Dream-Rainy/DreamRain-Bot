@@ -1,5 +1,6 @@
 import os
 import traceback
+from nonebot import logger
 from .base import CancleError, find_item, format_bignum, format_precent, clan_path
 from .sql import RecordDao, SubscribeDao, TreeDao, ApplyDao
 from ..util.tools import load_config, write_config, lap2stage, stage_dict
