@@ -21,7 +21,7 @@ from .kpi import kpi_report
 from .sql import SubscribeDao, RecordDao, SLDao, TreeDao, ApplyDao, clear_group_data
 from .pcr_calculator import calculator
 
-from ..pcrclient import init_device_id, ApiException
+from ..pcrclient import init_device_id, ApiException, AccountKickedException, SessionExpiredException, MaintenanceException
 
 help_text = '''
 * “+” 表示空格
@@ -322,7 +322,34 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                     await _loop_send(bot, ev, group_id, f"#编号HN000{loop_num}监控已关闭")
                     return
 
-                # 探测旧会话，区分顶号与普通错误（顶号不重试，避免登录互顶）
+                # 顶号：不重试，直接退出
+                if isinstance(e, AccountKickedException):
+                    await _loop_send(bot, ev, group_id, "当前账号已在其他设备登录，监控已退出")
+                    return
+
+                # 会话过期：直接重连拿新 session
+                if isinstance(e, SessionExpiredException):
+                    if await _reconnect_once(group_id, qq_id, account_file):
+                        clan_info.error_count = 0
+                        await _loop_send(bot, ev, group_id, "会话已过期，已自动重新登录")
+                        clan_info.loop_check = time.time()
+                        run_group[group_id] = {"self_id": self_id, "qq_id": qq_id}
+                        await _save_run_group()
+                        continue
+                    await _loop_send(bot, ev, group_id, "会话已过期，重连失败，监控已退出")
+                    return
+
+                # 维护：退避重试，但提示是维护
+                if isinstance(e, MaintenanceException):
+                    wait = min(2 ** (clan_info.error_count + 1), 300)
+                    await _loop_send(bot, ev, group_id, f"服务器维护中，{wait}秒后重试")
+                    await asyncio.sleep(wait)
+                    clan_info.loop_check = time.time()
+                    run_group[group_id] = {"self_id": self_id, "qq_id": qq_id}
+                    await _save_run_group()
+                    continue
+
+                # 其他错误：探测旧会话，区分顶号与普通错误（顶号不重试，避免登录互顶）
                 reachable, status, message = await clan_info.probe_session()
                 logger.warning(
                     f"priconne monitor error, group={group_id}, reachable={reachable}, "
