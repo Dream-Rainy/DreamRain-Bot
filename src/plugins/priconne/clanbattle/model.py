@@ -76,16 +76,31 @@ class ClanBattle:
         try:
             load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'})
         except ApiException as e:
+            logger.warning(f"priconne probe_session ApiException: code={getattr(e, 'code', None)}, msg={e}")
             return False, getattr(e, "code", None), str(e)
         except Exception as e:
+            logger.warning(f"priconne probe_session unexpected error: {e!r}")
             return False, None, str(e)
         if isinstance(load_index, dict) and "server_error" in load_index:
             err = load_index.get("server_error") or {}
-            return False, err.get("status"), err.get("message", "")
+            status = err.get("status")
+            message = err.get("message", "")
+            title = err.get("title", "")
+            logger.warning(
+                f"priconne probe_session server_error: status={status}, "
+                f"title={title!r}, message={message!r}, raw={err!r}"
+            )
+            return False, status, message
         return True, None, ""
 
     async def get_coin(self):
         load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'})
+        if isinstance(load_index, dict) and "server_error" in load_index:
+            err = load_index.get("server_error") or {}
+            logger.warning(
+                f"priconne get_coin server_error: status={err.get('status')}, "
+                f"title={err.get('title')!r}, message={err.get('message')!r}, raw={err!r}"
+            )
         return find_item(load_index["item_list"], 90006)
 
     async def get_clanbattle_top(self):
