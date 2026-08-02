@@ -20,6 +20,7 @@ class ClanBattle:
         self.notice_tree = []
         self.notice_fighter = []
         self.notice_subscribe = []
+        self.notice_coop = []
         self.boss = [Boss(), Boss(), Boss(), Boss(), Boss()]
 
     def init_database(self):
@@ -211,6 +212,9 @@ class Boss:
         self.stage_num = 0
         self.current_hp = 0
         self.fighter_num = 0
+        self.coop_notified = False  # 本 boss 已提醒过合刀
+        self.last_kill_name = ""  # 最近一次击杀本 boss 的玩家名
+        self.last_kill_time = 0   # 最近一次击杀时间戳
 
     def refresh(self, current_hp, lap_num, order, max_hp):
         self.current_hp = current_hp

@@ -1,5 +1,6 @@
 import re
 import os
+import math
 import traceback
 import time
 import asyncio
@@ -126,6 +127,26 @@ KICK_KEYWORDS = ("其他设备", "已在", "顶号")
 MAX_RETRY = 10
 
 
+async def _median_knife_damage(clan_info, hours: int = 24):
+    """全群最近 hours 小时完整刀伤害中位数（flag==0，尾刀/补偿已过滤）；无完整刀记录返回 None。"""
+    try:
+        return await clan_info.record.get_full_knife_median_damage(int(time.time() - hours * 3600))
+    except Exception:
+        return None
+
+
+def _tail_compensation_seconds(remaining_hp: float, full_dmg: float) -> int | None:
+    """两刀合刀时，尾刀（击杀boss那一刀）能获得的补偿秒数。
+
+    前刀打满90s造成 full_dmg，boss剩余 H - full_dmg 由尾刀击杀。
+    补偿秒数公式（与 cal 计算器一致）：e = ceil(110 - 90 * (H - d) / d)。
+    """
+    if not full_dmg or remaining_hp <= full_dmg or remaining_hp > 2 * full_dmg:
+        return None
+    e = 110 - 90 * (remaining_hp - full_dmg) / full_dmg
+    return max(0, min(90, math.ceil(e)))
+
+
 def _is_kicked(status, message):
     if status in KICK_STATUS_CODES:
         return True
@@ -215,14 +236,35 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                     if fighter_num := await clan_info.refresh_fighter_num(lap_num, order):
                         clan_info.notice_fighter.append(f"{i+1}王当前有{fighter_num}人出刀")
 
+                    # 合刀提醒：有人出刀且血量处于合刀窗口 d < H <= 2d 时提醒一次（d=全群近24h完整刀平均伤害）。
+                    # 合刀 = 出补偿刀：前刀打满90s打残、尾刀（击杀boss那一刀）击杀拿补偿。
+                    # H <= d 一刀直接击杀无需合刀；d < H <= 2d 两刀可收、尾刀必出补偿刀；
+                    # H > 2d 两刀打不死，尾刀白打90s亏一刀，不提醒。
+                    if current_hp and not boss.coop_notified:
+                        if boss.fighter_num > 0:
+                            d = await _median_knife_damage(clan_info)
+                            if d and d < current_hp <= 2 * d:
+                                comp = _tail_compensation_seconds(current_hp, d)
+                                comp_text = f"，尾刀预计补偿约{comp}秒" if comp is not None else ""
+                                last_kill_text = f"，上一位结算：{boss.last_kill_name}" if boss.last_kill_name else ""
+                                clan_info.notice_coop.append(
+                                    f"{lap_num}周目{i+1}王当前剩余{format_bignum(current_hp)}（{format_precent(current_hp / max_hp)}），"
+                                    f"刀伤约{format_bignum(int(d))}/刀（中位数）{comp_text}{last_kill_text}，可以开始计划合刀了喵"
+                                )
+                                boss.coop_notified = True
+                    elif current_hp >= max_hp:
+                        boss.coop_notified = False  # 血量回满（boss刷新），重置提醒标记
+
                     if current_hp != boss.current_hp or lap_num != boss.lap_num:
                         change = True
                         boss.refresh(current_hp, lap_num, order, max_hp)
 
                 await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_subscribe))
                 await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_fighter))
+                await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_coop))
                 clan_info.notice_subscribe.clear()
                 clan_info.notice_fighter.clear()
+                clan_info.notice_coop.clear()
 
                 if change:
                     notice_progress = []
@@ -233,6 +275,9 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                             # 通知挂树，清空申请出刀
                             if history["kill"]:
                                 boss_order = int(history["order_num"])
+                                boss = clan_info.boss[boss_order - 1]
+                                boss.last_kill_name = history["name"]
+                                boss.last_kill_time = history["create_time"]
                                 notice_progress.append(clan_info.general_boss())
                                 try:
                                     if offtree_text := await clan_info.tree.notify_tree(boss_order):

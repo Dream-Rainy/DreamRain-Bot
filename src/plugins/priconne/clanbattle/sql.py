@@ -502,6 +502,29 @@ class RecordDao:
                 for row in rows
             ]
 
+    async def get_full_knife_median_damage(self, start_ts: int) -> float | None:
+        """从 start_ts 到最新记录为止的完整刀伤害中位数（flag==0），无记录返回 None。"""
+        latest_time = await self.get_latest_time()
+        async with get_session() as sess:
+            r = await sess.execute(
+                select(Record.damage)
+                .where(
+                    Record.group_id == self.group_id,
+                    Record.time >= start_ts,
+                    Record.time <= latest_time,
+                    Record.flag == 0,
+                )
+                .order_by(Record.damage.asc())
+            )
+            damages = [row[0] for row in r.fetchall()]
+            if not damages:
+                return None
+            n = len(damages)
+            mid = n // 2
+            if n % 2:
+                return float(damages[mid])
+            return (damages[mid - 1] + damages[mid]) / 2.0
+
     async def get_historical_boss_progress(self):
         latest_time = await self.get_latest_time()
         if not latest_time:
