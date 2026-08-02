@@ -41,7 +41,7 @@ def _get_version() -> str:
         with open(STATIC_VERSION_ORIGIN_FILE, encoding='utf-8') as ver:
             if version := ver.read().strip():
                 return version
-    return "11.7.1"
+    return "11.7.2"
 
 
 def _set_version(version: str):
@@ -75,8 +75,8 @@ def init_device_id(clear_id = False):
 defaultHeaders = {
     'Accept-Encoding': 'gzip',
     'User-Agent': 'Dalvik/2.1.0 (Linux, U, Android 5.1.1, PCRT00 Build/LMY48Z)',
-    'X-Unity-Version': '2021.3.20f1c11',
-    'APP-VER': "11.7.1",
+    'X-Unity-Version': '2021.3.20f1c1',
+    'APP-VER': "11.7.2",
     'BATTLE-LOGIC-VERSION': '4',
     'BUNDLE-VER': '',
     'DEVICE': '2',
@@ -230,14 +230,14 @@ class pcrclient:
 
     async def login(self):
         used_saved_token = self.bsdk.has_saved_token()
-        self.uid, self.access_key = await self.bsdk.b_login()
+        self.uid, self.access_key = await self.bsdk.login()
 
         try:
             await self._login_with_current_token()
         except Exception as e:
             if used_saved_token and self.bsdk.has_password_credentials() and self._can_refresh_token(e):
                 logger.warning(f"saved priconne token failed, refreshing with account password: {e}")
-                self.uid, self.access_key = await self.bsdk.b_login(force_password=True)
+                self.uid, self.access_key = await self.bsdk.login(force_password=True)
                 await self._login_with_current_token()
                 return
             raise

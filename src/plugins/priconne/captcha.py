@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import httpx
 from nonebot import get_driver, logger
 
+from .bsgamesdk import captch
 from .compat import Service
 from .config import config
 
@@ -18,6 +19,7 @@ captcha_header = {
 
 sv = Service("priconne验证码", visible=False)
 _captcha_auto = config.priconne_captcha_auto
+_captcha_local = config.priconne_captcha_local
 _pending: dict[str, "ManualCaptchaRequest"] = {}
 
 
@@ -103,15 +105,51 @@ async def _send_captcha_message(ctx: CaptchaContext | None, message: str) -> Non
     logger.warning(f"priconne captcha message was not delivered: {message}")
 
 
-async def auto_captcha_verifier(gt: str, challenge: str, userid: str):
+# ---- 验证器（对齐 autopcr sdk/validator.py，均自行 start_captcha，返回 {"challenge", "gt_user_id", "validate"}）----
+
+_gtlv_client = None
+_gtlv_client_lock = asyncio.Lock()
+
+
+async def _get_gtlv_client():
+    # 复用同一个 Client：首次遇到点选验证码时加载识别模型，这项开销只应付出一次。
+    global _gtlv_client
+    if _gtlv_client is None:
+        async with _gtlv_client_lock:
+            if _gtlv_client is None:
+                from gtlv import Client
+                _gtlv_client = Client(max_attempts=3)
+    return _gtlv_client
+
+
+async def local_captcha_verifier():
+    """gtlv 本地过码（对齐 autopcr sdk/validator.py 的 localValidator）。"""
+    cap = await captch()
+    try:
+        client = await _get_gtlv_client()
+        result = await client.solve(cap['gt'], cap['challenge'])
+        info = {
+            "challenge": result.challenge,
+            "gt_user_id": cap['gt_user_id'],
+            "validate": result.validate,
+        }
+        logger.info(f"priconne local validator solved a {result.captcha_type} captcha")
+    except Exception as e:
+        raise Exception(f"本地过码失败：{e}") from e
+    return info
+
+
+async def auto_captcha_verifier():
+    """远程过码（pcrd.tencentbot.top，对齐 autopcr sdk/validator.py 的 remoteValidator）。"""
+    cap = await captch()
     async with httpx.AsyncClient(timeout=30) as client:
         res = await client.get(
             "https://pcrd.tencentbot.top/geetest_renew",
             params={
                 "captcha_type": "1",
-                "challenge": challenge,
-                "gt": gt,
-                "userid": userid,
+                "challenge": cap["challenge"],
+                "gt": cap["gt"],
+                "userid": cap["gt_user_id"],
                 "gs": "1",
             },
             headers=captcha_header,
@@ -133,7 +171,7 @@ async def auto_captcha_verifier(gt: str, challenge: str, userid: str):
 
             info = data["info"]
             if isinstance(info, dict) and "validate" in info:
-                return info["challenge"], info["gt_user_id"], info["validate"]
+                return {"challenge": info["challenge"], "gt_user_id": info["gt_user_id"], "validate": info["validate"]}
             if info in ["fail", "url invalid"]:
                 raise Exception("自动过码失败")
             if info == "in running":
@@ -145,7 +183,9 @@ async def auto_captcha_verifier(gt: str, challenge: str, userid: str):
     raise Exception("自动过码多次失败")
 
 
-async def manual_captcha_verifier(gt: str, challenge: str, userid: str, ctx: CaptchaContext | None = None):
+async def manual_captcha_verifier(ctx: CaptchaContext | None = None):
+    cap = await captch()
+    gt, challenge, userid = cap["gt"], cap["challenge"], cap["gt_user_id"]
     token = _new_token()
     req = ManualCaptchaRequest(
         token=token,
@@ -165,25 +205,31 @@ async def manual_captcha_verifier(gt: str, challenge: str, userid: str, ctx: Cap
         await asyncio.wait_for(req.event.wait(), timeout=max(config.priconne_captcha_timeout, 1))
         if not req.validate:
             raise Exception("未收到 validate")
-        return challenge, userid, req.validate
+        return {"challenge": challenge, "gt_user_id": userid, "validate": req.validate}
     except asyncio.TimeoutError as e:
         raise Exception("验证码验证超时") from e
     finally:
         _pending.pop(token, None)
 
 
-async def captcha_verifier(gt: str, challenge: str, userid: str, ctx: CaptchaContext | None = None):
+async def captcha_verifier(ctx: CaptchaContext | None = None):
+    """过码阶梯：本地(gtlv) → 远程(tencentbot.top) → 手动(QQ)。"""
     if _captcha_auto:
+        if _captcha_local:
+            try:
+                return await local_captcha_verifier()
+            except Exception as e:
+                logger.warning(f"priconne local captcha failed, fallback to remote: {e}")
         try:
-            return await auto_captcha_verifier(gt, challenge, userid)
+            return await auto_captcha_verifier()
         except Exception as e:
             logger.warning(f"priconne auto captcha failed, fallback to manual: {e}")
-    return await manual_captcha_verifier(gt, challenge, userid, ctx)
+    return await manual_captcha_verifier(ctx)
 
 
 def create_captcha_verifier(ctx: CaptchaContext | None = None):
-    async def verifier(gt: str, challenge: str, userid: str):
-        return await captcha_verifier(gt, challenge, userid, ctx)
+    async def verifier():
+        return await captcha_verifier(ctx)
 
     return verifier
 
@@ -215,6 +261,8 @@ async def handle_captcha_mode(session):
         set_captcha_auto(False)
         await session.send("priconne 过码已切换为手动")
     else:
-        mode = "自动优先" if is_captcha_auto_enabled() else "手动"
+        mode = "自动(本地+远程)" if is_captcha_auto_enabled() else "手动"
+        if is_captcha_auto_enabled() and not _captcha_local:
+            mode = "自动(仅远程)"
         pending = ", ".join(sorted(_pending)) or "无"
         await session.send(f"priconne 当前过码模式：{mode}；等待中：{pending}")

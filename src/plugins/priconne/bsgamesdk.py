@@ -86,7 +86,15 @@ async def _login(account, password, challenge="", gt_user="", validate=""):
     return await sendpost(bililogin + "api/client/login", setsign(data))
 
 
+async def captch():
+    """获取验证码参数（对齐 autopcr sdk/bsgamesdk.py 的 captch）。"""
+    data = json.loads(modolcaptch)
+    data = setsign(data)
+    return await sendpost(bililogin + "api/client/start_captcha", data)
+
+
 async def login(bili_account, bili_pwd, make_captch):
+    """B站 SDK 登录；make_captch 无参调用，内部自行 start_captcha，返回 {"challenge", "gt_user_id", "validate"}（对齐 autopcr sdk/validator.py 的验证器协议）。"""
     logger.info(f'logging in with acc={_mask_account(bili_account)}')
     login_sta = await _login(bili_account, bili_pwd)
     if login_sta.get("message", "") == "用户名或密码错误":
@@ -98,17 +106,21 @@ async def login(bili_account, bili_pwd, make_captch):
 
     if login_sta.get("code") == 200000:
         logger.info("触发验证码，尝试过码")
-        cap = await sendpost(bililogin + "api/client/start_captcha", setsign(json.loads(modolcaptch)))
         try:
-            challenge, gt_user_id, validate_key = await make_captch(cap['gt'], cap['challenge'], cap['gt_user_id'])
+            captch_done = await make_captch()
         except Exception as e:
             raise Exception(f"验证码校验失败: {e}") from e
-        return await _login(bili_account, bili_pwd, challenge, gt_user_id, validate_key)
+        return await _login(bili_account, bili_pwd, captch_done["challenge"], captch_done["gt_user_id"], captch_done["validate"])
 
     return login_sta
 
 
 class bsdkclient:
+    """B站官服 SDK 客户端，对齐 autopcr sdk/sdkclients.py 的 bsdkclient。
+
+    接口与 autopcr 保持一致：login() -> (uid, access_key)；保存凭据路径（has_saved_token）
+    等价于其 bsdkclientWithoutLogin（无密码账号直接用 access_key）。
+    """
 
     def __init__(self, acccountinfo: dict, captchaVerifier=None):
         self.acccountinfo = acccountinfo
@@ -125,7 +137,7 @@ class bsdkclient:
             and (self.acccountinfo.get('password') or self.acccountinfo.get('password_encrypted'))
         )
 
-    async def b_login(self, force_password=False):
+    async def login(self, force_password=False):
         uid = self.acccountinfo.get('uid')
         access_key = self.acccountinfo.get('access_key')
         if uid and access_key and not force_password:

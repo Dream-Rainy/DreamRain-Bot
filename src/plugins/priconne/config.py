@@ -8,6 +8,8 @@ class Config(BaseModel):
     """arena 查询 API 的认证密钥"""
     priconne_captcha_auto: bool = True
     """priconne 登录是否优先自动过验证码"""
+    priconne_captcha_local: bool = True
+    """priconne 自动过码是否优先本地 gtlv 识别（失败自动回退远程/手动）"""
     priconne_captcha_admin_group: int = 0
     """priconne 手动验证码私聊失败时转发的群聊，0 表示不转发"""
     priconne_captcha_timeout: int = 120
