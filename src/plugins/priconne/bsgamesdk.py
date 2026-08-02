@@ -13,7 +13,7 @@ bililogin = "https://line1-sdk-center-login-sh.biligame.net/"
 header = {"User-Agent": "Mozilla/5.0 BSGameSDK", "Content-Type": "application/x-www-form-urlencoded",
           "Host": "line1-sdk-center-login-sh.biligame.net"}
 
-client = httpx.AsyncClient()
+client = httpx.AsyncClient(trust_env=False)
 
 SENSITIVE_RESPONSE_KEYS = {"access_key", "pwd", "password"}
 

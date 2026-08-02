@@ -4,10 +4,12 @@ import traceback
 import time
 import asyncio
 
-from nonebot import get_bot, logger
+from zoneinfo import ZoneInfo
+
+from nonebot import get_bot, get_driver, logger
 
 from ..captcha import CaptchaContext
-from ..compat import Service, priv
+from ..compat import Service, priv, on_startup
 from ..compat.typing import NoticeSession
 from ..credentials import build_stored_account, should_update_stored_account
 from ..login import query
@@ -18,7 +20,7 @@ from .kpi import kpi_report
 from .sql import SubscribeDao, RecordDao, SLDao, TreeDao, ApplyDao, clear_group_data
 from .pcr_calculator import calculator
 
-from ..pcrclient import init_device_id
+from ..pcrclient import init_device_id, ApiException
 
 help_text = '''
 * “+” 表示空格
@@ -68,12 +70,13 @@ async def query_help(bot, ev):
 async def add_monitor(bot, ev):
     qq_id = ev.user_id
 
-    if ev.message[0].type == 'at':
-        if not priv.check_priv(ev, priv.ADMIN):
-            await bot.send(ev, '权限不足')
-            return
-        else:
-            qq_id = int(ev.message[0].data['qq'])
+    for m in ev.message:
+        if m.type == 'at' and m.data.get('qq') != 'all':
+            if not priv.check_priv(ev, priv.ADMIN):
+                await bot.send(ev, '权限不足')
+                return
+            qq_id = int(m.data['qq'])
+            break
 
     group_id = ev.group_id
     account_file = os.path.join(DATA_PATH, 'account', f'{qq_id}.json')
@@ -85,7 +88,8 @@ async def add_monitor(bot, ev):
 
     account_info = acccountinfo[0]
     account = account_info.get("account") or account_info.get("viewer_id")
-    await bot.send(ev, f"正在登录账号，请耐心等待，当前监控账号为{account[:3]}******{account[-3:]}")
+    account_mask = f"{account[:3]}******{account[-3:]}" if account else "未知账号"
+    await bot.send(ev, f"正在登录账号，请耐心等待，当前监控账号为{account_info.get('user_name') or account_mask}")
     
     try:
         captcha_context = CaptchaContext(bot=bot, user_id=qq_id, group_id=group_id)
@@ -107,10 +111,79 @@ async def add_monitor(bot, ev):
         await bot.send(ev, str(e))
         return
 
-    run_group[group_id] = ev.self_id
+    await _store_user_name(account_file, acccountinfo, clan_info.user_name)
+    run_group[group_id] = {"self_id": ev.self_id, "qq_id": qq_id}
+    await _save_run_group()
     loop_num = clan_info.loop_num
     clan_info.loop_check = time.time()
-    await bot.send(ev, f"开始监控中, 可以发送【取消出刀监控】或者顶号退出\n#监控编号HN000{loop_num}")
+    await bot.send(ev, f"开始监控中, 可以发送【取消出刀监控】或者顶号退出\n当前监控账号：{clan_info.user_name or account_mask}\n#监控编号HN000{loop_num}")
+    await _monitor_loop(bot, ev, group_id, qq_id, account_file, ev.self_id, loop_num)
+
+
+# 顶号判定的服务端错误码；监控掉线日志里的 status 若对应「已在其他设备登录」，请补充到这里
+KICK_STATUS_CODES = set()
+KICK_KEYWORDS = ("其他设备", "已在", "顶号")
+MAX_RETRY = 10
+
+
+def _is_kicked(status, message):
+    if status in KICK_STATUS_CODES:
+        return True
+    return any(k in str(message) for k in KICK_KEYWORDS)
+
+
+async def _loop_send(bot, ev, group_id, msg):
+    """监控循环内发送消息；ev 为空（bot 重启恢复）时直接发群消息。"""
+    if ev is not None:
+        await safe_send(bot, ev, msg)
+    else:
+        try:
+            await bot.send_group_msg(group_id=group_id, message=msg)
+        except Exception as e:
+            logger.warning(f"priconne monitor send failed, group={group_id}: {e}")
+
+
+async def _save_run_group():
+    try:
+        await write_config(run_path, run_group)
+    except Exception as e:
+        logger.warning(f"priconne save run_group failed: {e}")
+
+
+async def _store_user_name(account_file, acccountinfo, user_name):
+    """登录成功后把游戏内昵称写回账号配置，下次预登录提示可直接显示昵称。"""
+    if not user_name:
+        return
+    try:
+        acccountinfo[0] = {**acccountinfo[0], "user_name": user_name}
+        await write_config(account_file, acccountinfo)
+    except Exception as e:
+        logger.warning(f"priconne store user_name failed: {e}")
+
+
+async def _reconnect_once(group_id, qq_id, account_file):
+    """用绑定账号重新登录并替换监控 client；成功返回 True。"""
+    clan_info = clanbattle_info.get(group_id)
+    if clan_info is None:
+        return False
+    try:
+        acccountinfo = await load_config(account_file)
+        if not acccountinfo:
+            return False
+        captcha_context = CaptchaContext(user_id=qq_id, group_id=group_id)
+        client = await query(acccountinfo, is_force=True, captcha_context=captcha_context)
+        if not await check_client(client):
+            return False
+        await clan_info.rebind_client(client)
+        return True
+    except Exception as e:
+        logger.warning(f"priconne reconnect failed, group={group_id}: {e}")
+        return False
+
+
+async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_num):
+    """出刀监控主循环；掉线后按错误类型自动重连（顶号不重试，其他错误退避重连）。"""
+    clan_info = clanbattle_info[group_id]
     while True:
         async with semaphore:
             try:
@@ -126,7 +199,7 @@ async def add_monitor(bot, ev):
 
                 #换面提醒
                 if clan_info.period != stage_dict[lap2stage(clan_battle_top["lap_num"])]:
-                    await safe_send(bot, ev, f"阶段从{stage_dict[clan_info.period]}面到了{lap2stage(clan_battle_top['lap_num'])}面，请注意轴的切换喵")
+                    await _loop_send(bot, ev, group_id, f"阶段从{stage_dict[clan_info.period]}面到了{lap2stage(clan_battle_top['lap_num'])}面，请注意轴的切换喵")
                     clan_info.period = stage_dict[lap2stage(clan_info.lap_num)]
 
                 change = False
@@ -146,8 +219,8 @@ async def add_monitor(bot, ev):
                         change = True
                         boss.refresh(current_hp, lap_num, order, max_hp)
 
-                await safe_send(bot, ev, "\n".join(clan_info.notice_subscribe))
-                await safe_send(bot, ev, "\n".join(clan_info.notice_fighter))
+                await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_subscribe))
+                await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_fighter))
                 clan_info.notice_subscribe.clear()
                 clan_info.notice_fighter.clear()
 
@@ -166,20 +239,20 @@ async def add_monitor(bot, ev):
                                         clan_info.notice_tree.append(offtree_text)
                                 except Exception as e:
                                     logger.opt(exception=e).warning(
-                                        f"通知下树失败，group_id={ev.group_id}, boss={boss_order}"
+                                        f"通知下树失败，group_id={group_id}, boss={boss_order}"
                                     )
                                 try:
                                     await clan_info.apply.clear_apply(boss_order)
                                 except Exception as e:
                                     logger.opt(exception=e).warning(
-                                        f"清空申请出刀失败，group_id={ev.group_id}, boss={boss_order}"
+                                        f"清空申请出刀失败，group_id={group_id}, boss={boss_order}"
                                     )
 
                     clan_info.refresh_latest_time(clan_battle_top)
-                    await safe_send(bot, ev, "\n".join(clan_info.notice_dao[::-1]))
+                    await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_dao[::-1]))
                     clan_info.notice_dao.clear()
-                    await safe_send(bot, ev, "\n".join(notice_progress))
-                    await safe_send(bot, ev, "\n".join(clan_info.notice_tree))
+                    await _loop_send(bot, ev, group_id, "\n".join(notice_progress))
+                    await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_tree))
                     clan_info.notice_tree.clear()
 
                 clan_info.error_count = 0
@@ -188,25 +261,43 @@ async def add_monitor(bot, ev):
             except Exception as e:
                 print(traceback.format_exc())
                 clan_info.loop_check = False
-                del run_group[group_id]
+                run_group.pop(group_id, None)
+                await _save_run_group()
 
-                # logger.error(traceback.format_exc())
                 if loop_num != clan_info.loop_num:
-                    await bot.send(ev, f"#编号HN000{loop_num}监控已关闭")
+                    await _loop_send(bot, ev, group_id, f"#编号HN000{loop_num}监控已关闭")
                     return
 
-                if not await check_client(clan_info.client):
-                    await bot.send(ev, "当前账号被顶号，监控已退出")
+                # 探测旧会话，区分顶号与普通错误（顶号不重试，避免登录互顶）
+                reachable, status, message = await clan_info.probe_session()
+                logger.warning(
+                    f"priconne monitor error, group={group_id}, reachable={reachable}, "
+                    f"status={status}, message={message!r}, error={e!r}"
+                )
+                if not reachable and _is_kicked(status, message):
+                    await _loop_send(bot, ev, group_id, "当前账号已在其他设备登录，监控已退出")
                     return
 
-                if clan_info.error_count > 3:
+                if clan_info.error_count >= MAX_RETRY:
                     clan_info.error_count = 0
-                    await bot.send(ev, "超过最大重试次数，监控已退出")
+                    await _loop_send(bot, ev, group_id, "超过最大重试次数，监控已退出")
                     return
 
-                clan_info.loop_check = True
                 clan_info.error_count += 1
-                run_group[group_id] = ev.self_id
+                if clan_info.error_count <= 2:
+                    # 前两次先原地重试（网络抖动等瞬时错误）
+                    await _loop_send(bot, ev, group_id, f"监控异常，正在重试（第{clan_info.error_count}次）")
+                else:
+                    if await _reconnect_once(group_id, qq_id, account_file):
+                        clan_info.error_count = 0
+                        await _loop_send(bot, ev, group_id, "监控已自动重连")
+                    else:
+                        wait = min(2 ** clan_info.error_count, 60)
+                        await _loop_send(bot, ev, group_id, f"重连失败，{wait}秒后继续尝试（第{clan_info.error_count}次）")
+                        await asyncio.sleep(wait)
+                clan_info.loop_check = time.time()
+                run_group[group_id] = {"self_id": self_id, "qq_id": qq_id}
+                await _save_run_group()
         await asyncio.sleep(1)
 
 
@@ -218,6 +309,8 @@ async def delete_monitor(bot, ev):
         clan_info: ClanBattle = clanbattle_info[group_id]
         if qq_id == clan_info.qq_id or priv.check_priv(ev, priv.ADMIN):
             clan_info.loop_num += 1
+            run_group.pop(group_id, None)
+            await _save_run_group()
         else:
             await bot.send(ev, "你不是监控人或者管理")
     else:
@@ -679,9 +772,10 @@ async def resatrt_remind(bot, ev):
 @sv.on_fullmatch("提醒掉线")
 async def resatrt_remind(bot, ev):
     bot = get_bot()
-    for gid in (group_dict := await load_config(run_path)):
+    for gid, info in (await load_config(run_path)).items():
+        self_id = info.get("self_id") if isinstance(info, dict) else info
         try:
-            await bot.send_group_msg(self_id=group_dict[gid], group_id=gid, message="遭遇神秘的桥本环奈偷袭，请检查出刀监控")
+            await bot.send_group_msg(self_id=self_id, group_id=gid, message="遭遇神秘的桥本环奈偷袭，请检查出刀监控")
         except Exception as e:
             pass
     await write_config(run_path, {})
@@ -698,3 +792,64 @@ async def pcr_calculator_interface(bot, ev):
 async def update_device_id(session: NoticeSession):
     init_device_id(clear_id = True)
     await session.send('自动报刀更新设备id成功！重启bot生效新设备id')
+
+
+_resumed = False
+
+
+@get_driver().on_bot_connect
+async def resume_monitors(bot):
+    """bot 启动后，恢复 rungroup.json 中持久化的监控。"""
+    global _resumed
+    if _resumed:
+        return
+    _resumed = True
+    for gid, info in (await load_config(run_path)).items():
+        if not isinstance(info, dict) or not info.get("qq_id"):
+            continue  # 旧格式无 qq_id，无法自动登录，跳过
+        gid = int(gid)
+        qq_id = int(info["qq_id"])
+        account_file = os.path.join(DATA_PATH, 'account', f'{qq_id}.json')
+        if gid in clanbattle_info and clanbattle_info[gid].loop_check:
+            continue  # 已有活跃监控
+        try:
+            acccountinfo = await load_config(account_file)
+            if not acccountinfo:
+                logger.warning(f"priconne auto resume skipped, group={gid}: account file missing")
+                continue
+            captcha_context = CaptchaContext(user_id=qq_id, group_id=gid)
+            client = await query(acccountinfo, captcha_context=captcha_context)
+            if not await check_client(client):
+                raise Exception("登录异常，请重试")
+            if gid not in clanbattle_info:
+                clanbattle_info[gid] = ClanBattle(gid)
+            clan_info = clanbattle_info[gid]
+            await clan_info.init(client, qq_id)
+            await _store_user_name(account_file, acccountinfo, clan_info.user_name)
+            loop_num = clan_info.loop_num
+            clan_info.loop_check = time.time()
+            run_group[gid] = {"self_id": info.get("self_id"), "qq_id": qq_id}
+            await _save_run_group()
+            await _loop_send(bot, None, gid, f"出刀监控已自动恢复（监控账号：{clan_info.user_name or qq_id}）")
+            asyncio.create_task(_monitor_loop(bot, None, gid, qq_id, account_file, info.get("self_id"), loop_num))
+        except Exception as e:
+            logger.warning(f"priconne auto resume failed, group={gid}: {e}")
+
+
+@sv.scheduled_job('cron', hour='5', minute='0', timezone=ZoneInfo("Asia/Shanghai"), jitter=300)
+async def daily_rank_broadcast():
+    """每天 05:00 向运行监控的群播报当前会战排名与 boss 进度。"""
+    bot = get_bot()
+    now = time.time()
+    for group_id, clan_info in list(clanbattle_info.items()):
+        if not clan_info.loop_check:
+            continue
+        if now - clan_info.loop_check > 120:
+            continue  # 监控已掉线，不播报
+        info = run_group.get(group_id)
+        self_id = info.get("self_id") if isinstance(info, dict) else None
+        msg = f"当前排名：{clan_info.rank}\n" + clan_info.general_boss()
+        try:
+            await bot.send_group_msg(self_id=self_id, group_id=group_id, message=msg)
+        except Exception as e:
+            logger.warning(f"priconne daily rank broadcast failed, group={group_id}: {e}")

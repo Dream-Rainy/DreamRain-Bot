@@ -3,11 +3,13 @@ import traceback
 from .base import CancleError, find_item, format_bignum, format_precent, clan_path
 from .sql import RecordDao, SubscribeDao, TreeDao, ApplyDao
 from ..util.tools import load_config, write_config, lap2stage, stage_dict
+from ..pcrclient import ApiException
 
 
 class ClanBattle:
     def __init__(self, group_id) -> None:
         self.rank = 0  # 会战排名
+        self.user_name = ""  # 游戏内昵称
         self.period = 0  # 阶段
         self.lap_num = 0  # 周目（会战周目，boss可能多一周目）
         self.loop_num = 0  # 循环编号
@@ -31,6 +33,7 @@ class ClanBattle:
             self.loop_num += 1
             self.client = client  # api client
             self.qq_id = qq_id
+            await self.refresh_user_name()
             home_index = await self.client.callapi('/home/index', {'message_id': 1, 'tips_id_list': [], 'is_first': 1, 'gold_history': 0})
             self.clan_id = home_index['user_clan']['clan_id']
             clan_battle_top = await self.get_clanbattle_top()
@@ -44,6 +47,41 @@ class ClanBattle:
         except Exception as e:
             print(traceback.format_exc())
             raise Exception(f"数据库初始化失败 + {str(e)}")
+
+    async def rebind_client(self, client):
+        self.client = client
+        await self.refresh_user_name()
+
+    async def refresh_user_name(self):
+        """从 /load/index 读取游戏内昵称，失败时保留旧值。"""
+        try:
+            load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'})
+            if isinstance(load_index, dict) and load_index.get("user_info"):
+                name = load_index["user_info"].get("user_name")
+                if name:
+                    self.user_name = name
+        except Exception:
+            pass
+        return self.user_name
+
+    async def probe_session(self):
+        """探测当前 client 会话状态，用于区分顶号与普通错误。
+
+        返回 (reachable, status, message):
+          reachable=True  -> 会话正常，可继续监控；
+          reachable=False -> 会话异常，status/message 为服务端返回的原始错误码与信息，
+                             供上层判断是否为「已在其他设备登录」而决定是否重连。
+        """
+        try:
+            load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'})
+        except ApiException as e:
+            return False, getattr(e, "code", None), str(e)
+        except Exception as e:
+            return False, None, str(e)
+        if isinstance(load_index, dict) and "server_error" in load_index:
+            err = load_index.get("server_error") or {}
+            return False, err.get("status"), err.get("message", "")
+        return True, None, ""
 
     async def get_coin(self):
         load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'})

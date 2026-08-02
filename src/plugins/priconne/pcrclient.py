@@ -111,7 +111,7 @@ class pcrclient:
         self.bsdk = bsclient
         self.headers = defaultHeaders.copy()
         self.headers['PLATFORM-ID'] = self.bsdk.platform
-        self.client = httpx.AsyncClient()
+        self.client = httpx.AsyncClient(trust_env=False)
         self.call_lock = asyncio.Lock()
 
     @staticmethod
