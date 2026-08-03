@@ -96,12 +96,6 @@ class ClanBattle:
 
     async def get_coin(self):
         load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'})
-        if isinstance(load_index, dict) and "server_error" in load_index:
-            err = load_index.get("server_error") or {}
-            logger.warning(
-                f"priconne get_coin server_error: status={err.get('status')}, "
-                f"title={err.get('title')!r}, message={err.get('message')!r}, raw={err!r}"
-            )
         return find_item(load_index["item_list"], 90006)
 
     async def get_clanbattle_top(self):

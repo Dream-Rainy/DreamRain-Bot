@@ -189,22 +189,21 @@ class pcrclient:
                 if 'request_id' in data_headers:
                     self.headers['REQUEST-ID'] = data_headers['request_id']
                 data = response['data']
-                if not noerr:
-                    # result_code 在 data_headers 里，服务器驱动错误码（如 6002 顶号）也在这里
-                    result_code = data_headers.get('result_code', 1)
-                    if result_code == 6002:
-                        logger.warning(f'pcrclient: {apiurl} account kicked (6002)')
-                        raise AccountKickedException("账号已在其他设备登录", 6002)
-                    if result_code == 201:
-                        logger.warning(f'pcrclient: {apiurl} session expired (201)')
-                        raise SessionExpiredException("会话已过期", 201)
-                    if result_code == 101 or 2700 <= result_code < 3000:
-                        logger.warning(f'pcrclient: {apiurl} maintenance (result_code={result_code})')
-                        raise MaintenanceException("服务器在维护", result_code)
-                    if 'server_error' in data:
-                        data = data['server_error']
-                        logger.info(f'pcrclient: {apiurl} api failed {data}')
-                        raise ApiException(data['message'], data['status'])
+                # result_code 在 data_headers 里，服务器驱动错误码（如 6002 顶号）不受 noerr 影响，始终检查
+                result_code = data_headers.get('result_code', 1)
+                if result_code == 6002:
+                    logger.warning(f'pcrclient: {apiurl} account kicked (6002)')
+                    raise AccountKickedException("账号已在其他设备登录", 6002)
+                if result_code == 201:
+                    logger.warning(f'pcrclient: {apiurl} session expired (201)')
+                    raise SessionExpiredException("会话已过期", 201)
+                if result_code == 101 or 2700 <= result_code < 3000:
+                    logger.warning(f'pcrclient: {apiurl} maintenance (result_code={result_code})')
+                    raise MaintenanceException("服务器在维护", result_code)
+                if not noerr and 'server_error' in data:
+                    data = data['server_error']
+                    logger.info(f'pcrclient: {apiurl} api failed {data}')
+                    raise ApiException(data['message'], data['status'])
 
                 # logger.info(f'pcrclient: {apiurl} api called')
                 return data if not header else (data, data_headers)
