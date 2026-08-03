@@ -5,6 +5,7 @@ import traceback
 import time
 import asyncio
 
+import httpx
 from zoneinfo import ZoneInfo
 
 from nonebot import get_bot, get_driver, logger
@@ -21,7 +22,7 @@ from .kpi import kpi_report
 from .sql import SubscribeDao, RecordDao, SLDao, TreeDao, ApplyDao, clear_group_data
 from .pcr_calculator import calculator
 
-from ..pcrclient import init_device_id, ApiException, AccountKickedException, SessionExpiredException, MaintenanceException
+from ..pcrclient import init_device_id, ApiException
 
 help_text = '''
 * “+” 表示空格
@@ -121,10 +122,37 @@ async def add_monitor(bot, ev):
     await _monitor_loop(bot, ev, group_id, qq_id, account_file, ev.self_id, loop_num)
 
 
-# 顶号判定的服务端错误码；监控掉线日志里的 status 若对应「已在其他设备登录」，请补充到这里
-KICK_STATUS_CODES = set()
-KICK_KEYWORDS = ("其他设备", "已在", "顶号")
+# 服务端 server_error.status 映射到 NetworkUI.eServerErrorAct 枚举。
+# native 反汇编证实：顶号/会话失效走 status=3 (ReturnTitle)。
+# 保守先只把 3 视为终止态；完整终止集是 {0,1,2,3,999999}，可重试集是 {4,5,6,7,8}。
+TERMINAL_ERROR_ACTS = {3}
 MAX_RETRY = 10
+
+
+def _terminal_status_reason(status, message):
+    """若 server_error.status 表示不可恢复错误，返回退出原因；否则返回 None（走重试）。"""
+    if status in TERMINAL_ERROR_ACTS:
+        return "监控账号会话已失效（顶号或掉线，需回到标题重登），监控已退出，请重新开启"
+    return None
+
+
+def _is_network_error(e):
+    """判断异常是否由本地网络层问题（连接失败/超时/DNS 失败等）导致。"""
+    if isinstance(e, (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    # 某些网络错误会被 pcrclient 外层 except 包装成 ApiException(501)
+    if isinstance(e, ApiException) and e.code == 501:
+        msg = str(e).lower()
+        if any(k in msg for k in ("connect", "timeout", "network", "dns", "unreachable", "refused")):
+            return True
+    return False
+
+
+def _is_kicked(status, message):
+    """兼容旧服务端关键字兜底（实际已由 status 判定主导）。"""
+    if status in TERMINAL_ERROR_ACTS:
+        return True
+    return any(k in str(message) for k in KICK_KEYWORDS)
 
 
 async def _median_knife_damage(clan_info, hours: int = 24):
@@ -145,12 +173,6 @@ def _tail_compensation_seconds(remaining_hp: float, full_dmg: float) -> int | No
         return None
     e = 110 - 90 * (remaining_hp - full_dmg) / full_dmg
     return max(0, min(90, math.ceil(e)))
-
-
-def _is_kicked(status, message):
-    if status in KICK_STATUS_CODES:
-        return True
-    return any(k in str(message) for k in KICK_KEYWORDS)
 
 
 async def _loop_send(bot, ev, group_id, msg):
@@ -322,42 +344,26 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                     await _loop_send(bot, ev, group_id, f"#编号HN000{loop_num}监控已关闭")
                     return
 
-                # 顶号：不重试，直接退出
-                if isinstance(e, AccountKickedException):
-                    await _loop_send(bot, ev, group_id, "当前账号已在其他设备登录，监控已退出")
-                    return
-
-                # 会话过期：直接重连拿新 session
-                if isinstance(e, SessionExpiredException):
-                    if await _reconnect_once(group_id, qq_id, account_file):
-                        clan_info.error_count = 0
-                        await _loop_send(bot, ev, group_id, "会话已过期，已自动重新登录")
-                        clan_info.loop_check = time.time()
-                        run_group[group_id] = {"self_id": self_id, "qq_id": qq_id}
-                        await _save_run_group()
-                        continue
-                    await _loop_send(bot, ev, group_id, "会话已过期，重连失败，监控已退出")
-                    return
-
-                # 维护：退避重试，但提示是维护
-                if isinstance(e, MaintenanceException):
-                    wait = min(2 ** (clan_info.error_count + 1), 300)
-                    await _loop_send(bot, ev, group_id, f"服务器维护中，{wait}秒后重试")
-                    await asyncio.sleep(wait)
-                    clan_info.loop_check = time.time()
-                    run_group[group_id] = {"self_id": self_id, "qq_id": qq_id}
-                    await _save_run_group()
-                    continue
-
-                # 其他错误：探测旧会话，区分顶号与普通错误（顶号不重试，避免登录互顶）
+                # 探测旧会话，区分顶号/终止态、本地网络波动与普通错误
                 reachable, status, message = await clan_info.probe_session()
                 logger.warning(
                     f"priconne monitor error, group={group_id}, reachable={reachable}, "
                     f"status={status}, message={message!r}, error={e!r}"
                 )
-                if not reachable and _is_kicked(status, message):
-                    await _loop_send(bot, ev, group_id, "当前账号已在其他设备登录，监控已退出")
+                if not reachable and (reason := _terminal_status_reason(status, message)):
+                    await _loop_send(bot, ev, group_id, reason)
                     return
+
+                # 本地网络波动：探测也失败且拿不到 server_error.status，不频繁重连，只退避等待
+                if not reachable and status is None and _is_network_error(e):
+                    clan_info.error_count += 1
+                    wait = min(2 ** clan_info.error_count, 120)
+                    await _loop_send(bot, ev, group_id, f"网络连接异常，{wait}秒后继续尝试（第{clan_info.error_count}次）")
+                    await asyncio.sleep(wait)
+                    clan_info.loop_check = time.time()
+                    run_group[group_id] = {"self_id": self_id, "qq_id": qq_id}
+                    await _save_run_group()
+                    continue
 
                 if clan_info.error_count >= MAX_RETRY:
                     clan_info.error_count = 0
