@@ -45,3 +45,4 @@ migrations/
 notebooks/
 docs/ai/
 .nonebot-adapter-web/
+/docs/plan

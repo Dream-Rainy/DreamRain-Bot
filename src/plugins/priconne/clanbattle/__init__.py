@@ -9,6 +9,7 @@ import httpx
 from zoneinfo import ZoneInfo
 
 from nonebot import get_bot, get_driver, logger
+from nonebot.permission import SUPERUSER
 
 from ..captcha import CaptchaContext
 from ..compat import Service, priv, on_startup
@@ -114,7 +115,7 @@ async def add_monitor(bot, ev):
         return
 
     await _store_user_name(account_file, acccountinfo, clan_info.user_name)
-    run_group[group_id] = {"self_id": ev.self_id, "qq_id": qq_id}
+    _set_monitor_registered(group_id, ev.self_id, qq_id)
     await _save_run_group()
     loop_num = clan_info.loop_num
     clan_info.loop_check = time.time()
@@ -187,10 +188,134 @@ async def _loop_send(bot, ev, group_id, msg):
 
 
 async def _save_run_group():
+    temp_path = f"{run_path}.tmp"
     try:
-        await write_config(run_path, run_group)
+        await write_config(temp_path, run_group)
+        os.replace(temp_path, run_path)
+        return True
     except Exception as e:
         logger.warning(f"priconne save run_group failed: {e}")
+        return False
+
+
+def _set_monitor_registered(group_id, self_id, qq_id):
+    """保留监控恢复所需字段；适用于正常运行和临时重连状态。"""
+    info = run_group.get(group_id)
+    if not isinstance(info, dict):
+        info = {}
+    run_group[group_id] = {
+        **info,
+        "self_id": self_id,
+        "qq_id": qq_id,
+    }
+
+
+def _set_monitor_stopped(group_id):
+    """清除监控运行字段；存在历史快照时保留群记录。"""
+    info = run_group.get(group_id)
+    snapshot = info.get("snapshot") if isinstance(info, dict) else None
+    if snapshot:
+        run_group[group_id] = {"snapshot": snapshot}
+    else:
+        run_group.pop(group_id, None)
+
+
+def _invalidate_monitor_loop(group_id):
+    """使当前监控循环失效，并立即反映为进程内离线状态。"""
+    clan_info = clanbattle_info.get(group_id)
+    if clan_info is not None:
+        clan_info.loop_num += 1
+        clan_info.loop_check = False
+
+
+def _set_monitor_snapshot(group_id, snapshot):
+    """保存最近状态；只为当前或曾经登记过的群创建快照。"""
+    info = run_group.get(group_id)
+    if not isinstance(info, dict):
+        return False
+    run_group[group_id] = {**info, "snapshot": snapshot}
+    return True
+
+
+def _restore_run_group(saved):
+    """从 JSON 数据恢复全部群记录，包含仅有历史快照的已停止监控群。"""
+    run_group.clear()
+    if not isinstance(saved, dict):
+        return
+    for group_id, info in saved.items():
+        try:
+            normalized_group_id = int(group_id)
+        except (TypeError, ValueError):
+            logger.warning(f"priconne run_group skipped invalid group id: {group_id!r}")
+            continue
+        if not isinstance(info, dict):
+            logger.warning(
+                f"priconne run_group skipped non-object entry, group={normalized_group_id}"
+            )
+            continue
+        restored = info.copy()
+        if "qq_id" in restored:
+            try:
+                restored["qq_id"] = int(restored["qq_id"])
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"priconne run_group skipped invalid qq_id, group={normalized_group_id}"
+                )
+                continue
+        snapshot = restored.get("snapshot")
+        if snapshot is not None:
+            required_snapshot_fields = {"time", "rank", "boss"}
+            if (
+                not isinstance(snapshot, dict)
+                or not required_snapshot_fields.issubset(snapshot)
+                or not isinstance(snapshot["time"], (int, float))
+                or not isinstance(snapshot["rank"], int)
+                or not isinstance(snapshot["boss"], str)
+            ):
+                logger.warning(
+                    f"priconne run_group skipped invalid snapshot, group={normalized_group_id}"
+                )
+                continue
+        if "qq_id" not in restored and snapshot is None:
+            logger.warning(
+                f"priconne run_group skipped empty entry, group={normalized_group_id}"
+            )
+            continue
+        run_group[normalized_group_id] = restored
+
+
+async def _is_superuser(bot, ev):
+    """在 legacy 兼容层中复用 NoneBot 原生 SUPERUSER 权限规则。"""
+    raw_bot = getattr(bot, "_bot", bot)
+    raw_event = getattr(ev, "_event", ev)
+    return await SUPERUSER(raw_bot, raw_event)
+
+
+async def _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+    """异步等待后检查旧循环是否已被取消；已取消则完成离线持久化。"""
+    if loop_num == clan_info.loop_num:
+        return False
+    clan_info.loop_check = False
+    _set_monitor_stopped(group_id)
+    await _save_run_group()
+    await _loop_send(bot, ev, group_id, f"#编号HN000{loop_num}监控已关闭")
+    return True
+
+
+async def _resume_monitor_if_current(
+    clan_info,
+    group_id,
+    self_id,
+    qq_id,
+    loop_num,
+):
+    """仅允许仍有效的循环恢复心跳和持久化注册字段。"""
+    if loop_num != clan_info.loop_num:
+        return False
+    clan_info.loop_check = time.time()
+    _set_monitor_registered(group_id, self_id, qq_id)
+    await _save_run_group()
+    return True
 
 
 async def _store_user_name(account_file, acccountinfo, user_name):
@@ -326,31 +451,36 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                 await clan_info.add_record(clan_battle_top["damage_history"], loop_num)
 
                 # 保存最新状态快照，供离线「状态」命令展示
-                if group_id in run_group:
-                    run_group[group_id]["snapshot"] = {
+                if _set_monitor_snapshot(
+                    group_id,
+                    {
                         "time": int(time.time()),
                         "rank": clan_info.rank,
                         "boss": clan_info.general_boss(),
-                    }
+                    },
+                ):
                     await _save_run_group()
 
             except Exception as e:
                 print(traceback.format_exc())
                 clan_info.loop_check = False
-                run_group.pop(group_id, None)
-                await _save_run_group()
-
-                if loop_num != clan_info.loop_num:
-                    await _loop_send(bot, ev, group_id, f"#编号HN000{loop_num}监控已关闭")
+                if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
                     return
+                # 临时异常期间保留运行字段，使进程或容器重启后仍可自动恢复。
+                _set_monitor_registered(group_id, self_id, qq_id)
+                await _save_run_group()
 
                 # 探测旧会话，区分顶号/终止态、本地网络波动与普通错误
                 reachable, status, message = await clan_info.probe_session()
+                if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+                    return
                 logger.warning(
                     f"priconne monitor error, group={group_id}, reachable={reachable}, "
                     f"status={status}, message={message!r}, error={e!r}"
                 )
                 if not reachable and (reason := _terminal_status_reason(status, message)):
+                    _set_monitor_stopped(group_id)
+                    await _save_run_group()
                     await _loop_send(bot, ev, group_id, reason)
                     return
 
@@ -359,14 +489,20 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                     clan_info.error_count += 1
                     wait = min(2 ** clan_info.error_count, 120)
                     await _loop_send(bot, ev, group_id, f"网络连接异常，{wait}秒后继续尝试（第{clan_info.error_count}次）")
+                    if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+                        return
                     await asyncio.sleep(wait)
-                    clan_info.loop_check = time.time()
-                    run_group[group_id] = {"self_id": self_id, "qq_id": qq_id}
-                    await _save_run_group()
+                    if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+                        return
+                    await _resume_monitor_if_current(
+                        clan_info, group_id, self_id, qq_id, loop_num
+                    )
                     continue
 
                 if clan_info.error_count >= MAX_RETRY:
                     clan_info.error_count = 0
+                    _set_monitor_stopped(group_id)
+                    await _save_run_group()
                     await _loop_send(bot, ev, group_id, "超过最大重试次数，监控已退出")
                     return
 
@@ -374,17 +510,29 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                 if clan_info.error_count <= 2:
                     # 前两次先原地重试（网络抖动等瞬时错误）
                     await _loop_send(bot, ev, group_id, f"监控异常，正在重试（第{clan_info.error_count}次）")
+                    if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+                        return
                 else:
                     if await _reconnect_once(group_id, qq_id, account_file):
+                        if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+                            return
                         clan_info.error_count = 0
                         await _loop_send(bot, ev, group_id, "监控已自动重连")
+                        if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+                            return
                     else:
+                        if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+                            return
                         wait = min(2 ** clan_info.error_count, 60)
                         await _loop_send(bot, ev, group_id, f"重连失败，{wait}秒后继续尝试（第{clan_info.error_count}次）")
+                        if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+                            return
                         await asyncio.sleep(wait)
-                clan_info.loop_check = time.time()
-                run_group[group_id] = {"self_id": self_id, "qq_id": qq_id}
-                await _save_run_group()
+                        if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
+                            return
+                await _resume_monitor_if_current(
+                    clan_info, group_id, self_id, qq_id, loop_num
+                )
         await asyncio.sleep(1)
 
 
@@ -395,8 +543,8 @@ async def delete_monitor(bot, ev):
     if group_id in clanbattle_info:
         clan_info: ClanBattle = clanbattle_info[group_id]
         if qq_id == clan_info.qq_id or priv.check_priv(ev, priv.ADMIN):
-            clan_info.loop_num += 1
-            run_group.pop(group_id, None)
+            _invalidate_monitor_loop(group_id)
+            _set_monitor_stopped(group_id)
             await _save_run_group()
         else:
             await bot.send(ev, "你不是监控人或者管理")
@@ -850,20 +998,40 @@ async def init_cb():
             await db.refresh()
 
 @sv.on_fullmatch("缓存运行群")
-async def resatrt_remind(bot, ev):
-    await write_config(run_path, run_group)
-    await bot.send(ev, "成功")
+async def cache_run_groups(bot, ev):
+    if not await _is_superuser(bot, ev):
+        await bot.send(ev, "权限不足")
+        return
+    saved = await _save_run_group()
+    await bot.send(ev, "成功" if saved else "保存失败，请检查日志")
 
 @sv.on_fullmatch("提醒掉线")
-async def resatrt_remind(bot, ev):
-    bot = get_bot()
-    for gid, info in (await load_config(run_path)).items():
-        self_id = info.get("self_id") if isinstance(info, dict) else info
+async def notify_offline_monitors(bot, ev):
+    if not await _is_superuser(bot, ev):
+        await bot.send(ev, "权限不足")
+        return
+
+    current_bot = get_bot()
+    for gid, info in list(run_group.items()):
+        if not isinstance(info, dict) or not info.get("qq_id"):
+            continue
+        clan_info = clanbattle_info.get(gid)
+        if clan_info is not None and clan_info.loop_check:
+            continue
+        _invalidate_monitor_loop(gid)
         try:
-            await bot.send_group_msg(self_id=self_id, group_id=gid, message="遭遇神秘的桥本环奈偷袭，请检查出刀监控")
+            await current_bot.send_group_msg(
+                self_id=info.get("self_id"),
+                group_id=gid,
+                message="遭遇神秘的桥本环奈偷袭，请检查出刀监控",
+            )
         except Exception as e:
-            pass
-    await write_config(run_path, {})
+            logger.opt(exception=e).warning(
+                f"priconne offline reminder failed, group={gid}"
+            )
+        _set_monitor_stopped(gid)
+    saved = await _save_run_group()
+    await bot.send(ev, "处理完成" if saved else "保存失败，请检查日志")
 
 @sv.on_prefix("cal", "合刀", "尾刀计算")
 async def pcr_calculator_interface(bot, ev):
@@ -889,10 +1057,10 @@ async def resume_monitors(bot):
     if _resumed:
         return
     _resumed = True
-    for gid, info in (await load_config(run_path)).items():
+    _restore_run_group(await load_config(run_path))
+    for gid, info in list(run_group.items()):
         if not isinstance(info, dict) or not info.get("qq_id"):
             continue  # 旧格式无 qq_id，无法自动登录，跳过
-        gid = int(gid)
         qq_id = int(info["qq_id"])
         account_file = os.path.join(DATA_PATH, 'account', f'{qq_id}.json')
         if gid in clanbattle_info and clanbattle_info[gid].loop_check:
@@ -913,7 +1081,7 @@ async def resume_monitors(bot):
             await _store_user_name(account_file, acccountinfo, clan_info.user_name)
             loop_num = clan_info.loop_num
             clan_info.loop_check = time.time()
-            run_group[gid] = {"self_id": info.get("self_id"), "qq_id": qq_id}
+            _set_monitor_registered(gid, info.get("self_id"), qq_id)
             await _save_run_group()
             await _loop_send(bot, None, gid, f"出刀监控已自动恢复（监控账号：{clan_info.user_name or qq_id}）")
             asyncio.create_task(_monitor_loop(bot, None, gid, qq_id, account_file, info.get("self_id"), loop_num))
