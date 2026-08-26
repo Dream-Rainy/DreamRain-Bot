@@ -36,12 +36,10 @@ async def query(acccount_info, is_force=False, captcha_context: CaptchaContext |
                 return client
         client = pcrclient(bsdkclient(acccount_info, create_captcha_verifier(captcha_context)))
         await client.login()
-        if await check_client(client):
-            client_cache[player] = client
-            return client
-        raise Exception(f"登录失败，请重试")
+        client_cache[player] = client
+        return client
     except Exception as e:
-        raise Exception(f"未知错误：{e}")
+        raise Exception(f"登录失败：{e}") from e
 
 
 @sv.on_prefix("绑定账号")
@@ -57,10 +55,9 @@ async def bind_support(bot, ev):
         try:
             captcha_context = CaptchaContext(bot=bot, user_id=qq_id)
             client = await query([acccount.copy()], True, captcha_context)
-            if await check_client(client):
-                bound_account = build_stored_account(acccount, client.uid, client.access_key)
-                await write_config(os.path.join(account_path, f'{qq_id}.json'), [bound_account])
-                await bot.send_private_msg(user_id=qq_id, message="绑定成功")
+            bound_account = build_stored_account(acccount, client.uid, client.access_key)
+            await write_config(os.path.join(account_path, f'{qq_id}.json'), [bound_account])
+            await bot.send_private_msg(user_id=qq_id, message="绑定成功")
         except Exception as e:
             logger.info(traceback.format_exc())
             await bot.send_private_msg(user_id=qq_id, message="绑定失败" + str(e))

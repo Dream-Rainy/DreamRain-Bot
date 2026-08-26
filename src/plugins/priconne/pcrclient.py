@@ -1,4 +1,3 @@
-import traceback
 from msgpack import packb, unpackb
 import asyncio
 from random import randint
@@ -10,7 +9,6 @@ from .bsgamesdk import bsdkclient
 import re
 from dateutil.parser import parse
 import httpx
-import random
 from loguru import logger
 
 import time
@@ -21,13 +19,19 @@ import string
 from .storage import DEVICE_FILE, STATIC_VERSION_ORIGIN_FILE, VERSION_FILE
 
 
+DEFAULT_API_ROOTS = (
+    "https://l3-prod-all-gs-gzlj.bilibiligame.net",
+    "https://l2-prod-all-gs-gzlj.bilibiligame.net",
+    "https://le1-prod-all-gs-gzlj.bilibiligame.net",
+)
+RETRYABLE_SERVER_ERROR_STATUS = frozenset({4, 5, 6, 7, 8})
+TERMINAL_SERVER_ERROR_STATUS = frozenset({0, 1, 2, 3, 403, 999999})
+
+
 def get_api_root(qudao):
     if qudao == 0:
-        return random.choice([
-            "https://le1-prod-all-gs-gzlj.bilibiligame.net",
-            "https://l2-prod-all-gs-gzlj.bilibiligame.net",
-            "https://l3-prod-all-gs-gzlj.bilibiligame.net"
-        ])
+        return DEFAULT_API_ROOTS[0]
+    raise ValueError(f"unsupported priconne channel: {qudao}")
 
 config = str(VERSION_FILE)
 
@@ -99,9 +103,11 @@ defaultHeaders = {
 
 class ApiException(Exception):
 
-    def __init__(self, message, code):
+    def __init__(self, message, code, result_code=None):
         super().__init__(message)
         self.code = code
+        self.status = code
+        self.result_code = result_code
 
 
 class pcrclient:
@@ -113,6 +119,36 @@ class pcrclient:
         self.headers['PLATFORM-ID'] = self.bsdk.platform
         self.client = httpx.AsyncClient(trust_env=False)
         self.call_lock = asyncio.Lock()
+        self.servers = list(DEFAULT_API_ROOTS)
+        self.active_server = 0
+
+    @staticmethod
+    def _normalize_server(server: str) -> str:
+        server = str(server).replace("\t", "").strip().rstrip("/")
+        if not server.startswith(("http://", "https://")):
+            server = f"https://{server}"
+        return server
+
+    @property
+    def current_api_root(self) -> str:
+        return self.servers[self.active_server]
+
+    def rotate_server(self) -> str:
+        self.active_server = (self.active_server + 1) % len(self.servers)
+        return self.current_api_root
+
+    def _replace_servers(self, servers) -> None:
+        normalized = list(dict.fromkeys(
+            self._normalize_server(server) for server in servers if str(server).strip()
+        ))
+        if not normalized:
+            raise ApiException("游戏服务器列表为空", 501)
+        current = self.current_api_root
+        self.servers = normalized
+        try:
+            self.active_server = self.servers.index(current)
+        except ValueError:
+            self.active_server = 0
 
     @staticmethod
     def createkey() -> bytes:
@@ -148,15 +184,23 @@ class pcrclient:
         return unpackb(dec[:-dec[-1]], strict_map_key=False), data[-32:]
 
     async def callapi(self, apiurl: str, request: dict, crypted: bool = True, noerr: bool = True, header=False):
-        # 按apiurl创建json文件 保存apiurl request data_headers data
         async with self.call_lock:
             key = pcrclient.createkey()
+            request = request.copy()
 
             try:
                 if self.viewer_id is not None:
                     request['viewer_id'] = b64encode(pcrclient.encrypt(
                         str(self.viewer_id), key)) if crypted else str(self.viewer_id)
-                response = (await self.client.post(get_api_root(self.bsdk.qudao) + apiurl, data=pcrclient.pack(request, key) if crypted else str(request).encode('utf8'), headers=self.headers, timeout=20)).content
+                payload = pcrclient.pack(request, key) if crypted else json.dumps(request).encode('utf8')
+                http_response = await self.client.post(
+                    self.current_api_root + apiurl,
+                    data=payload,
+                    headers=self.headers,
+                    timeout=20,
+                )
+                http_response.raise_for_status()
+                response = http_response.content
 
                 response = pcrclient.unpack(
                     response)[0] if crypted else loads(response)
@@ -172,34 +216,72 @@ class pcrclient:
                     self.headers['REQUEST-ID'] = data_headers['request_id']
                 data = response['data']
                 if not noerr and 'server_error' in data:
-                    data = data['server_error']
-                    logger.info(f'pcrclient: {apiurl} api failed {data}')
-                    raise ApiException(data['message'], data['status'])
+                    error = data['server_error'] or {}
+                    result_code = data_headers.get('result_code')
+                    logger.warning(
+                        f"pcrclient: {apiurl} api failed: server={self.current_api_root}, "
+                        f"status={error.get('status')}, result_code={result_code}, "
+                        f"title={error.get('title', '')!r}, message={error.get('message', '')!r}"
+                    )
+                    raise ApiException(
+                        error.get('message') or error.get('title') or "游戏服务器返回未知错误",
+                        error.get('status'),
+                        result_code,
+                    )
 
-                # logger.info(f'pcrclient: {apiurl} api called')
                 return data if not header else (data, data_headers)
+            except ApiException:
+                raise
             except Exception as e:
-                print(traceback.format_exc())
-                raise ApiException("未知错误" + str(e), 501)
+                raise ApiException(f"网络或响应解析错误：{e}", 501) from e
+
+    async def refresh_servers(self):
+        source_ini = await self.callapi(
+            '/source_ini/index?format=json', {}, False, noerr=False
+        )
+        servers = source_ini.get('server') if isinstance(source_ini, dict) else None
+        if not isinstance(servers, list):
+            raise ApiException("游戏服务器列表响应异常", 501)
+        self._replace_servers(servers)
 
     async def check_gamestart(self):
-        gamestart, data_headers = await self.callapi('/check/game_start', {'apptype': 0, 'campaign_data': '', 'campaign_user': randint(0, 99999)}, header=True)
+        request = {
+            'apptype': 0,
+            'campaign_data': '',
+            'campaign_user': randint(0, 100000) & ~1,
+        }
+        gamestart, data_headers = await self.callapi(
+            '/check/game_start', request, noerr=False, header=True
+        )
         if "store_url" in data_headers:
-            if version := re.compile(r"\d\.\d\.\d").findall(data_headers["store_url"]):
+            if version := re.compile(r"\d+\.\d+\.\d+").findall(data_headers["store_url"]):
                 version = version[0]
                 _set_version(version)
             else:
                 version = _get_version()
             defaultHeaders['APP-VER'] = version
             self.headers['APP-VER'] = version
-            gamestart, data_headers = await self.callapi('/check/game_start', {'apptype': 0, 'campaign_data': '', 'campaign_user': randint(0, 99999)}, header=True)
+            request['campaign_user'] = randint(0, 100000) & ~1
+            gamestart, data_headers = await self.callapi(
+                '/check/game_start', request, noerr=False, header=True
+            )
 
         if 'now_tutorial' in gamestart:
             if not gamestart['now_tutorial']:
                 raise ApiException("该账号没过完教程!", 403)
 
     async def check_dangerous(self):
-        lres, data_headers = await self.callapi('/tool/sdk_login', {'uid': str(self.uid), 'access_key': self.access_key, 'channel': "1", 'platform': self.bsdk.platform}, header=True)
+        lres, data_headers = await self.callapi(
+            '/tool/sdk_login',
+            {
+                'uid': str(self.uid),
+                'access_key': self.access_key,
+                'channel': "1",
+                'platform': self.bsdk.platform,
+            },
+            noerr=False,
+            header=True,
+        )
         if 'is_risk' in lres and lres['is_risk'] == 1:
             raise ApiException("账号存在风险", 403)
         self.viewer_id = data_headers['viewer_id']
@@ -207,17 +289,35 @@ class pcrclient:
     @staticmethod
     def _can_refresh_token(error: Exception) -> bool:
         message = str(error)
-        return not any(text in message for text in ("服务器在维护", "账号存在风险", "没过完教程"))
+        if any(text in message for text in ("服务器在维护", "账号存在风险", "没过完教程")):
+            return False
+        return isinstance(error, ApiException) and error.code in {2, 3}
 
-    async def _login_with_current_token(self):
-        if 'REQUEST-ID' in self.headers:
-            self.headers.pop('REQUEST-ID')
+    @staticmethod
+    def _can_retry_session(error: Exception) -> bool:
+        if not isinstance(error, ApiException):
+            return False
+        return error.code == 501 or error.code in RETRYABLE_SERVER_ERROR_STATUS
 
-        manifest = await self.callapi('/source_ini/get_maintenance_status?format=json', {}, False, noerr=True)
+    def _reset_game_session(self):
+        self.viewer_id = 0
+        self.headers.pop('REQUEST-ID', None)
+        self.headers.pop('SID', None)
+
+    async def _login_once(self):
+        self._reset_game_session()
+        await self.refresh_servers()
+
+        manifest = await self.callapi(
+            '/source_ini/get_maintenance_status?format=json', {}, False, noerr=False
+        )
         if 'maintenance_message' in manifest:
-            match = re.search(r'\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d',
-                              manifest['maintenance_message']).group()
-            raise ApiException("服务器在维护", parse(match))
+            match = re.search(
+                r'\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d',
+                manifest['maintenance_message'],
+            )
+            maintenance_end = parse(match.group()) if match else None
+            raise ApiException("服务器在维护", 403, maintenance_end)
 
         ver = manifest['required_manifest_ver']
         logger.info(f'using manifest ver = {ver}')
@@ -225,8 +325,26 @@ class pcrclient:
 
         await self.check_dangerous()
         await self.check_gamestart()
+        return await self.callapi('/load/index', {'carrier': 'OPPO'}, noerr=False)
 
-        # await self.callapi('/check/check_agreement', {})
+    async def _login_with_current_token(self, max_attempts=5):
+        last_error = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await self._login_once()
+            except Exception as error:
+                last_error = error
+                if not self._can_retry_session(error):
+                    raise
+                failed_server = self.current_api_root
+                next_server = self.rotate_server()
+                logger.warning(
+                    "priconne session login retry: "
+                    f"attempt={attempt}/{max_attempts}, server={failed_server}, "
+                    f"next_server={next_server}, status={getattr(error, 'code', None)}, "
+                    f"result_code={getattr(error, 'result_code', None)}, error={error}"
+                )
+        raise last_error or ApiException("登录失败，请重试", 501)
 
     async def login(self):
         used_saved_token = self.bsdk.has_saved_token()

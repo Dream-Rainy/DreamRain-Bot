@@ -87,15 +87,59 @@ async def write_config(path, config):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False)
-    
+
+
+def _redact_error_value(value):
+    if isinstance(value, dict):
+        sensitive_keys = {"access_key", "password", "pwd", "sid", "token"}
+        return {
+            key: "***" if str(key).lower() in sensitive_keys else _redact_error_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_error_value(item) for item in value]
+    return value
+
+
 async def check_client(client):
-    for i in range(3):
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
         try:
             load_index = await client.callapi('/load/index', {'carrier': 'OPPO'})
+            if not isinstance(load_index, dict):
+                logger.warning(
+                    "priconne check_client invalid /load/index response: "
+                    f"attempt={attempt}/{max_attempts}, type={type(load_index).__name__}, "
+                    f"value={_redact_error_value(load_index)!r}"
+                )
+                continue
             if "server_error" not in load_index:
                 return True
-        except:
-            pass
+            error = load_index.get("server_error") or {}
+            status = error.get('status')
+            logger.warning(
+                "priconne check_client /load/index server_error: "
+                f"attempt={attempt}/{max_attempts}, status={status}, "
+                f"title={error.get('title', '')!r}, message={error.get('message', '')!r}, "
+                f"error={_redact_error_value(error)!r}"
+            )
+            if status in {0, 1, 2, 3, 999999}:
+                return False
+            if status in {4, 5, 6, 7, 8}:
+                rotate_server = getattr(client, "rotate_server", None)
+                if callable(rotate_server):
+                    rotate_server()
+        except Exception as e:
+            logger.opt(exception=e).warning(
+                "priconne check_client /load/index exception: "
+                f"attempt={attempt}/{max_attempts}, error={e!r}"
+            )
+            if getattr(e, "code", None) in {0, 1, 2, 3, 999999}:
+                return False
+            rotate_server = getattr(client, "rotate_server", None)
+            if callable(rotate_server):
+                rotate_server()
+    logger.warning(f"priconne check_client failed after {max_attempts} attempts")
     return False
 
 async def safe_send(bot, ev, msg):
