@@ -50,8 +50,9 @@ async def test_catalog_background_refresh_is_single_flight(loaded_chiffon_bot) -
     catalog = _catalog(loaded_chiffon_bot)
     release = asyncio.Event()
 
-    async def fake_sync() -> None:
+    async def fake_sync() -> str:
         await release.wait()
+        return "同步完成"
 
     catalog.sync_song_data_from_remote = fake_sync  # type: ignore[method-assign]
 
@@ -64,6 +65,25 @@ async def test_catalog_background_refresh_is_single_flight(loaded_chiffon_bot) -
     await asyncio.sleep(0)
 
     assert catalog._refresh_task is None
+    assert await catalog.wait_for_refresh() == "同步完成"
+
+
+@pytest.mark.asyncio
+async def test_catalog_sync_reports_partial_failure(loaded_chiffon_bot, monkeypatch: pytest.MonkeyPatch) -> None:
+    catalog = _catalog(loaded_chiffon_bot)
+    adapters = [
+        type("Adapter", (), {"display_name": "maimai", "game_code": "maimai"})(),
+        type("Adapter", (), {"display_name": "CHUNITHM", "game_code": "chunithm"})(),
+    ]
+
+    monkeypatch.setattr(catalog, "_domain_adapters", lambda: adapters)
+
+    async def fake_sync(adapter) -> bool:
+        return adapter.game_code == "maimai"
+
+    monkeypatch.setattr(catalog, "_sync_adapter_from_remote", fake_sync)
+
+    assert await catalog.sync_song_data_from_remote() == "后台同步完成：成功 maimai；失败 CHUNITHM"
 
 
 @pytest.mark.asyncio

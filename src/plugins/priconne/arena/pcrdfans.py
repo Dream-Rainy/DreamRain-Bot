@@ -28,42 +28,13 @@ class PCRDSigner:
         return cls._instance
 
     async def _init_page(self):
-        """初始化持久化的签名环境，并注入核心劫持逻辑"""
+        """初始化持久化的签名环境。"""
         browser = await get_browser()
         self._page = await browser.new_page()
-        
-        # 1. 在页面加载任何脚本前，注入“内鬼”脚本，劫持 _makeFuncWrapper
-        # 即使它是局部变量，在它诞生的那一刻我们也要给它一个全局引用
-        await self._page.add_init_script("""
-            (function() {
-                const originalDefineProperty = Object.defineProperty;
-                Object.defineProperty = function(obj, prop, descriptor) {
-                    if (prop === '_makeFuncWrapper' || prop === 'value') {
-                        const originalFactory = descriptor.value;
-                        descriptor.value = function(_0x47eb44) {
-                            // 【核心修改】保存这个特定运行时的 this
-                            window.REAL_THIS = this; 
-                            
-                            const localSignFunc = originalFactory.apply(this, arguments);
-                            
-                            // 包装一层，确保调用时始终使用正确的 this
-                            window.G_SIGN_FUNC = function(...args) {
-                                return localSignFunc.apply(window.REAL_THIS, args);
-                            };
-                            
-                            return localSignFunc;
-                        };
-                    }
-                    return originalDefineProperty.apply(this, arguments);
-                };
-            })();
-        """)
 
-        # 2. 访问目标页面触发 JS 加载
         try:
             await self._page.goto("https://pcrdfans.com/battle", wait_until="networkidle")
-            # 确保劫持成功
-            await self._page.wait_for_function("() => typeof window.G_SIGN_FUNC === 'function'", timeout=30000)
+            await self._page.wait_for_function("() => typeof window.pcrutil === 'function'", timeout=30000)
         except Exception as e:
             print(f"[PCRD-Signer] 环境初始化失败: {e}")
             raise e
@@ -102,24 +73,10 @@ class PCRDSigner:
         # 预计算 transformed_nonce
         transformed = self._transform_nonce_python(nonce)
 
-        # 3. 直接调用偷出来的闭包函数
-        # 它内部会自动处理 Promise 和异步调度，所以我们这里包裹一层 evaluate 即可
         _sign = await self._page.evaluate("""
             async ([raw, nonce, transformed]) => {
                 try {
-                    // 调用我们劫持的局部函数引用
-                    // 如果它内部有异步逻辑，我们手动加一个微小的 delay 确保结果落库
-                    const result = window.G_SIGN_FUNC(raw, nonce, transformed);
-                    
-                    if (result) return result;
-                    
-                    // 如果返回是空的，尝试等待 100ms 从结果表里捞（兜底逻辑）
-                    return new Promise(resolve => {
-                        setTimeout(() => {
-                            const table = window.SIGN_MANAGER ? window.SIGN_MANAGER['_pcrsafarifix'] : null;
-                            resolve(table ? table[nonce] : null);
-                        }, 100);
-                    });
+                    return window.pcrutil(raw, nonce, transformed) || null;
                 } catch (e) {
                     return null;
                 }

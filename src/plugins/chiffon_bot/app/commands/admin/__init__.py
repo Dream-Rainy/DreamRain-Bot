@@ -104,6 +104,8 @@ def register_admin_commands(admin_group) -> None:
     async def _update():
         try:
             _is_updated, message = await lxns_client.catalog.refresh_song_data(manual=True)
+            await update_cmd.send(message)
+            message = await lxns_client.catalog.wait_for_refresh() or "后台同步任务未找到"
         except Exception as e:
             message = f"更新失败: {e}"
         await update_cmd.finish(message)

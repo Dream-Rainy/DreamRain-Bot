@@ -59,7 +59,8 @@ class BotCatalogClient:
         self.auto_sync_interval_seconds = max(60, int(auto_sync_interval_seconds))
         self.auto_sync_startup_delay_seconds = max(0, int(auto_sync_startup_delay_seconds))
         self.background_refresh_delay_seconds = max(0.0, float(background_refresh_delay_seconds))
-        self._refresh_task: asyncio.Task[None] | None = None
+        self._refresh_task: asyncio.Task[str] | None = None
+        self._last_refresh_result: str | None = None
         self._auto_sync_task: asyncio.Task[None] | None = None
 
     def _domain_adapters(self) -> list[DomainAdapter]:
@@ -281,38 +282,56 @@ class BotCatalogClient:
             self.logger.error(f"后台更新 {gc} 乐曲数据失败，继续使用本地数据: {e}")
             return False
 
-    async def sync_song_data_from_remote(self) -> None:
+    async def sync_song_data_from_remote(self) -> str:
         adapters = self._domain_adapters()
         results = await asyncio.gather(*(self._sync_adapter_from_remote(adapter) for adapter in adapters))
 
         ok_count = sum(1 for ok in results if ok)
+        succeeded = [adapter.display_name for adapter, ok in zip(adapters, results, strict=True) if ok]
+        failed = [adapter.display_name for adapter, ok in zip(adapters, results, strict=True) if not ok]
         if ok_count == len(results):
             self.logger.info("全部乐曲数据后台同步完成")
+            return f"后台同步完成：{'、'.join(succeeded)} 全部成功"
         elif ok_count:
             self.logger.warning("乐曲数据后台同步部分完成，失败的游戏继续使用本地数据")
+            return f"后台同步完成：成功 {'、'.join(succeeded)}；失败 {'、'.join(failed)}"
         else:
             self.logger.warning("乐曲数据后台同步全部失败，继续使用本地数据")
+            return f"后台同步完成：全部失败（{'、'.join(failed)}）"
 
-    async def _run_background_refresh(self) -> None:
+    async def _run_background_refresh(self) -> str:
         await asyncio.sleep(self.background_refresh_delay_seconds)
-        await self.sync_song_data_from_remote()
+        return await self.sync_song_data_from_remote()
 
-    def _on_refresh_task_done(self, task: asyncio.Task[None]) -> None:
-        self._refresh_task = None
+    def _on_refresh_task_done(self, task: asyncio.Task[str]) -> None:
+        current = self._refresh_task is task
         try:
-            task.result()
+            result = task.result()
+            if current:
+                self._last_refresh_result = result
         except asyncio.CancelledError:
             self.logger.warning("乐曲数据后台同步任务已取消")
         except Exception as e:
+            if current:
+                self._last_refresh_result = f"后台同步异常：{e}"
             self.logger.error(f"乐曲数据后台同步任务异常结束: {e}")
+        finally:
+            if current:
+                self._refresh_task = None
 
     def start_background_refresh(self) -> bool:
         if self._refresh_task and not self._refresh_task.done():
             return False
 
+        self._last_refresh_result = None
         self._refresh_task = asyncio.create_task(self._run_background_refresh())
         self._refresh_task.add_done_callback(self._on_refresh_task_done)
         return True
+
+    async def wait_for_refresh(self) -> str | None:
+        if self._refresh_task is not None:
+            return await self._refresh_task
+        return self._last_refresh_result
 
     async def load_song_data_from_db(self) -> tuple[bool, str]:
         adapters = self._domain_adapters()
