@@ -23,7 +23,7 @@ from ...shared.handlers.generic_song_info import generic_song_info
 from ...shared.search.catalog_search import search_song_with_audit
 from ._reaction import ack_message
 from ._response import finish_with, send_with
-from .arcade import query_arcade_song
+from .arcade import query_arcade_artist, query_arcade_song, query_arcade_song_games
 
 _DISAMBIGUATION_TIMEOUT_SECONDS = 30
 
@@ -44,6 +44,14 @@ _SONG_PATTERNS = [
 ]
 
 _ARCADE_SONG_PATTERN = r"^查歌\s+(\S+)\s+(.+)$"
+_SONG_GAMES_PATTERNS = [
+    r"^(.+?)在哪些游戏(?:里|中)[？?]?$",
+    r"^哪些游戏有\s*(.+?)[？?]?$",
+]
+_ARTIST_SONGS_PATTERN = (
+    r"^(.+?)\s*在\s*(\S+?)\s*"
+    r"(?:游戏)?(?:里|中)有哪些(?:首)?(?:歌曲|歌)[？?]?$"
+)
 
 
 @dataclass(frozen=True)
@@ -77,6 +85,26 @@ def _extract_song_query(text: str) -> str | None:
         if match:
             return match.group(1).strip()
     return None
+
+
+def _extract_song_games_query(text: str) -> str | None:
+    for pattern in _SONG_GAMES_PATTERNS:
+        match = re.match(pattern, text, re.IGNORECASE)
+        if match:
+            query = match.group(1).strip().strip("《》「」『』“”\"'")
+            if query:
+                return query
+    return None
+
+
+def _extract_artist_songs_query(text: str) -> tuple[str, str] | None:
+    match = re.match(_ARTIST_SONGS_PATTERN, text, re.IGNORECASE)
+    if not match:
+        return None
+    artist, game_code = match.group(1).strip(), match.group(2).strip().lower()
+    if not artist or not game_code:
+        return None
+    return game_code, artist
 
 
 async def _known_arcade_song_codes() -> set[str] | None:
@@ -231,6 +259,24 @@ def register_natural_language_commands() -> None:
         plain_text: str = EventPlainText(),
     ):
         text = plain_text.strip()
+        song_games_query = _extract_song_games_query(text)
+        if song_games_query and len(song_games_query) <= 50:
+            await ack_message(event, bot)
+            logger.info(f"[NL] arcade-songs 游戏查询: {song_games_query!r}")
+            await finish_with(
+                await query_arcade_song_games(song_games_query, event.message_id)
+            )
+
+        artist_songs_query = _extract_artist_songs_query(text)
+        if artist_songs_query is not None:
+            game_code, artist = artist_songs_query
+            if len(artist) <= 50:
+                await ack_message(event, bot)
+                logger.info(f"[NL] arcade-songs 曲师查询: {game_code} {artist!r}")
+                await finish_with(
+                    await query_arcade_artist(game_code, artist, event.message_id)
+                )
+
         arcade_query = _extract_arcade_song_query(
             text, valid_codes=await _known_arcade_song_codes()
         )
