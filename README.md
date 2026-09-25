@@ -42,7 +42,7 @@
 
 - maimai：`/mai.song テオ`、`/mai.pic`（附选曲截图或回复图片）、`/mai.b50`
 - CHUNITHM：`/chuni.song 1`
-- 通用街机曲库：`/arcade.song sdvx FLOWER`、`/arcade.games FLOWER`、`/arcade.artist sdvx xi`、`查歌 ongeki モンダイナイトリッパー！`；也可问“FLOWER在哪些游戏里？”或“xi在sdvx里有哪些歌？”
+- 通用街机曲库：`/arcade.song sdvx FLOWER`、`/arcade.games FLOWER`、`/arcade.artist sdvx xi`、`查歌 ongeki モンダイナイトリッパー！`；也可问“FLOWER在哪些游戏里？”或“xi在sdvx里有哪些歌？”。跨游戏查询支持别名，会按规范曲名匹配实际游戏曲库。
 - 账号系统：`/acc help`、`/acc.bind 123456789012345`
 - 活动系统：`/event.help`
 - 管理命令：`/admin.update`、`/admin.clean`、`/admin.search pending`（SUPERUSER）

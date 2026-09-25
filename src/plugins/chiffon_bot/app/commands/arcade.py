@@ -50,6 +50,7 @@ async def query_arcade_song_games(query: str, message_id: int) -> BotResponse:
             str(site.get("gameCode") or "").strip().lower()
             for site in sites
             if isinstance(site, dict) and str(site.get("gameCode") or "").strip()
+            and str(site.get("gameCode") or "").strip().lower() != "any"
         )
     )
     if not game_codes:
@@ -63,6 +64,7 @@ async def query_arcade_song_games(query: str, message_id: int) -> BotResponse:
         return_exceptions=True,
     )
     exact_hits: dict[str, list[SongQueryResult]] = {}
+    canonical_titles: dict[str, str] = {}
     suggestions: list[tuple[str, SongQueryResult]] = []
     failed_games: list[str] = []
 
@@ -78,7 +80,14 @@ async def query_arcade_song_games(query: str, message_id: int) -> BotResponse:
             if result.match_score == 100.0 and result.match_type is not MatchType.EXACT_ID
         ]
         if exact:
-            exact_hits[game_code] = exact
+            matches = exact_hits.setdefault(game_code, [])
+            known_song_ids = {result.song_id for result in matches}
+            for result in exact:
+                if result.song_id not in known_song_ids:
+                    matches.append(result)
+                    known_song_ids.add(result.song_id)
+                if result.match_type is MatchType.EXACT_ALIAS:
+                    canonical_titles.setdefault(result.title.casefold(), result.title)
         elif (
             results
             and results[0].match_type is not MatchType.EXACT_ID
@@ -86,8 +95,45 @@ async def query_arcade_song_games(query: str, message_id: int) -> BotResponse:
         ):
             suggestions.append((game_code, results[0]))
 
+    canonical_queries = [
+        (game_code, title)
+        for title in canonical_titles.values()
+        for game_code in game_codes
+    ]
+    if canonical_queries:
+        canonical_results = await asyncio.gather(
+            *(
+                lxns_client.catalog.search.search_song(title, game_code=game_code)
+                for game_code, title in canonical_queries
+            ),
+            return_exceptions=True,
+        )
+        for (game_code, _), results in zip(canonical_queries, canonical_results, strict=True):
+            if isinstance(results, asyncio.CancelledError):
+                raise results
+            if isinstance(results, Exception):
+                if game_code not in failed_games:
+                    failed_games.append(game_code)
+                continue
+            exact = [
+                result
+                for result in results
+                if result.match_score == 100.0 and result.match_type is not MatchType.EXACT_ID
+            ]
+            if exact:
+                matches = exact_hits.setdefault(game_code, [])
+                known_song_ids = {result.song_id for result in matches}
+                for result in exact:
+                    if result.song_id not in known_song_ids:
+                        matches.append(result)
+                        known_song_ids.add(result.song_id)
+
     if exact_hits:
-        lines = [f"《{query}》在 {len(exact_hits)} 个游戏中找到："]
+        record_count = sum(len(matches) for matches in exact_hits.values())
+        lines = [
+            f"《{query}》在 {len(exact_hits)} 个游戏中找到，"
+            f"共 {record_count} 条曲目记录："
+        ]
         for game_code in game_codes:
             for result in exact_hits.get(game_code, []):
                 lines.append(f"[{game_code}] [{result.song_id}] {result.title}")
