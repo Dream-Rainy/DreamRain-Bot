@@ -39,20 +39,27 @@ async def query_arcade_song(game_code: str, query: str | int, message_id: int) -
     return await build_arcade_song_response(game_code, results, message_id, arcade_sites=sites)
 
 
+async def query_arcade_game_list(message_id: int) -> BotResponse:
+    try:
+        sites = await lxns_client.data.catalog.arcade_songs.sites()
+    except Exception as e:  # noqa: BLE001
+        return BotResponse(text=f"获取 arcade-songs 游戏列表失败: {e}", reply_to=message_id)
+
+    game_codes = _arcade_game_codes(sites)
+    if not game_codes:
+        return BotResponse(text="arcade-songs 没有可查询的游戏", reply_to=message_id)
+    lines = [f"arcade-songs 可查询游戏（{len(game_codes)} 个）："]
+    lines.extend(f"[{game_code}]" for game_code in game_codes)
+    return BotResponse(text="\n".join(lines), reply_to=message_id)
+
+
 async def query_arcade_song_games(query: str, message_id: int) -> BotResponse:
     try:
         sites = await lxns_client.data.catalog.arcade_songs.sites()
     except Exception as e:  # noqa: BLE001
         return BotResponse(text=f"获取 arcade-songs 游戏列表失败: {e}", reply_to=message_id)
 
-    game_codes = list(
-        dict.fromkeys(
-            str(site.get("gameCode") or "").strip().lower()
-            for site in sites
-            if isinstance(site, dict) and str(site.get("gameCode") or "").strip()
-            and str(site.get("gameCode") or "").strip().lower() != "any"
-        )
-    )
+    game_codes = _arcade_game_codes(sites)
     if not game_codes:
         return BotResponse(text="arcade-songs 没有可查询的游戏", reply_to=message_id)
 
@@ -215,6 +222,12 @@ async def build_arcade_song_response(
 
 
 def register_arcade_commands(group) -> None:
+    list_cmd = group.command("list")
+
+    @list_cmd.handle()
+    async def _list(event: Event):
+        await finish_with(await query_arcade_game_list(event.message_id))
+
     song_cmd = group.command("song", force_whitespace=True)
 
     @song_cmd.handle()
@@ -249,10 +262,23 @@ def _get_text(obj: Any, attr: str) -> str:
     return str(getattr(obj, attr, "") or "").strip()
 
 
+def _arcade_game_codes(sites: list[dict]) -> list[str]:
+    return [
+        code
+        for code in dict.fromkeys(
+            str(site.get("gameCode") or "").strip().lower()
+            for site in sites
+            if isinstance(site, dict)
+        )
+        if code and code != "any"
+    ]
+
+
 __all__ = [
     "build_arcade_song_response",
     "parse_arcade_song_args",
     "query_arcade_artist",
+    "query_arcade_game_list",
     "query_arcade_song",
     "query_arcade_song_games",
     "register_arcade_commands",

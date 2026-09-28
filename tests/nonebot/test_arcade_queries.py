@@ -98,6 +98,33 @@ async def test_arcade_games_command_searches_site_catalogs(
     assert responses[0].text == "《FLOWER》在 1 个游戏中找到，共 1 条曲目记录：\n[sdvx] [1001] FLOWER"
 
 
+async def test_arcade_list_command_lists_queryable_game_codes(
+    app, loaded_chiffon_bot, monkeypatch
+):
+    from src.plugins.chiffon_bot.app.commands import arcade
+
+    responses = []
+    _finish_capture(monkeypatch, arcade, responses)
+
+    async def fake_sites():
+        return [
+            {"gameCode": "maimai"},
+            {"gameCode": "SDVX"},
+            {"gameCode": "sdvx"},
+            {"gameCode": "any"},
+            {"gameCode": "ongeki"},
+        ]
+
+    monkeypatch.setattr(arcade.lxns_client.data.catalog.arcade_songs, "sites", fake_sites)
+
+    await _dispatch(app, "/arcade.list", 7, _find_matcher(arcade, "_list"))
+
+    assert len(responses) == 1
+    assert responses[0].text == (
+        "arcade-songs 可查询游戏（3 个）：\n[maimai]\n[sdvx]\n[ongeki]"
+    )
+
+
 async def test_arcade_games_command_expands_alias_across_games_and_skips_any(
     app, loaded_chiffon_bot, monkeypatch
 ):
