@@ -36,7 +36,7 @@ def build_fuzzy_list_message(
     """根据查询结果决定是否提前返回消息。
 
     - 结果为空 → 返回"未找到"消息。
-    - 无完全匹配且有多个模糊结果 → 返回模糊列表消息（附曲师）。
+    - 多个完全匹配或多个模糊结果 → 返回候选列表（附曲师）。
     - 其他情况（可继续渲染）→ 返回 None。
     """
     if not results:
@@ -44,8 +44,8 @@ def build_fuzzy_list_message(
 
     perfect = [r for r in results if r.match_score == 100.0]
 
-    if len(perfect) == 0 and len(results) > 1:
-        lines = ["找到多个近似结果，请使用更精确的关键词或 ID 查询：\n"]
+    if len(perfect) > 1 or (len(perfect) == 0 and len(results) > 1):
+        lines = ["找到多个结果，请使用明确的歌曲 ID 查询：\n"]
         for result in results[:5]:
             lines.append(f"{_result_label(result)} ({result.match_score:.0f}%)")
         if len(results) > 5:

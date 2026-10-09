@@ -69,6 +69,113 @@ async def test_catalog_background_refresh_is_single_flight(loaded_chiffon_bot) -
 
 
 @pytest.mark.asyncio
+async def test_text_prewarm_shares_snapshot_without_embeddings_and_refreshes_generation(
+    loaded_chiffon_bot, monkeypatch,
+):
+    from types import SimpleNamespace
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    catalog = _catalog(loaded_chiffon_bot)
+    identities = SimpleNamespace(_db=object(), enable_aliases=False)
+    catalog.service.identities = identities
+    state = {"revision": 1, "title": "First Song"}
+    reads = []
+
+    async def revision():
+        return state["revision"]
+
+    async def songs(game):
+        reads.append(game)
+        return {1: SongData(id=1, title=state["title"], aliases=["loaded alias"])}
+
+    async def forbidden(*args):
+        raise AssertionError("populated aliases or disabled embeddings were loaded again")
+
+    monkeypatch.setattr(module, "embedding_enabled", lambda: False)
+    monkeypatch.setattr(catalog, "get_revision", revision)
+    monkeypatch.setattr(catalog, "_load_search_songs", songs)
+    monkeypatch.setattr(catalog, "load_alias_records", forbidden)
+    monkeypatch.setattr(catalog, "rebuild_search_embeddings", forbidden)
+    monkeypatch.setattr(catalog, "_domain_adapters", lambda: [SimpleNamespace(game_code="sdvx")])
+    await catalog._refresh_search_caches()
+    shared, aliases = await catalog.load_embedding_inputs("sdvx")
+    assert shared[1].title == "First Song" and aliases == [(1, "loaded alias")]
+    await catalog._refresh_search_caches()
+    assert reads == ["sdvx"]
+    state.update(revision=2, title="New Song")
+    await catalog._refresh_search_caches()
+    assert catalog.search._cache.indexes[("sdvx", None)].index == {1: "New Song"}
+    identities._db = object()  # Same revision on a different connection must reload.
+    state["title"] = "Other Database"
+    await catalog._refresh_search_caches()
+    assert catalog.search._cache.indexes[("sdvx", None)].index == {1: "Other Database"}
+    assert reads == ["sdvx"] * 3
+    await catalog.stop_auto_sync()
+
+
+@pytest.mark.asyncio
+async def test_background_embeddings_retry_update_and_cancel_without_blocking_startup(loaded_chiffon_bot, monkeypatch, tmp_path):
+    from src.plugins.chiffon_bot.shared.search import embedding_cache as cache
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    catalog = _catalog(loaded_chiffon_bot)
+    path = tmp_path / 'vectors.jsonl'
+    binary = cache._game_path(path, 'maimai')
+    state = {'revision': 1, 'alias': 'first', 'fail': True, 'block': False}
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    preparations = []
+    async def revision():
+        return state['revision']
+    async def songs(game):
+        preparations.append((game, state['revision']))
+        return {1: SongData(id=1, title='Song')}
+    async def aliases(game):
+        return [(1, state['alias'])]
+    async def infer(texts):
+        calls.append(texts)
+        if state['fail']:
+            state['fail'] = False
+            raise RuntimeError('offline')
+        if state['block']:
+            entered.set()
+            await release.wait()
+        return [[1.0, 0.0] for _ in texts]
+    async def rebuild(game):
+        return await cache.rebuild_song_embeddings(catalog, game, path=path, embedder=infer)
+    async def load():
+        return True, 'loaded'
+    monkeypatch.setattr(module, 'embedding_enabled', lambda: True)
+    monkeypatch.setattr(catalog, '_domain_adapters', lambda: [type('Adapter', (), {'game_code': 'maimai'})()])
+    monkeypatch.setattr(catalog, 'get_revision', revision)
+    monkeypatch.setattr(catalog, '_load_search_songs', songs)
+    monkeypatch.setattr(catalog, 'load_alias_records', aliases)
+    monkeypatch.setattr(catalog, 'rebuild_search_embeddings', rebuild)
+    await catalog._refresh_search_caches()
+    assert not binary.exists() and not catalog._embedding_generations
+    await catalog._refresh_search_caches()
+    assert binary.exists() and len(calls) == 2
+    assert preparations == [('maimai', 1)]
+    await catalog._refresh_search_caches()
+    assert len(calls) == 2
+    state.update(revision=2, alias='updated')
+    await catalog._refresh_search_caches()
+    rows, _ = cache._song_index(path, 'maimai')
+    assert calls[-1] == ['Song | updated'] and rows[0]['revision'] == 2
+    assert preparations == [('maimai', 1), ('maimai', 2)]
+
+    before = binary.read_bytes()
+    state.update(revision=3, alias='blocking', block=True)
+    monkeypatch.setattr(catalog, 'load_song_data_from_db', load)
+    monkeypatch.setattr(catalog, 'start_background_refresh', lambda: False)
+    try:
+        assert (await catalog.refresh_song_data())[0]
+        await asyncio.wait_for(entered.wait(), 3)
+        assert catalog._cache_task is not None and not catalog._cache_task.done()
+    finally:
+        await catalog.stop_auto_sync()
+    assert catalog._cache_task is None and binary.read_bytes() == before
+
+
+@pytest.mark.asyncio
 async def test_catalog_sync_reports_partial_failure(loaded_chiffon_bot, monkeypatch: pytest.MonkeyPatch) -> None:
     catalog = _catalog(loaded_chiffon_bot)
     adapters = [
@@ -84,6 +191,42 @@ async def test_catalog_sync_reports_partial_failure(loaded_chiffon_bot, monkeypa
     monkeypatch.setattr(catalog, "_sync_adapter_from_remote", fake_sync)
 
     assert await catalog.sync_song_data_from_remote() == "后台同步完成：成功 maimai；失败 CHUNITHM"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["success", "failed", "already_running"])
+async def test_background_sync_handles_omitted_songs_and_preserves_local_data_on_failure(loaded_chiffon_bot, monkeypatch, status):
+    from types import SimpleNamespace
+    from src.plugins.chiffon_bot.integrations.lxns.plugin_data import plugin_data
+    from src.plugins.chiffon_bot.shared.game import get_domain_adapter
+
+    catalog = _catalog(loaded_chiffon_bot)
+    adapter = get_domain_adapter("maimai")
+    old_index, old_store = {99: "Old"}, {99: object()}
+    monkeypatch.setattr(plugin_data, adapter.song_index_attr, old_index)
+    monkeypatch.setattr(plugin_data, adapter.song_store_attr, old_store)
+    monkeypatch.setattr(plugin_data, "data_version", 3)
+    catalog._embedding_generations["maimai"] = (1, "old")
+    calls = []
+    async def sync(game, *, current_data_version, include_songs):
+        assert game == "maimai" and current_data_version == 3 and include_songs is False
+        return SimpleNamespace(ok=status == "success", status=status, songs=None, data_version=7, error=RuntimeError("offline"))
+    async def index(game):
+        calls.append("index")
+        return {101: "New"}
+    monkeypatch.setattr(catalog.service, "sync_game_from_remote", sync)
+    monkeypatch.setattr(catalog.service, "load_song_index", index)
+    monkeypatch.setattr(adapter, "clear_image_cache", lambda: calls.append("images"))
+    monkeypatch.setattr(catalog, "invalidate_alias_cache", lambda game: calls.append("aliases"))
+    assert await catalog._sync_adapter_from_remote(adapter) is (status == "success")
+    if status == "success":
+        assert getattr(plugin_data, adapter.song_index_attr) == {101: "New"}
+        assert getattr(plugin_data, adapter.song_store_attr) == {} and plugin_data.data_version == 7
+        assert calls == ["index", "images", "aliases"] and "maimai" not in catalog._embedding_generations
+    else:
+        assert getattr(plugin_data, adapter.song_index_attr) is old_index
+        assert getattr(plugin_data, adapter.song_store_attr) is old_store and plugin_data.data_version == 3
+        assert not calls and "maimai" in catalog._embedding_generations
 
 
 @pytest.mark.asyncio
@@ -159,7 +302,7 @@ async def test_bot_catalog_db_game_value_error_is_not_arcade_fallback(
 
 
 @pytest.mark.asyncio
-async def test_bot_catalog_search_uses_accepted_alias_overlay(
+async def test_bot_catalog_does_not_overlay_legacy_review_history(
     loaded_chiffon_bot,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -256,8 +399,7 @@ async def test_bot_catalog_search_uses_accepted_alias_overlay(
     pending = await catalog.search_song("maimai", "pending-alias")
     rejected = await catalog.search_song("maimai", "rejected-alias")
 
-    assert accepted
-    assert accepted[0].song_id == 1001
+    assert not accepted
     assert not pending
     assert not rejected
 

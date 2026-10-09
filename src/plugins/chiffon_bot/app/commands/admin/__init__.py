@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from nonebot.adapters import Event, Message
+from nonebot.adapters import Bot, Event, Message
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 
 from ....integrations.lxns.client import lxns_client
+from ....infra.html_render import _clear_background_cache
 from ....shared.game.registry import iter_domain_adapters
 from ....shared.search.embedding_cache import embedding_status
 from ....shared.search.search_audit import (
@@ -17,7 +18,6 @@ from ....shared.search.search_audit import (
     get_search_history_row,
     import_alias_candidates,
     list_alias_candidates,
-    update_alias_candidate_status,
 )
 
 
@@ -26,8 +26,8 @@ def _search_help() -> str:
         "搜索审核命令：\n"
         "/admin.search pending [数量]\n"
         "/admin.search show <编号>\n"
-        "/admin.search accept <编号>\n"
-        "/admin.search reject <编号>\n"
+        "/admin.search submit <旧搜索记录编号>（转为新版待审请求）\n"
+        "新版审核：/admin.alias pending；/admin.alias show <请求ID>\n"
         "/admin.search export accepted [数量]\n"
         "/admin.search import <JSONL路径>\n"
         "/admin.search embedding status\n"
@@ -117,6 +117,7 @@ def register_admin_commands(admin_group) -> None:
         adapters = iter_domain_adapters()
         for adapter in adapters:
             adapter.clear_image_cache()
+            _clear_background_cache(Path.cwd() / 'data/chiffon_bot/template' / adapter.game_code)
 
         names = "、".join(adapter.display_name for adapter in adapters) or "无"
         await clean_cmd.finish(f"已清除以下 domain 的图片缓存：{names}")
@@ -124,7 +125,7 @@ def register_admin_commands(admin_group) -> None:
     search_cmd = admin_group.command("search", force_whitespace=True, permission=SUPERUSER)
 
     @search_cmd.handle()
-    async def _search(event: Event, args: Message = CommandArg()):
+    async def _search(bot: Bot, event: Event, args: Message = CommandArg()):
         text = args.extract_plain_text().strip()
         parts = text.split()
         if not parts:
@@ -148,16 +149,31 @@ def register_admin_commands(admin_group) -> None:
                 await search_cmd.finish(_format_history_row(row))
 
             if action in {"accept", "reject"} and len(parts) >= 2:
-                status = "accepted" if action == "accept" else "rejected"
-                candidate = update_alias_candidate_status(
-                    int(parts[1]),
-                    status,
-                    reviewer=event.get_user_id(),
-                )
-                game = str(candidate.get("game") or "").strip()
-                if game:
-                    lxns_client.catalog.invalidate_alias_cache(game)
-                await search_cmd.finish(f"已标记为 {status}：\n{_format_candidate(candidate)}")
+                await search_cmd.finish("旧 JSONL 审核入口已停用。使用 /admin.search submit <旧编号> 转为新版请求，再由另一位审核员 /admin.alias 审核。")
+
+            if action == "submit" and len(parts) == 2:
+                from ..alias import _submit
+                from arcade_helper.aliases.models import AliasError
+                row = get_search_history_row(int(parts[1]))
+                candidate = alias_candidate_from_row(row) if row else None
+                if candidate is None:
+                    await search_cmd.finish("未找到该搜索候选")
+                try:
+                    game = str(candidate['game']).lower()
+                    if game not in {"maimai", "chunithm"}:
+                        raise ValueError("通用游戏旧枚举 ID 不能直接绑定；请 /arcade.alias add 按当前歌曲 ID 重新提交")
+                    song_id = int(candidate['song_id'])
+                    song = await lxns_client.catalog.get_song_by_id(game, song_id)
+                    if song is None or song.title != candidate['title']:
+                        raise ValueError("旧候选 ID/标题与当前曲库不一致，请按明确的当前歌曲 ID 重新提交")
+                    internal_id = await lxns_client.catalog.internal_song_id(game, song_id)
+                    actor = await lxns_client.alias_actor(bot, event)
+                    result = await _submit(bot, event, actor, "ADD_ALIAS", {
+                        "game_song_id": internal_id, "text": candidate['alias'], "scope": "game_song", "origin_game": game,
+                    }, reason=f"旧搜索候选记录 #{parts[1]}")
+                except (ValueError, AliasError) as exc:
+                    result = f"提交失败：{exc}"
+                await search_cmd.finish(result)
 
             if action == "export":
                 status = parts[1].lower() if len(parts) > 1 else "accepted"

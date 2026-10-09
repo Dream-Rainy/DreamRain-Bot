@@ -190,3 +190,85 @@ async def test_game_adapters_are_registered_from_shared_game_layer(loaded_chiffo
     assert isinstance(mai_adapter, CatalogSongAdapter)
     assert isinstance(chuni_adapter, CatalogSongAdapter)
     assert type(chuni_adapter).__module__.endswith("domains.chunithm.chunithm_adapter")
+
+
+async def test_sql_exact_and_ranking_use_light_catalog(seeded_song_db, monkeypatch):
+    from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client as client
+    from arcade_helper.catalog import CatalogRecord
+    from arcade_helper.core.song import SongData
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('query loaded the full catalog')
+    monkeypatch.setattr(client.catalog, 'load_all_songs', forbidden)
+    monkeypatch.setattr(client.data.catalog, 'load_all_songs', forbidden)
+    monkeypatch.setattr(client.identities, '_cached_songs', forbidden)
+    assert [r.song_id for r in await client.catalog.search_song('maimai', MAI_SONG_TITLE)] == [MAI_SONG_ID]
+    assert [r.song_id for r in await client.catalog.search_song('maimai', MAI_ALIAS)] == [MAI_SONG_ID]
+    assert await client.catalog.search_song('maimai', MAI_SONG_TITLE[:3])
+    # A numeric title remains a separate candidate alongside an actual numeric ID.
+    song = SongData(id=99999, title=str(MAI_SONG_ID), artist='Other')
+    await client.identities.import_records('maimai', [CatalogRecord(song, song.model_dump(mode='json'), '99999')],
+                                           provider='catalog', namespace='native', complete=False)
+    from arcade_helper.storage.tortoise.models import MaiSong
+    await MaiSong.create(id=99999, title=str(MAI_SONG_ID), artist='Other')
+    matches = await client.catalog.service.query_title_exact('maimai', str(MAI_SONG_ID))
+    assert matches == [(99999, str(MAI_SONG_ID))]
+    assert {r.song_id for r in await client.catalog.search_song('maimai', str(MAI_SONG_ID))} == {MAI_SONG_ID, 99999}
+    metadata = await client.catalog.load_search_songs('maimai')
+    assert metadata[MAI_SONG_ID].artist and not metadata[MAI_SONG_ID].difficulties
+
+
+async def test_full_candidate_batches_have_bounded_queries_and_correct_public_ids(seeded_song_db, monkeypatch):
+    from arcade_helper.catalog import CatalogRecord
+    from arcade_helper.core.song import SongData, SongSheet
+    from arcade_helper.storage.tortoise.catalog_models import AliasRevision, GameSong
+    from tortoise.expressions import F
+    from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client as client
+
+    base = await client.catalog.get_song_by_id("maimai", MAI_SONG_ID)
+    native_ids = [41001, 41002, 41003, 41004, 41005]
+    native = {sid: base.model_copy(update={"id": sid, "title": f"Batch Song {sid}", "aliases": [f"native-{sid}"]})
+              for sid in native_ids}
+    await client.data.catalog.sync_songs("maimai", native)
+    generic = [SongData(id=sid, title=f"Batch Song {sid}", artist="Batch Artist", aliases=[f"generic-{sid}"],
+        image_name=f"{sid}.jpg", difficulties={"standard": [SongSheet(type="standard", difficulty="master", level="15")]})
+        for sid in range(5)]
+    report = await client.identities.import_records("sdvx", [
+        CatalogRecord(song, song.model_dump(mode="json"), str(song.id)) for song in generic
+    ], provider="catalog", namespace="native")
+    generic_ids = list(report.song_ids.values())
+    db = client.identities._db
+    queries = []
+    for name in ("execute_query", "execute_query_dict"):
+        original = getattr(db, name)
+        async def counted(sql, *args, _original=original, **kwargs):
+            queries.append(sql)
+            return await _original(sql, *args, **kwargs)
+        monkeypatch.setattr(db, name, counted)
+
+    for game, ids in (("maimai", native_ids), ("sdvx", generic_ids)):
+        queries.clear()
+        two = await client.catalog.get_songs_by_ids(game, ids[:2])
+        small_count = len(queries)
+        queries.clear()
+        requested = [ids[-1], *ids, ids[0], 99999999]
+        all_songs = await client.catalog.get_songs_by_ids(game, requested)
+        assert len(queries) == small_count  # SQL round trips do not grow per candidate.
+        assert list(all_songs) == list(dict.fromkeys(requested))[:-1]
+        assert set(two) == set(ids[:2])
+        assert all(song.id == sid and song.image_name and song.difficulties and song.aliases
+                   for sid, song in all_songs.items())
+        if game == "maimai":
+            assert all_songs[ids[0]].difficulties["dx"][0].level == "13+"
+        else:
+            assert all_songs[ids[0]].difficulties["standard"][0].level == "15"
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("fuzzy candidate used sequential full-song reads")
+    monkeypatch.setattr(client.catalog, "get_song_by_id", forbidden)
+    # Recall from lightweight metadata, then hydrate only the returned candidates.
+    matches = await client.catalog.search.query_song_fuzzy("Batch Song", threshold=50, game_code="sdvx")
+    assert len(matches) > 1 and all(r.song_data.image_name and r.song_data.difficulties for r in matches)
+    target = generic_ids[0]
+    await GameSong.filter(id=target).update(active=False)
+    await AliasRevision.filter(id=1).update(revision=F("revision") + 1)
+    assert target not in await client.catalog.get_songs_by_ids("sdvx", generic_ids)

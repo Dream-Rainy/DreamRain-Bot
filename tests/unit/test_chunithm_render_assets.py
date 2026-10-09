@@ -52,16 +52,27 @@ def test_chuni_music_xml_parser_reads_jaket_file(tmp_path: Path) -> None:
 async def test_chuni_song_info_render_uses_chuni_data_asset_root(
     loaded_chiffon_bot,
     monkeypatch,
+    tmp_path,
 ) -> None:
     from arcade_helper.games.chunithm.schemas import ChuniSongData
     from src.plugins.chiffon_bot.domains.chunithm.views import chuni_bg_draw
+    from src.plugins.chiffon_bot.infra import html_render
 
     captured: dict[str, Any] = {}
+    monkeypatch.setattr(html_render, '_background_epochs', {})
+    monkeypatch.setattr(html_render, '_BACKGROUND_CACHE_DIR', tmp_path / 'backgrounds')
+
+    async def background(root, path, width, height):
+        assert root == chuni_bg_draw._CHUNI_ASSETS_DIR
+        assert path == "bg_html/X-VERSE-X/X-VERSE-X.html"
+        epoch = html_render._background_epoch(root.resolve().as_uri())
+        return f"file:///background-{epoch}-{width}x{height}.png"
 
     async def fake_template_to_pic(**kwargs: Any) -> bytes:
         captured.update(kwargs)
-        return b"fake-chuni-song-info"
+        return kwargs["templates"]["song_info"]["title"].encode()
 
+    monkeypatch.setattr(chuni_bg_draw, "_background_image_uri", background)
     chuni_bg_draw.clear_chuni_song_info_img_cache()
     monkeypatch.setattr(chuni_bg_draw, "template_to_pic", fake_template_to_pic)
 
@@ -109,7 +120,8 @@ async def test_chuni_song_info_render_uses_chuni_data_asset_root(
 
     img = await chuni_bg_draw.render_chuni_song_info_img(song_data)
 
-    assert img == b"fake-chuni-song-info"
+    assert img == song_data.title.encode()
+    initial_background = captured['templates']['bg_image_url']
     assert captured["template_name"] == "chuni_song_info.html"
     assert captured["pages"]["base_url"] == chuni_bg_draw._template_base_uri
     assert Path(captured["templates"]["base_url"]) == chuni_bg_draw._CHUNI_ASSETS_DIR
@@ -120,3 +132,14 @@ async def test_chuni_song_info_render_uses_chuni_data_asset_root(
         for chart in captured["templates"]["standard_charts"]
     ] == ["basic", "master", "ultima"]
     assert "jacket_url" not in captured["templates"]["song_info"]
+    changed = song_data.model_dump()
+    changed['title'] = 'Updated title'
+    chuni_bg_draw.clear_chuni_song_info_img_cache()
+    assert await chuni_bg_draw.render_chuni_song_info_img(changed) == b'Updated title'
+    assert captured['templates']['bg_image_url'] == initial_background
+    changed["difficulties"]["standard"] *= 3
+    changed["difficulties"]["we"] *= 2
+    chuni_bg_draw.clear_chuni_song_info_img_cache()
+    assert await chuni_bg_draw.render_chuni_song_info_img(changed) == b'Updated title'
+    assert captured['templates']['bg_image_url'] == initial_background.replace('916', '1084')
+    assert captured["pages"]["viewport"] == {"width": 1100, "height": 1084}

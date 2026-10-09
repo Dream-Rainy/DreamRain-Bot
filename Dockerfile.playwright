@@ -1,0 +1,29 @@
+FROM mcr.microsoft.com/playwright:v1.57.0-noble
+
+WORKDIR /app
+ENV NODE_PATH=/opt/playwright/node_modules \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_GPU_MODE=auto
+
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --prefix /opt/playwright \
+    --no-audit --no-fund playwright@1.57.0
+COPY tools/playwright_server*.cjs /app/tools/
+COPY src/plugins/chiffon_bot/shared/render_templates/fonts /app/src/plugins/chiffon_bot/shared/render_templates/fonts
+
+# Register only verified faces; keep original TTCs outside Fontconfig's search path.
+RUN mkdir -p /usr/local/share/fonts/chiffon && \
+    cd /app/src/plugins/chiffon_bot/shared/render_templates/fonts && \
+    ln -s "$PWD/Inter-VariableFont_opsz,wght.ttf" /usr/local/share/fonts/chiffon/ && \
+    ln -s "$PWD/NotoSansJP-VariableFont_wght.ttf" /usr/local/share/fonts/chiffon/ && \
+    ln -s "$PWD/ヒラギノ角ゴ Pro W3.otf" /usr/local/share/fonts/chiffon/ && \
+    ln -s "$PWD/思源黑体CN-Bold.otf" /usr/local/share/fonts/chiffon/ && \
+    ln -s "$PWD/SourceHanSansCN-VF.ttf" /usr/local/share/fonts/chiffon/ && \
+    ln -s "$PWD/FOT-NewRodinPro/FOT-NewRodinProN-M.otf" /usr/local/share/fonts/chiffon/ && \
+    ln -s "$PWD/FOT-NewRodinPro/FOT-NewRodinProN-DB.otf" /usr/local/share/fonts/chiffon/ && \
+    ln -s "$PWD/FOT-NewRodinPro/FOT-NewRodinProN-B.otf" /usr/local/share/fonts/chiffon/ && \
+    for weight in EL L R M B H; do \
+        ln -s "$PWD/GenSenRounded2-ttc/GenSenRounded2-TW-$weight.ttf" /usr/local/share/fonts/chiffon/; \
+    done && fc-cache -f /usr/local/share/fonts/chiffon
+
+EXPOSE 3000
+ENTRYPOINT ["node", "/app/tools/playwright_server.cjs"]

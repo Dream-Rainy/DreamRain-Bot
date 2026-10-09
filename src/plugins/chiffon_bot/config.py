@@ -50,6 +50,9 @@ class Config(BaseModel):
     # 时区设置，用于赛事时间的显示和解析
     # 默认使用 Asia/Shanghai，可设置为任何有效的时区名称（如 UTC、America/New_York 等）
     timezone: str = "Asia/Shanghai"
+
+    # Optional binary delivery from our pinned Playwright service; blank keeps legacy screenshots.
+    htmlrender_binary_endpoint: str = ""
     
     # ingame_data 基础路径
     # 子目录按约定自动推导：{base_dir}/{domain_name}/{data_type}/

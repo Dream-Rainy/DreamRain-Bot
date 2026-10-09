@@ -15,7 +15,11 @@ from nonebug import NONEBOT_INIT_KWARGS
 from nonebot.plugin import get_plugin
 from tortoise import Tortoise
 
-from arcade_helper.storage.tortoise import MODEL_MODULE as ARCADE_HELPER_MODEL_MODULE
+from arcade_helper.storage.tortoise import (
+    MODEL_MODULE as ARCADE_HELPER_MODEL_MODULE,
+    CATALOG_MODEL_MODULE, ALIAS_MODEL_MODULE,
+    initialize_catalog_storage, migrate_catalog_identities,
+)
 from tests.fixtures.song_seed import seed_song_data
 
 
@@ -82,7 +86,7 @@ async def seeded_song_db(tmp_path: Path, loaded_chiffon_bot):
             },
             "apps": {
                 "models": {
-                    "models": [ARCADE_HELPER_MODEL_MODULE, BOT_MODEL_MODULE],
+                    "models": [ARCADE_HELPER_MODEL_MODULE, BOT_MODEL_MODULE, CATALOG_MODEL_MODULE, ALIAS_MODEL_MODULE],
                     "default_connection": "default",
                 }
             },
@@ -90,6 +94,14 @@ async def seeded_song_db(tmp_path: Path, loaded_chiffon_bot):
     )
     await Tortoise.generate_schemas()
     await seed_song_data()
+    from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client
+    lxns_client.identities._song_cache.clear()
+    lxns_client.catalog.search.invalidate_alias_cache()
+    lxns_client.data.catalog.search.invalidate_alias_cache()
+    lxns_client._alias_actors.clear()
+    await initialize_catalog_storage()
+    await migrate_catalog_identities(store=lxns_client.identities, dry_run=False)
+    await lxns_client.data.lifecycle.start()
     try:
         yield
     finally:

@@ -99,7 +99,7 @@
         margin-left: 0;
         flex: 0 0 auto;
         font-size: 16px;
-        font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;
+        font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;
         color: #555;
     }
 
@@ -180,7 +180,7 @@
         text-align: center;
         border-bottom: 1px solid #e0e0e0;
         color: black;
-        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        font-family: 'SourceHanSansCN', 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
     }
 
     .data-table th {
@@ -215,11 +215,11 @@
     .level-display {
         font-size: 18px;
         font-weight: bold;
-        font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;
+        font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;
         color: #c77800;
     }
 
-    .level-delta { font-size: 12px; font-family: 'Inter', sans-serif; margin-top: 2px; }
+    .level-delta { font-size: 12px; font-family: 'SourceHanSansCN', 'Inter', sans-serif; margin-top: 2px; }
     .level-delta-up { color: #c62828; }
     .level-delta-down { color: #2e7d32; }
 
@@ -438,37 +438,37 @@
                             <div class="row-item">{{ chart.noteDesigner | default('-') }}</div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in charts %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['total'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in charts %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['tap'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in charts %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['hold'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in charts %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['slide'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in charts %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['air'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in charts %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['flick'] | default(0, true) }}</strong></div>
@@ -510,7 +510,7 @@
                             <div class="row-item">
                                 {# WE 以星数显示，level 字段通常为 "☆N" 或整数星数 #}
                                 {% set lvl = chart.level | default(chart.difficulty) | default('?') %}
-                                <span style="font-size:16px;font-weight:bold;font-family:Inter,sans-serif;">{{ lvl }}</span>
+                                <span style="font-size:16px;font-weight:bold;font-family:'SourceHanSansCN', Inter,sans-serif;">{{ lvl }}</span>
                             </div>
                             {% endfor %}
                         </td>
@@ -519,37 +519,37 @@
                             <div class="row-item">{{ chart.noteDesigner | default('-') }}</div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in we %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['total'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in we %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['tap'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in we %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['hold'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in we %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['slide'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in we %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['air'] | default(0, true) }}</strong></div>
                             {% endfor %}
                         </td>
-                        <td class="multi-row" style="font-family:Inter,sans-serif;">
+                        <td class="multi-row" style="font-family:'SourceHanSansCN', Inter,sans-serif;">
                             {% for chart in we %}
                             {% set nc = chart.noteCounts or {} %}
                             <div class="row-item"><strong>{{ nc['flick'] | default(0, true) }}</strong></div>
@@ -562,10 +562,10 @@
         {% endif %}
 
     </div>
-    <p style="margin-top:8px;font-size:small;color:#fff;font-weight:600;font-family:'思源黑体','Microsoft YaHei',sans-serif;text-shadow:0 0 6px rgba(0,0,0,.8);">
+    <p style="margin-top:8px;font-size:small;color:#fff;font-weight:600;font-family:'SourceHanSansCN', '思源黑体','Microsoft YaHei',sans-serif;text-shadow:0 0 6px rgba(0,0,0,.8);">
         定数以国服（LXNS）为准，箭头为 arcade-songs 相对变动；数据仅供参考。
     </p>
-    <p style="margin-top:4px;font-size:medium;color:#fff;font-weight:600;font-family:Inter,sans-serif;text-shadow:0 0 6px rgba(0,0,0,.8);">
+    <p style="margin-top:4px;font-size:medium;color:#fff;font-weight:600;font-family:'SourceHanSansCN', Inter,sans-serif;text-shadow:0 0 6px rgba(0,0,0,.8);">
         Powered By maimai.lxns.net &amp; arcade-songs / Generated By ChiffonBot
     </p>
 </div>

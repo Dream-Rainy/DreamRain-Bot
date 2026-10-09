@@ -73,32 +73,9 @@ def register_game_commands(
         if not query:
             await alias_cmd.finish(f"请输入要查询的歌曲名或 ID，例如：/{gc}.alias 1")
 
-        result = await lxns_client.catalog.get_song_aliases(gc, query)
-        if not result:
-            from ...shared.bot_response import BotResponse
-            await finish_with(BotResponse(
-                text=f" 未找到 {adapter.display_name} 歌曲：{query}",
-                reply_to=event.message_id,
-            ))
-            return
-
-        song_id = result["song_id"]
-        title = result["title"]
-        aliases = result["aliases"]
-
-        if not aliases:
-            response = f"[{song_id}] {title}\n\n暂无别名数据"
-        else:
-            alias_list = "\n".join(f"  · {a}" for a in aliases)
-            response = (
-                f"[{song_id}] {title}\n"
-                f"──────────\n"
-                f"别名列表（共 {len(aliases)} 个）：\n"
-                f"{alias_list}"
-            )
-
+        from .alias import alias_query_text
         from ...shared.bot_response import BotResponse
-        await finish_with(BotResponse(text=response, reply_to=event.message_id))
+        await finish_with(BotResponse(text=await alias_query_text(gc, query), reply_to=event.message_id))
 
     # ── random ────────────────────────────────────────────────────────────
     random_cmd = group.command("random", force_whitespace=True)

@@ -50,7 +50,7 @@
         margin: 0 0 15px 0;
         font-size: 24px;
         font-weight: 600;
-        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        font-family: 'SourceHanSansCN', 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
     }
     
     .info-content {
@@ -70,7 +70,7 @@
     
     .info-item-label {
         font-size: 12px;
-        font-family: 'Inter', 'NotoSansJP', sans-serif;
+        font-family: 'SourceHanSansCN', 'Inter', 'NotoSansJP', sans-serif;
         text-transform: uppercase;
         opacity: 0.8;
         margin-bottom: 5px;
@@ -80,7 +80,7 @@
     .info-item-value {
         font-size: 20px;
         font-weight: bold;
-        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        font-family: 'SourceHanSansCN', 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
     }
 
     .data-table {
@@ -106,12 +106,12 @@
         text-align: center;
         border-bottom: 1px solid #e0e0e0;
         color: black;
-        font-family: 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        font-family: 'SourceHanSansCN', 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
     }
     
     .data-table th {
         font-weight: 600;
-        font-family: '思源黑体', 'GenSenRounded2', 'NotoSansJP', sans-serif;
+        font-family: 'SourceHanSansCN', '思源黑体', 'GenSenRounded2', 'NotoSansJP', sans-serif;
         text-transform: uppercase;
         font-size: 13px;
         letter-spacing: 0.5px;
@@ -144,7 +144,7 @@
     .level-display {
         font-size: 18px;
         font-weight: bold;
-        font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;
+        font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;
         color: #667eea;
     }
     
@@ -152,7 +152,7 @@
         margin-top: 2px;
         font-size: 12px;
         line-height: 1.1;
-        font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;
+        font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;
     }
     
     .level-delta-up {
@@ -629,7 +629,7 @@
         line-height: 1.4;
         color: #f5e79e;
         font-weight: 600;
-        font-family: 'FOT-Seurat Pro', 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
+        font-family: 'SourceHanSansCN', 'FOT-Seurat Pro', 'FOT-NewRodinPro', 'GenSenRounded2', sans-serif;
         z-index: 3;
     }
 
@@ -786,14 +786,14 @@
         <img src="assets/UI_RSL_MBase_Parts_{{ type_name|upper }}.png"><br>
         <img style="width: 110px;" src="assets/{{ chart_version | replace(" ", "_") }}.png">
         {% if type_name == 'sd' %}
-        <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 120px; margin-left: auto; margin-right: auto; font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 120px; margin-left: auto; margin-right: auto; font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
             <span class="region-tag{% if not song_info.regions_sd or not song_info.regions_sd.jp %} unavailable{% endif %}">JP</span>
             <span class="region-tag{% if not song_info.regions_sd or not song_info.regions_sd.intl %} unavailable{% endif %}">INTL</span>
             <span class="region-tag{% if not song_info.regions_sd or not song_info.regions_sd.usa %} unavailable{% endif %}">USA</span>
             <span class="region-tag{% if not song_info.regions_sd or not song_info.regions_sd.cn %} unavailable{% endif %}">CN</span>
         </div>
         {% elif type_name == 'dx' %}
-        <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 120px; margin-left: auto; margin-right: auto; font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 120px; margin-left: auto; margin-right: auto; font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
             <span class="region-tag{% if not song_info.regions_dx or not song_info.regions_dx.jp %} unavailable{% endif %}">JP</span>
             <span class="region-tag{% if not song_info.regions_dx or not song_info.regions_dx.intl %} unavailable{% endif %}">INTL</span>
             <span class="region-tag{% if not song_info.regions_dx or not song_info.regions_dx.usa %} unavailable{% endif %}">USA</span>
@@ -825,7 +825,7 @@
     <td>
         <img style="width: 130px;" src="assets/UI_CMN_TabTitle_Utage.png"><br>
         <img style="width: 110px;" src="assets/{{ chart_version | replace(" ", "_") }}.png">
-        <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 120px; margin-left: auto; margin-right: auto; font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 120px; margin-left: auto; margin-right: auto; font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
             <span class="region-tag{% if not song_info.regions_utage or not song_info.regions_utage.jp %} unavailable{% endif %}">JP</span>
             <span class="region-tag{% if not song_info.regions_utage or not song_info.regions_utage.intl %} unavailable{% endif %}">INTL</span>
             <span class="region-tag{% if not song_info.regions_utage or not song_info.regions_utage.usa %} unavailable{% endif %}">USA</span>
@@ -842,7 +842,7 @@
     </td>
     <td class="multi-row">
         {% for chart in charts %}
-        <div class="row-item" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+        <div class="row-item" style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
             {{ chart.level }}
         </div>
         {% endfor %}
@@ -853,7 +853,7 @@
         <div class="row-item">{{ chart.noteDesigner or '-' }}</div>
         {% endfor %}
     </td>
-    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+    <td class="multi-row" style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
         {% for chart in charts %}
             {% if chart.isBuddy %}
                 <div class="row-item"><strong>【1P】: {{ chart.noteCounts.left.total }}</strong></div>
@@ -863,7 +863,7 @@
             {% endif %}
         {% endfor %}
     </td>
-    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+    <td class="multi-row" style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
         {% for chart in charts %}
             {% if chart.isBuddy %}
                 <div class="row-item"><strong>{{ chart.noteCounts.left.tap }}</strong></div>
@@ -873,7 +873,7 @@
             {% endif %}
         {% endfor %}
     </td>
-    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+    <td class="multi-row" style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
         {% for chart in charts %}
             {% if chart.isBuddy %}
                 <div class="row-item"><strong>{{ chart.noteCounts.left.hold }}</strong></div>
@@ -883,7 +883,7 @@
             {% endif %}
         {% endfor %}
     </td>
-    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+    <td class="multi-row" style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
         {% for chart in charts %}
             {% if chart.isBuddy %}
                 <div class="row-item"><strong>{{ chart.noteCounts.left.slide }}</strong></div>
@@ -893,7 +893,7 @@
             {% endif %}
         {% endfor %}
     </td>
-    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+    <td class="multi-row" style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
         {% for chart in charts %}
             {% if chart.isBuddy %}
                 <div class="row-item"><strong>{{ chart.noteCounts.left.touch }}</strong></div>
@@ -903,7 +903,7 @@
             {% endif %}
         {% endfor %}
     </td>
-    <td class="multi-row" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">
+    <td class="multi-row" style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">
         {% for chart in charts %}
             {% if chart.isBuddy %}
                 <div class="row-item"><strong>{{ chart.noteCounts.left.break }}</strong></div>
@@ -939,9 +939,9 @@
                 <div class="base-info">
                     <span class="title">{{ song_info.title|default("???") }}</span>
                     {% if song_info.id < 10000000 %}
-                    <span class="song-id" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">#{{ song_info.id|default("-") }}</span>
+                    <span class="song-id" style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">#{{ song_info.id|default("-") }}</span>
                     {% else %}
-                    <span class="song-id" style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">#?</span>
+                    <span class="song-id" style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">#?</span>
                     {% endif %}
                     <span class="artist">{{ song_info.artist|default("-") }}</span>
                 </div>
@@ -979,11 +979,11 @@
                         <th>定数</th>
                         <th>谱师</th>
                         <th>总物量</th>
-                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">TAP</th>
-                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">HOLD</th>
-                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">SLIDE</th>
-                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">TOUCH</th>
-                        <th style="font-family: 'Inter', 'FOT-NewRodinPro', sans-serif;">BREAK</th>
+                        <th style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">TAP</th>
+                        <th style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">HOLD</th>
+                        <th style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">SLIDE</th>
+                        <th style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">TOUCH</th>
+                        <th style="font-family: 'SourceHanSansCN', 'Inter', 'FOT-NewRodinPro', sans-serif;">BREAK</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1004,7 +1004,7 @@
             {% endif %}
         </div>
     </div>
-    <p style="margin-top: -2px; font-size: small; color: white; font-weight: 600; font-family: '思源黑体', 'arial', sans-serif; text-shadow: -1px -1px 0 rgba(0, 0, 0, 0.8), 1px -1px 0 rgba(0, 0, 0, 0.8), -1px 1px 0 rgba(0, 0, 0, 0.8), 1px 1px 0 rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.8);">定数数据以国服为准，下方箭头为日服最新变化。数据仅供参考，可能存在纰漏。</p>
-    <p style="margin-top: -2px; font-size: medium; color: white; font-weight: 600; font-family: 'Inter', 'arial', sans-serif; text-shadow: -1px -1px 0 rgba(0, 0, 0, 0.8), 1px -1px 0 rgba(0, 0, 0, 0.8), -1px 1px 0 rgba(0, 0, 0, 0.8), 1px 1px 0 rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.8);">Powered By maimai.lxns.net & dxrating.net / Generated By ChiffonBot / Developed By DreamRain</p>
+    <p style="margin-top: -2px; font-size: small; color: white; font-weight: 600; font-family: 'SourceHanSansCN', '思源黑体', 'arial', sans-serif; text-shadow: -1px -1px 0 rgba(0, 0, 0, 0.8), 1px -1px 0 rgba(0, 0, 0, 0.8), -1px 1px 0 rgba(0, 0, 0, 0.8), 1px 1px 0 rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.8);">定数数据以国服为准，下方箭头为日服最新变化。数据仅供参考，可能存在纰漏。</p>
+    <p style="margin-top: -2px; font-size: medium; color: white; font-weight: 600; font-family: 'SourceHanSansCN', 'Inter', 'arial', sans-serif; text-shadow: -1px -1px 0 rgba(0, 0, 0, 0.8), 1px -1px 0 rgba(0, 0, 0, 0.8), -1px 1px 0 rgba(0, 0, 0, 0.8), 1px 1px 0 rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.8);">Powered By maimai.lxns.net & dxrating.net / Generated By ChiffonBot / Developed By DreamRain</p>
 </div>
 {% endblock %}

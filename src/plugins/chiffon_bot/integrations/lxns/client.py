@@ -5,11 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from nonebot import get_plugin_config, logger
+from nonebot.permission import SUPERUSER
+from src.plugins.platform_adapter import PlatformContext
 
 from arcade_helper import ArcadeHelperClient
 from arcade_helper.integrations.lxns.oauth_client import OauthClient
 from arcade_helper.integrations.lxns.sse import SseRelayClient
-from arcade_helper.storage.tortoise import TortoiseAccountStore, TortoiseSongStore
+from arcade_helper.storage.tortoise import TortoiseAccountStore, TortoiseSongStore, TortoiseCatalogStore
 
 from ...config import Config
 from ...infra.http import http_client
@@ -31,6 +33,8 @@ class BotLxnsClient:
         self._config = get_plugin_config(Config)
         self.accounts = TortoiseAccountStore()
         self.songs = TortoiseSongStore(logger=logger)
+        self.identities = TortoiseCatalogStore(enable_aliases=True)
+        self._alias_actors: dict[int, bool] = {}
         self.data = ArcadeHelperClient(
             http_get_json=_get_json,
             http_post_json=_post_json,
@@ -46,6 +50,8 @@ class BotLxnsClient:
             lxns_oauth_relay_url=getattr(self._config, "lxns_oauth_relay_url", ""),
             account_store=self.accounts,
             song_store=self.songs,
+            catalog_store=self.identities,
+            alias_policy=self._alias_policy,
             local_data_dir=Path("data") / "chiffon_bot" / "arcade-helper",
         )
         if self.data.lxns.oauth is None:
@@ -72,6 +78,21 @@ class BotLxnsClient:
                 300,
             ),
         )
+
+    def _alias_policy(self, user_id: int, action: str, game_code: str | None) -> bool:
+        if user_id not in self._alias_actors:
+            return False
+        return action == "submit" or self._alias_actors[user_id]
+
+    async def alias_actor(self, bot, event) -> int:
+        context = PlatformContext.from_event(event, bot)
+        platform = "qq" if "onebot" in context.platform else context.platform
+        if platform == "unknown":
+            raise ValueError("无法识别当前平台身份")
+        user = await self.data.users.from_platform(platform, event.get_user_id())
+        # Only the authenticated adapter event grants roles, never command text.
+        self._alias_actors[user.user_id] = bool(await SUPERUSER(bot, event))
+        return user.user_id
 
 
 lxns_client = BotLxnsClient()

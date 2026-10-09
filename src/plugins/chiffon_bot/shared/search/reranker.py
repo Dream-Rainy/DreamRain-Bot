@@ -52,10 +52,12 @@ async def rerank_song_results(
     candidates = results[:limit]
     documents: list[str] = []
     for result in candidates:
-        try:
-            aliases = await catalog.get_song_aliases_for_song_id(game_code, result.song_id)
-        except Exception:
-            aliases = []
+        aliases = getattr(result.song_data, "aliases", None)
+        if aliases is None or (hasattr(result.song_data, "model_fields_set") and "aliases" not in result.song_data.model_fields_set):
+            try:
+                aliases = await catalog.get_song_aliases_for_song_id(game_code, result.song_id)
+            except Exception:
+                aliases = []
         documents.append(_song_text(result, aliases))
 
     scores = await rerank_texts(str(query), documents)

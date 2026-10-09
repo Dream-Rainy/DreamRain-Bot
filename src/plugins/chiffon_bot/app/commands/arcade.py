@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from nonebot.adapters import Event, Message
@@ -14,6 +13,7 @@ from ...integrations.lxns.client import lxns_client
 from ...shared.bot_response import BotResponse
 from ...shared.handlers.song_text import format_song_text_detail, load_song_jacket_bytes
 from ...shared.search.catalog_search import search_song_with_audit
+from ...shared.search.timing import stage
 from ._response import finish_with
 
 
@@ -29,11 +29,13 @@ def parse_arcade_song_args(text: str) -> tuple[str, str] | None:
 
 async def query_arcade_song(game_code: str, query: str | int, message_id: int) -> BotResponse:
     try:
-        results = await search_song_with_audit(query, game_code=game_code)
+        with stage("song.search"):
+            results = await search_song_with_audit(query, game_code=game_code)
     except Exception as e:  # noqa: BLE001
         return BotResponse(text=f"查询 {game_code} 曲库失败: {e}", reply_to=message_id)
     try:
-        sites = await lxns_client.data.catalog.arcade_songs.sites()
+        with stage("song.sites"):
+            sites = await lxns_client.data.catalog.arcade_songs.sites()
     except Exception:  # noqa: BLE001
         sites = []
     return await build_arcade_song_response(game_code, results, message_id, arcade_sites=sites)
@@ -55,117 +57,37 @@ async def query_arcade_game_list(message_id: int) -> BotResponse:
 
 async def query_arcade_song_games(query: str, message_id: int) -> BotResponse:
     try:
-        sites = await lxns_client.data.catalog.arcade_songs.sites()
-    except Exception as e:  # noqa: BLE001
-        return BotResponse(text=f"获取 arcade-songs 游戏列表失败: {e}", reply_to=message_id)
-
-    game_codes = _arcade_game_codes(sites)
-    if not game_codes:
-        return BotResponse(text="arcade-songs 没有可查询的游戏", reply_to=message_id)
-
-    results_by_game = await asyncio.gather(
-        *(
-            lxns_client.catalog.search.search_song(query, game_code=game_code)
-            for game_code in game_codes
-        ),
-        return_exceptions=True,
-    )
-    exact_hits: dict[str, list[SongQueryResult]] = {}
-    canonical_titles: dict[str, str] = {}
-    suggestions: list[tuple[str, SongQueryResult]] = []
-    failed_games: list[str] = []
-
-    for game_code, results in zip(game_codes, results_by_game, strict=True):
-        if isinstance(results, asyncio.CancelledError):
-            raise results
-        if isinstance(results, Exception):
-            failed_games.append(game_code)
-            continue
-        exact = [
-            result
-            for result in results
-            if result.match_score == 100.0 and result.match_type is not MatchType.EXACT_ID
-        ]
+        resolution = await lxns_client.catalog.search_all(query)
+        exact = [c for c in resolution.candidates
+                 if c.match_type in {"exact_title", "exact_alias"}]
         if exact:
-            matches = exact_hits.setdefault(game_code, [])
-            known_song_ids = {result.song_id for result in matches}
-            for result in exact:
-                if result.song_id not in known_song_ids:
-                    matches.append(result)
-                    known_song_ids.add(result.song_id)
-                if result.match_type is MatchType.EXACT_ALIAS:
-                    canonical_titles.setdefault(result.title.casefold(), result.title)
-        elif (
-            results
-            and results[0].match_type is not MatchType.EXACT_ID
-            and results[0].match_score >= 80.0
-        ):
-            suggestions.append((game_code, results[0]))
-
-    canonical_queries = [
-        (game_code, title)
-        for title in canonical_titles.values()
-        for game_code in game_codes
-    ]
-    if canonical_queries:
-        canonical_results = await asyncio.gather(
-            *(
-                lxns_client.catalog.search.search_song(title, game_code=game_code)
-                for game_code, title in canonical_queries
-            ),
-            return_exceptions=True,
-        )
-        for (game_code, _), results in zip(canonical_queries, canonical_results, strict=True):
-            if isinstance(results, asyncio.CancelledError):
-                raise results
-            if isinstance(results, Exception):
-                if game_code not in failed_games:
-                    failed_games.append(game_code)
-                continue
-            exact = [
-                result
-                for result in results
-                if result.match_score == 100.0 and result.match_type is not MatchType.EXACT_ID
-            ]
-            if exact:
-                matches = exact_hits.setdefault(game_code, [])
-                known_song_ids = {result.song_id for result in matches}
-                for result in exact:
-                    if result.song_id not in known_song_ids:
-                        matches.append(result)
-                        known_song_ids.add(result.song_id)
-
-    if exact_hits:
-        record_count = sum(len(matches) for matches in exact_hits.values())
-        lines = [
-            f"《{query}》在 {len(exact_hits)} 个游戏中找到，"
-            f"共 {record_count} 条曲目记录："
-        ]
-        for game_code in game_codes:
-            for result in exact_hits.get(game_code, []):
-                lines.append(f"[{game_code}] [{result.song_id}] {result.title}")
-    elif suggestions:
-        lines = [f"未找到《{query}》的精确匹配，以下是近似结果："]
-        ranked_suggestions = sorted(
-            suggestions,
-            key=lambda item: item[1].match_score,
-            reverse=True,
-        )[:10]
-        for game_code, result in ranked_suggestions:
-            lines.append(
-                f"[{game_code}] [{result.song_id}] {result.title} ({result.match_score:.0f}%)"
-            )
-    else:
-        message = (
-            f"在可访问的曲库中未找到《{query}》"
-            if failed_games
-            else f"未在 arcade-songs 曲库中找到《{query}》"
-        )
-        lines = [message]
-
-    if failed_games:
-        lines.append("曲库查询失败：" + "、".join(failed_games))
-    return BotResponse(text="\n".join(lines), reply_to=message_id)
+            from arcade_helper.storage.tortoise.catalog_models import GameSong
+            # Expand only confirmed work identities; equal titles do not establish identity.
+            rows = await GameSong.filter(work_id__in={c.work_id for c in exact}, active=True).only(
+                "id", "work_id", "game_code", "title"
+            ).order_by("game_code", "id")
+            public_ids = await lxns_client.catalog.public_song_ids([(song.game_code, song.id) for song in rows])
+            lines = [f"《{query}》在 {len({s.game_code for s in rows})} 个游戏中找到，共 {len(rows)} 条曲目记录："]
+            work_numbers = {work_id: index for index, work_id in enumerate(dict.fromkeys(str(song.work_id) for song in rows), start=1)}
+            ambiguous = len(work_numbers) > 1
+            if ambiguous:
+                lines.append("存在多个同名作品，以下结果按作品标注：")
+            for song in rows:
+                song_id = public_ids[(song.game_code, song.id)]
+                suffix = f"（作品 {work_numbers[str(song.work_id)]}）" if ambiguous else ""
+                lines.append(f"[{song.game_code}] [{song_id}] {song.title}{suffix}")
+        elif resolution.candidates:
+            lines = [f"未找到《{query}》的精确匹配，以下是近似结果："]
+            candidates = sorted(resolution.candidates, key=lambda c: c.score, reverse=True)[:10]
+            public_ids = await lxns_client.catalog.public_song_ids([(c.game_code, c.game_song_id) for c in candidates])
+            for candidate in candidates:
+                song_id = public_ids[(candidate.game_code, candidate.game_song_id)]
+                lines.append(f"[{candidate.game_code}] [{song_id}] {candidate.title} ({candidate.score:.0f}%)")
+        else:
+            lines = [f"未在已导入曲库中找到《{query}》；管理员可用 /admin.alias sync <game> 导入曲库。"]
+        return BotResponse(text="\n".join(lines), reply_to=message_id)
+    except Exception as exc:
+        return BotResponse(text=f"跨游戏曲库查询失败：{exc}", reply_to=message_id)
 
 
 async def query_arcade_artist(game_code: str, artist: str, message_id: int) -> BotResponse:
@@ -173,7 +95,7 @@ async def query_arcade_artist(game_code: str, artist: str, message_id: int) -> B
     if not gc or not query:
         return BotResponse(text="用法：/arcade.artist <game_code> <曲师名>", reply_to=message_id)
     try:
-        songs = await lxns_client.catalog.load_all_songs(gc)
+        songs = await lxns_client.catalog.load_search_songs(gc)
     except Exception as e:  # noqa: BLE001
         return BotResponse(text=f"查询 {gc} 曲库失败: {e}", reply_to=message_id)
 
@@ -202,8 +124,8 @@ async def build_arcade_song_response(
         return BotResponse(text=f"未找到 {game_code} 曲目", reply_to=message_id)
 
     perfect = [result for result in results if result.match_score == 100.0]
-    if not perfect and len(results) > 1:
-        lines = [f"[{game_code}] 找到多个近似结果，请使用更精确的关键词或 ID 查询：", ""]
+    if len(perfect) > 1 or (not perfect and len(results) > 1):
+        lines = [f"[{game_code}] 找到多个结果，请使用明确的歌曲 ID 查询：", ""]
         for result in results[:5]:
             artist = _get_text(result.song_data, "artist")
             suffix = f"  {artist}" if artist else ""
@@ -213,7 +135,8 @@ async def build_arcade_song_response(
         return BotResponse(text="\n".join(lines), reply_to=message_id)
 
     result = perfect[0] if perfect else results[0]
-    image = await load_song_jacket_bytes(game_code, result, arcade_sites=arcade_sites)
+    with stage("song.jacket"):
+        image = await load_song_jacket_bytes(game_code, result, arcade_sites=arcade_sites)
     return BotResponse(
         text="\n".join(format_song_text_detail(game_code, result)),
         image=image,
@@ -222,6 +145,31 @@ async def build_arcade_song_response(
 
 
 def register_arcade_commands(group) -> None:
+    help_cmd = group.command("help")
+
+    @help_cmd.handle()
+    async def _help(event: Event):
+        await finish_with(BotResponse(
+            text=(
+                "🎮 支持的游戏与功能\n\n"
+                "maimai：查歌、别名、随机选曲、曲绘识别、\n"
+                "B50/R50、玩家资料、趋势图\n"
+                "CHUNITHM：查歌、别名、随机选曲\n"
+                "其他音游：查歌、曲师查询、别名、跨游戏查询\n\n"
+                "游戏列表：/arcade.list\n"
+                "详细用法：/mai.help、/chuni.help\n"
+                "通用查歌：/arcade.song <游戏> <歌曲名或ID>\n"
+                "曲师查询：/arcade.artist <游戏> <曲师名>\n"
+                "别名查询：/arcade.alias <游戏> <歌曲名或ID>\n"
+                "跨游戏查询：/arcade.games <歌曲名>\n"
+                "账号管理：/acc help\n"
+                "活动功能：/event.help\n\n"
+                "其他音游需先导入曲库；管理员（SUPERUSER）使用\n"
+                "/admin.alias sync <游戏>。"
+            ),
+            reply_to=event.message_id,
+        ))
+
     list_cmd = group.command("list")
 
     @list_cmd.handle()

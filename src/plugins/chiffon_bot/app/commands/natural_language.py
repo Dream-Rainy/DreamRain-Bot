@@ -170,17 +170,25 @@ def _choice_tokens(adapter: DomainAdapter) -> set[str]:
 
 
 def _resolve_adapter_choice(choice_text: str, hits: list[_SearchHit]) -> _SearchHit | None:
+    game_code = _resolve_game_choice(choice_text, [hit.adapter.game_code for hit in hits])
+    return next((hit for hit in hits if hit.adapter.game_code == game_code), None)
+
+
+def _resolve_game_choice(choice_text: str, game_codes: list[str]) -> str | None:
     text = choice_text.strip().lower()
     if not text:
         return None
 
     if text.isdigit():
         index = int(text)
-        if 1 <= index <= len(hits):
-            return hits[index - 1]
+        if 1 <= index <= len(game_codes):
+            return game_codes[index - 1]
         return None
 
-    matches = [hit for hit in hits if text in _choice_tokens(hit.adapter)]
+    adapters = {adapter.game_code: adapter for adapter in iter_searchable_adapters()}
+    matches = [code for code in game_codes if text in (
+        _choice_tokens(adapters[code]) if code in adapters else {code}
+    )]
     if len(matches) == 1:
         return matches[0]
     return None
@@ -233,20 +241,95 @@ async def _wait_for_adapter_choice(
     event: Event,
     hits: list[_SearchHit],
     timeout_seconds: int = _DISAMBIGUATION_TIMEOUT_SECONDS,
+    prompt: BotResponse | None = None,
 ) -> _SearchHit | None:
+    game_code = await _wait_for_game_choice(
+        event=event, game_codes=[hit.adapter.game_code for hit in hits],
+        timeout_seconds=timeout_seconds, prompt=prompt,
+    )
+    return next((hit for hit in hits if hit.adapter.game_code == game_code), None)
+
+
+async def _wait_for_game_choice(
+    *,
+    event: Event,
+    game_codes: list[str],
+    timeout_seconds: int = _DISAMBIGUATION_TIMEOUT_SECONDS,
+    prompt: BotResponse | None = None,
+) -> str | None:
+    choice_text = await _wait_for_choice_text(event=event, timeout_seconds=timeout_seconds, prompt=prompt)
+    return _resolve_game_choice(choice_text, game_codes) if choice_text is not None else None
+
+
+async def _wait_for_choice_text(
+    *,
+    event: Event,
+    timeout_seconds: int = _DISAMBIGUATION_TIMEOUT_SECONDS,
+    prompt: BotResponse | None = None,
+) -> str | None:
     future, matcher = _register_choice_waiter(
         user_id=event.get_user_id(),
         session_id=event.get_session_id(),
         timeout_seconds=timeout_seconds,
     )
     try:
+        if prompt is not None:
+            await send_with(prompt)
         try:
             choice_text = await asyncio.wait_for(future, timeout=timeout_seconds)
         except asyncio.TimeoutError:
             return None
-        return _resolve_adapter_choice(choice_text, hits)
+        return choice_text
     finally:
+        if not future.done():
+            future.cancel()
         _destroy_matcher(matcher)
+
+
+async def _query_alias_song(song_query: str, event: Event) -> BotResponse:
+    resolution = await lxns_client.catalog.search_all(song_query)
+    candidates = resolution.candidates
+    if not candidates:
+        return BotResponse(text="未找到匹配的歌曲", reply_to=event.message_id)
+
+    adapters = {adapter.game_code: adapter for adapter in iter_searchable_adapters()}
+    preferred = [c for c in candidates if c.game_code == resolution.inferred_game]
+    if len(preferred) == 1 and preferred[0].match_type.startswith("exact_"):
+        candidates = preferred
+    else:
+        game_codes = list(dict.fromkeys(c.game_code for c in candidates))
+        if len(game_codes) > 1:
+            lines = ["在多个游戏中找到匹配，请回复序号或游戏名："]
+            for index, code in enumerate(game_codes, start=1):
+                matches = [c for c in candidates if c.game_code == code]
+                name = adapters[code].display_name if code in adapters else code
+                title = matches[0].title if len(matches) == 1 else f"{len(matches)} 首候选歌曲"
+                lines.append(f"{index}. [{name}] {title}")
+            selected = await _wait_for_game_choice(
+                event=event, game_codes=game_codes,
+                prompt=BotResponse(text="\n".join(lines), reply_to=event.message_id),
+            )
+            if selected is None:
+                return BotResponse(text="没有识别到要查询的游戏，已取消。", reply_to=event.message_id)
+            candidates = tuple(c for c in candidates if c.game_code == selected)
+
+    if len(candidates) == 1:
+        candidate = candidates[0]
+        song_id = await lxns_client.catalog.public_song_id(candidate.game_code, candidate.game_song_id)
+        adapter = adapters.get(candidate.game_code)
+        if adapter is not None:
+            return await generic_song_info(song_id, event.get_user_id(), event.message_id, adapter)
+        return await query_arcade_song(candidate.game_code, song_id, event.message_id)
+
+    lines = ["请选择明确的游戏和歌曲 ID："]
+    for candidate in candidates[:10]:
+        song_id = await lxns_client.catalog.public_song_id(candidate.game_code, candidate.game_song_id)
+        adapter = adapters.get(candidate.game_code)
+        command = f"/{adapter.command_prefix}.song {song_id}" if adapter else f"/arcade.song {candidate.game_code} {song_id}"
+        lines.append(f"{candidate.title} ({candidate.score:.0f}%) → {command}")
+    if len(candidates) > 10:
+        lines.append(f"...还有 {len(candidates) - 10} 个结果")
+    return BotResponse(text="\n".join(lines), reply_to=event.message_id)
 
 
 def register_natural_language_commands() -> None:
@@ -277,9 +360,11 @@ def register_natural_language_commands() -> None:
                     await query_arcade_artist(game_code, artist, event.message_id)
                 )
 
-        arcade_query = _extract_arcade_song_query(
-            text, valid_codes=await _known_arcade_song_codes()
-        )
+        arcade_query = _extract_arcade_song_query(text)
+        if arcade_query is not None:
+            codes = await _known_arcade_song_codes()
+            if codes is not None and arcade_query[0] not in codes:
+                arcade_query = None
         if arcade_query is not None:
             game_code, query = arcade_query
             await ack_message(event, bot)
@@ -290,6 +375,14 @@ def register_natural_language_commands() -> None:
 
         if not song_query or not (1 <= len(song_query) <= 50):
             return
+
+        if lxns_client.catalog.aliases_enabled:
+            await ack_message(event, bot)
+            try:
+                response = await _query_alias_song(song_query, event)
+            except Exception as exc:
+                response = BotResponse(text=f"跨游戏查歌失败：{exc}", reply_to=event.message_id)
+            await finish_with(response)
 
         adapters = iter_searchable_adapters()
         if not adapters:
@@ -328,8 +421,10 @@ def register_natural_language_commands() -> None:
                 for hit in best_hits
             )
         )
-        await send_with(_build_conflict_message(song_query, best_hits, message_id))
-        selected = await _wait_for_adapter_choice(event=event, hits=best_hits)
+        selected = await _wait_for_adapter_choice(
+            event=event, hits=best_hits,
+            prompt=_build_conflict_message(song_query, best_hits, message_id),
+        )
         if selected is None:
             await finish_with(
                 BotResponse(

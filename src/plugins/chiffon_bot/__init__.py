@@ -20,13 +20,17 @@ from .domains.chunithm import chunithm_adapter as _  # noqa: F401
 from .app.commands.account import register_account_commands
 from .app.commands.admin import register_admin_commands
 from .app.commands.arcade import register_arcade_commands
+from .app.commands.alias import register_alias_commands
 from .app.commands.maimai import register_maimai_commands
 from .app.commands.chunithm import register_chunithm_commands
 from .app.commands.event import register_event_commands, register_event_rank_matcher
 from .app.commands.natural_language import register_natural_language_commands
 from .integrations.lxns.client import lxns_client
+from .shared.search import timing as _timing  # noqa: F401
 
 from .infra.db.connect import init as init_db, close as close_db
+from .infra.html_render import _close_render_pages
+from .infra.render_warmup import start_render_warmup, stop_render_warmup
 
 __plugin_meta__ = PluginMetadata(
     name="src/plugins/chiffon_bot",
@@ -53,8 +57,9 @@ register_account_commands(account_group)
 admin_group = CommandGroup("admin", prefix_aliases=True, priority=5)
 register_admin_commands(admin_group)
 
-arcade_group = CommandGroup("arcade", prefix_aliases=True, priority=5)
+arcade_group = CommandGroup("arcade", prefix_aliases=True, priority=5, block=True)
 register_arcade_commands(arcade_group)
+register_alias_commands(arcade_group, admin_group)
 
 event_group = CommandGroup("event", prefix_aliases=True, priority=5)
 register_event_commands(event_group)
@@ -71,6 +76,7 @@ async def init():
     logger.info("开始初始化乐曲数据...")
     is_updated, msg = await lxns_client.catalog.refresh_song_data()
     lxns_client.catalog.start_auto_sync()
+    start_render_warmup()
     if is_updated:
         logger.info(f"乐曲数据初始化完成: {msg}")
     else:
@@ -79,6 +85,8 @@ async def init():
 
 @driver.on_shutdown
 async def close():
+    await stop_render_warmup()
+    await _close_render_pages()
     await lxns_client.catalog.stop_auto_sync()
     await lxns_client.sse.stop()
     await lxns_client.data.lifecycle.stop()

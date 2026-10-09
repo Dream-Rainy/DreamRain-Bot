@@ -33,6 +33,7 @@ services:
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
       HTMLRENDER_CONNECT: "${HTMLRENDER_CONNECT:-ws://playwright:3000}"
+      HTMLRENDER_BINARY_ENDPOINT: "${HTMLRENDER_BINARY_ENDPOINT-http://playwright:3002}"
       PRICONNE_CREDENTIAL_KEY_FILE: "${PRICONNE_CREDENTIAL_KEY_FILE:-/run/secrets/priconne_credential_key}"
     secrets:
       - priconne_credential_key
@@ -50,16 +51,19 @@ services:
 
   playwright:
     hostname: playwright
-    image: mcr.microsoft.com/playwright:v1.57.0-noble
+    image: dreamrain-playwright:local
+    build:
+      context: .
+      dockerfile: Dockerfile.playwright
     container_name: playwright
-    entrypoint:
-      - /bin/sh
-      - -c
-      - npx -y playwright@1.57.0 run-server --port 3000 --host 0.0.0.0
+    restart: unless-stopped
+    init: true
+    environment:
+      PLAYWRIGHT_GPU_MODE: "${PLAYWRIGHT_GPU_MODE:-auto}"
     ports:
       - "${PLAYWRIGHT_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:3000 >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:3001 >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -1,0 +1,13 @@
+# Linux host with NVIDIA driver + NVIDIA Container Toolkit.
+# docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+services:
+  playwright:
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: graphics,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

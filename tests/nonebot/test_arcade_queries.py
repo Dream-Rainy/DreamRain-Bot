@@ -75,27 +75,24 @@ def _song_result(
     )
 
 
-async def test_arcade_games_command_searches_site_catalogs(
-    app, loaded_chiffon_bot, monkeypatch
-):
-    from src.plugins.chiffon_bot.app.commands import arcade
+async def _import_song(game, *, title="FLOWER", artist="xi", aliases=(), native="1001"):
+    from arcade_helper.catalog import CatalogRecord
+    from arcade_helper.aliases import AliasObservation
+    from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client
+    song = SongData(id=int(native), title=title, artist=artist,
+                    alias_observations=[AliasObservation(source_key=f"lxns:{game}", text=a) for a in aliases])
+    report = await lxns_client.identities.import_records(game, [CatalogRecord(song, song.model_dump(mode="json"), native)],
+                                                        provider="catalog", namespace="native", complete=False)
+    return report.song_ids[native]
 
+
+async def test_arcade_games_command_searches_imported_catalog(app, seeded_song_db, monkeypatch):
+    from src.plugins.chiffon_bot.app.commands import arcade
+    song_id = await _import_song("sdvx")
     responses = []
     _finish_capture(monkeypatch, arcade, responses)
-
-    async def fake_sites():
-        return [{"gameCode": "SDVX"}, {"gameCode": "ongeki"}]
-
-    async def fake_search(query: str, *, game_code: str):
-        return [_song_result()] if game_code == "sdvx" else []
-
-    monkeypatch.setattr(arcade.lxns_client.data.catalog.arcade_songs, "sites", fake_sites)
-    monkeypatch.setattr(arcade.lxns_client.catalog.search, "search_song", fake_search)
-
     await _dispatch(app, "/arcade.games FLOWER", 1, _find_matcher(arcade, "_games"))
-
-    assert len(responses) == 1
-    assert responses[0].text == "《FLOWER》在 1 个游戏中找到，共 1 条曲目记录：\n[sdvx] [1001] FLOWER"
+    assert responses[0].text == f"《FLOWER》在 1 个游戏中找到，共 1 条曲目记录：\n[sdvx] [{song_id}] FLOWER"
 
 
 async def test_arcade_list_command_lists_queryable_game_codes(
@@ -125,97 +122,88 @@ async def test_arcade_list_command_lists_queryable_game_codes(
     )
 
 
-async def test_arcade_games_command_expands_alias_across_games_and_skips_any(
+async def test_arcade_command_blocks_lower_priority_but_unknown_command_propagates(
+    app, loaded_chiffon_bot, monkeypatch,
+):
+    from nonebot import on_message
+    from src.plugins.chiffon_bot.app.commands import arcade
+
+    responses, propagated = [], []
+    _finish_capture(monkeypatch, arcade, responses)
+    sentinel = on_message(priority=12, block=False)
+
+    @sentinel.handle()
+    async def record(event: GroupMessageEvent):
+        propagated.append(event.get_plaintext())
+
+    async with app.test_matcher([_find_matcher(arcade, "_help"), sentinel]) as ctx:
+        adapter = ctx.create_adapter(base=Adapter)
+        bot = ctx.create_bot(base=Bot, adapter=adapter, self_id="10000")
+        ctx.receive_event(bot, _group_event("/arcade.help", 901))
+        ctx.receive_event(bot, _group_event("/arcade.unknown", 902))
+    assert len(responses) == 1
+    assert propagated == ["/arcade.unknown"]
+    sentinel.destroy()
+
+
+async def test_arcade_help_is_text_overview_without_catalog_access(
     app, loaded_chiffon_bot, monkeypatch
 ):
     from src.plugins.chiffon_bot.app.commands import arcade
 
     responses = []
     _finish_capture(monkeypatch, arcade, responses)
-    calls = []
 
-    async def fake_sites():
-        return [
-            {"gameCode": "sdvx"},
-            {"gameCode": "maimai"},
-            {"gameCode": "any"},
-        ]
+    async def unavailable_sites():
+        raise AssertionError("帮助总览不应请求远端游戏列表")
 
-    async def fake_search(query: str, *, game_code: str):
-        calls.append((query, game_code))
-        if query == "flower nickname" and game_code == "sdvx":
-            return [
-                _song_result(
-                    match_type=MatchType.EXACT_ALIAS,
-                    matched_text="flower nickname",
-                )
-            ]
-        if query == "FLOWER" and game_code == "maimai":
-            return [_song_result(song_id=2001)]
-        return []
-
-    monkeypatch.setattr(arcade.lxns_client.data.catalog.arcade_songs, "sites", fake_sites)
-    monkeypatch.setattr(arcade.lxns_client.catalog.search, "search_song", fake_search)
-
-    await _dispatch(app, "/arcade.games flower nickname", 6, _find_matcher(arcade, "_games"))
+    monkeypatch.setattr(arcade.lxns_client.data.catalog.arcade_songs, "sites", unavailable_sites)
+    await _dispatch(app, "/arcade.help", 8, _find_matcher(arcade, "_help"))
 
     assert len(responses) == 1
-    assert responses[0].text == (
-        "《flower nickname》在 2 个游戏中找到，共 2 条曲目记录：\n"
-        "[sdvx] [1001] FLOWER\n[maimai] [2001] FLOWER"
-    )
-    assert ("FLOWER", "maimai") in calls
-    assert all(game_code != "any" for _, game_code in calls)
+    response = responses[0]
+    assert response.image is None
+    assert response.reply_to == 8
+    for feature in ("maimai", "CHUNITHM", "B50/R50", "随机选曲", "曲绘识别", "趋势图"):
+        assert feature in response.text
+    for command in ("/arcade.list", "/mai.help", "/chuni.help", "/arcade.song",
+                    "/arcade.artist", "/arcade.alias", "/arcade.games", "/acc help", "/event.help"):
+        assert command in response.text
+    assert "需先导入曲库" in response.text
+    assert "SUPERUSER" in response.text
 
 
-async def test_arcade_games_command_matches_accepted_alias(
-    app, loaded_chiffon_bot, monkeypatch, tmp_path
-):
-    from arcade_helper.search.song_query import invalidate_alias_cache
+async def test_arcade_games_alias_expands_confirmed_work_only(app, seeded_song_db, monkeypatch):
     from src.plugins.chiffon_bot.app.commands import arcade
-
-    alias = "flower nickname"
-    history_path = tmp_path / "aliases.jsonl"
-    history_path.write_text(
-        json.dumps(
-            {
-                "game": "sdvx",
-                "query": alias,
-                "alias_candidate": {
-                    "alias": alias,
-                    "song_id": 1001,
-                    "title": "FLOWER",
-                    "status": "accepted",
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("SONG_SEARCH_AUDIT_PATH", str(history_path))
-    song = SongData(id=1001, title="FLOWER", artist="xi")
+    source = await _import_song("sdvx", aliases=["flower nickname"])
+    linked = await _import_song("ongeki")
+    unrelated = await _import_song("iidx", artist="different artist")
     responses = []
     _finish_capture(monkeypatch, arcade, responses)
+    await _dispatch(app, "/arcade.games flower nickname", 6, _find_matcher(arcade, "_games"))
+    assert f"[sdvx] [{source}] FLOWER" in responses[0].text
+    assert f"[ongeki] [{linked}] FLOWER" in responses[0].text
+    assert f"[iidx] [{unrelated}]" not in responses[0].text
+    await _dispatch(app, "/arcade.games FLOWER", 8, _find_matcher(arcade, "_games"))
+    from arcade_helper.storage.tortoise.catalog_models import GameSong
+    for song in await GameSong.filter(id__in=[source, linked, unrelated]):
+        assert str(song.work_id) not in responses[-1].text
+    assert f"[iidx] [{unrelated}] FLOWER（作品 1）" in responses[-1].text
+    assert f"[ongeki] [{linked}] FLOWER（作品 2）" in responses[-1].text
+    assert f"[sdvx] [{source}] FLOWER（作品 2）" in responses[-1].text
 
-    async def fake_sites():
-        return [{"gameCode": "sdvx"}]
 
-    async def fake_catalog(game_code: str):
-        assert game_code == "sdvx"
-        return {song.id: song}
-
-    monkeypatch.setattr(arcade.lxns_client.data.catalog.arcade_songs, "sites", fake_sites)
-    monkeypatch.setattr(
-        arcade.lxns_client.data.catalog.arcade_songs, "catalog", fake_catalog
-    )
-    invalidate_alias_cache("sdvx")
-    try:
-        await _dispatch(app, f"/arcade.games {alias}", 5, _find_matcher(arcade, "_games"))
-    finally:
-        invalidate_alias_cache("sdvx")
-
-    assert len(responses) == 1
-    assert responses[0].text == "《flower nickname》在 1 个游戏中找到，共 1 条曲目记录：\n[sdvx] [1001] FLOWER"
+async def test_arcade_games_ignores_legacy_jsonl_overlay(app, seeded_song_db, monkeypatch, tmp_path):
+    from src.plugins.chiffon_bot.app.commands import arcade
+    await _import_song("sdvx")
+    path = tmp_path / "aliases.jsonl"
+    path.write_text(json.dumps({"game": "sdvx", "query": "retired nickname", "alias_candidate": {
+        "alias": "retired nickname", "song_id": 1001, "title": "FLOWER", "status": "accepted"}}) + "\n", encoding="utf-8")
+    monkeypatch.setenv("SONG_SEARCH_AUDIT_PATH", str(path))
+    responses = []
+    _finish_capture(monkeypatch, arcade, responses)
+    await _dispatch(app, "/arcade.games retired nickname", 5, _find_matcher(arcade, "_games"))
+    assert "在 1 个游戏中找到" not in responses[0].text
 
 
 async def test_arcade_artist_command_returns_matching_songs(
@@ -231,11 +219,14 @@ async def test_arcade_artist_command_returns_matching_songs(
         1003: SongData(id=1003, title="Other", artist="Camellia"),
     }
 
-    async def fake_load_all_songs(game_code: str):
+    async def fake_load_search_songs(game_code: str):
         assert game_code == "sdvx"
         return songs
 
-    monkeypatch.setattr(arcade.lxns_client.catalog, "load_all_songs", fake_load_all_songs)
+    monkeypatch.setattr(arcade.lxns_client.catalog, "load_search_songs", fake_load_search_songs)
+    async def forbid_full_catalog(*args):
+        raise AssertionError("Artist query must not load chart payloads")
+    monkeypatch.setattr(arcade.lxns_client.catalog, "load_all_songs", forbid_full_catalog)
 
     await _dispatch(app, "/arcade.artist sdvx xi", 2, _find_matcher(arcade, "_artist"))
 
@@ -246,38 +237,16 @@ async def test_arcade_artist_command_returns_matching_songs(
     )
 
 
-async def test_natural_language_song_games_query_returns_catalog_hit(
-    app, loaded_chiffon_bot, monkeypatch
-):
+async def test_natural_language_song_games_query_returns_catalog_hit(app, seeded_song_db, monkeypatch):
     from src.plugins.chiffon_bot.app.commands import arcade, natural_language
-
+    song_id = await _import_song("sdvx")
     responses = []
     _finish_capture(monkeypatch, natural_language, responses)
-
     async def fake_ack(*_args, **_kwargs):
-        return None
-
-    async def fake_sites():
-        return [{"gameCode": "sdvx"}]
-
-    async def fake_search(query: str, *, game_code: str):
-        assert query == "FLOWER"
-        assert game_code == "sdvx"
-        return [_song_result()]
-
+        pass
     monkeypatch.setattr(natural_language, "ack_message", fake_ack)
-    monkeypatch.setattr(arcade.lxns_client.data.catalog.arcade_songs, "sites", fake_sites)
-    monkeypatch.setattr(arcade.lxns_client.catalog.search, "search_song", fake_search)
-
-    await _dispatch(
-        app,
-        "FLOWER在哪些游戏里？",
-        3,
-        _find_matcher(natural_language, "handle_cross_game_song_query"),
-    )
-
-    assert len(responses) == 1
-    assert "[sdvx] [1001] FLOWER" in responses[0].text
+    await _dispatch(app, "FLOWER在哪些游戏里？", 3, _find_matcher(natural_language, "handle_cross_game_song_query"))
+    assert f"[sdvx] [{song_id}] FLOWER" in responses[0].text
 
 
 async def test_natural_language_artist_query_returns_matching_songs(
@@ -291,12 +260,12 @@ async def test_natural_language_artist_query_returns_matching_songs(
     async def fake_ack(*_args, **_kwargs):
         return None
 
-    async def fake_load_all_songs(game_code: str):
+    async def fake_load_search_songs(game_code: str):
         assert game_code == "sdvx"
         return {1001: SongData(id=1001, title="FLOWER", artist="xi")}
 
     monkeypatch.setattr(natural_language, "ack_message", fake_ack)
-    monkeypatch.setattr(arcade.lxns_client.catalog, "load_all_songs", fake_load_all_songs)
+    monkeypatch.setattr(arcade.lxns_client.catalog, "load_search_songs", fake_load_search_songs)
 
     await _dispatch(
         app,

@@ -1,8 +1,15 @@
 import traceback
+from nonebot.log import logger
 from tortoise import Tortoise
 
 from arcade_helper.storage.tortoise import (
     MODEL_MODULE as ARCADE_HELPER_MODEL_MODULE,
+    CATALOG_MODEL_MODULE,
+    ALIAS_MODEL_MODULE,
+    initialize_catalog_storage,
+    upgrade_catalog_schema,
+    migrate_catalog_identities,
+    TortoiseCatalogStore,
     migrate_tortoise_account_store_v2,
 )
 
@@ -47,7 +54,7 @@ async def init(*, db_url: str | None = None, db_settings: dict | None = None):
         "connections": {"default": db_settings},
         "apps": {
             "models": {
-                "models": [ARCADE_HELPER_MODEL_MODULE, BOT_MODEL_MODULE],
+                "models": [ARCADE_HELPER_MODEL_MODULE, BOT_MODEL_MODULE, CATALOG_MODEL_MODULE, ALIAS_MODEL_MODULE],
                 "default_connection": "default",
             }
         },
@@ -73,6 +80,18 @@ async def init(*, db_url: str | None = None, db_settings: dict | None = None):
         await Tortoise.generate_schemas()
 
     await migrate_tortoise_account_store_v2()
+    # A partial S1 installation may lack catalog_imports, which the additive
+    # upgrader also uses. Create missing tables, then upgrade existing columns;
+    # neither failure is swallowed and no alias service starts before both pass.
+    await initialize_catalog_storage()
+    await upgrade_catalog_schema(dry_run=False)
+    reports = await migrate_catalog_identities(store=TortoiseCatalogStore(enable_aliases=True), dry_run=False)
+    for game, report in reports.items():
+        if report.invalid:
+            logger.warning(
+                f"[{game}] 旧曲库身份回填跳过 {len(report.invalid)} 条无效记录（旧数据保留）："
+                + "；".join(report.invalid)
+            )
 
 
 async def close():

@@ -4,22 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import traceback
+from dataclasses import replace
+from time import monotonic
 from typing import Any
 
 from arcade_helper import ArcadeHelperClient
+from arcade_helper.aliases.models import alias_key
 from arcade_helper.search import MatchType, SongQueryResult, SongSearchService
 from arcade_helper.storage.tortoise import TortoiseSongStore
+from arcade_helper.storage.tortoise.catalog_models import SongReference, CatalogImport, GameSong
 
 from ...shared.game.adapter import DomainAdapter
-from ...shared.search.search_audit import (
-    accepted_alias_records,
-    accepted_aliases_for_song_id,
-    query_accepted_alias_exact,
-)
 from ...shared.search.embedding_cache import (
     rebuild_song_embeddings,
     rebuild_song_embeddings_from_songs,
     search_song_by_embedding,
+    embedding_enabled, embedding_model, embedding_endpoint, _stop_query_tasks,
 )
 from ...shared.search.reranker import rerank_song_results
 from .plugin_data import plugin_data
@@ -62,6 +62,11 @@ class BotCatalogClient:
         self._refresh_task: asyncio.Task[str] | None = None
         self._last_refresh_result: str | None = None
         self._auto_sync_task: asyncio.Task[None] | None = None
+        self._cache_task: asyncio.Task[None] | None = None
+        self._identity_revision = None
+        self._embedding_generations = {}
+        self._embedding_inputs = {}
+        self._input_locks = {}
 
     def _domain_adapters(self) -> list[DomainAdapter]:
         from ...domains.chunithm.chunithm_adapter import get_chunithm_adapter
@@ -94,10 +99,24 @@ class BotCatalogClient:
         return await self.service.fetch_maimai_song_collections(song_id)
 
     async def get_song_by_id(self, game_code: str, song_id: int):
-        if self._uses_db_catalog(game_code):
+        if self._uses_db_catalog(game_code) or self.aliases_enabled:
             return await self.service.get_song_by_id(game_code, song_id)
         songs = await self.data.catalog.arcade_songs.catalog(game_code)
         return songs.get(song_id)
+
+    async def get_songs_by_ids(self, game_code: str, song_ids: list[int]):
+        if self._uses_db_catalog(game_code) or self.aliases_enabled:
+            batch = getattr(self.service, "get_songs_by_ids", None)
+            if batch is not None:
+                return await batch(game_code, song_ids)
+            songs = {}
+            for sid in dict.fromkeys(song_ids):
+                song = await self.service.get_song_by_id(game_code, sid)
+                if song is not None:
+                    songs[sid] = song
+            return songs
+        songs = await self.data.catalog.arcade_songs.catalog(game_code)
+        return {sid: songs[sid] for sid in dict.fromkeys(song_ids) if sid in songs}
 
     async def search_song(
         self,
@@ -105,6 +124,9 @@ class BotCatalogClient:
         query: str | int,
     ) -> list[SongQueryResult]:
         results = await self.search.search_song(query, game_code=game_code)
+        # The bot owns revision-checked semantic search. Library-local JSONL
+        # vectors have no catalog generation and must not bypass that check.
+        results = [r for r in results if getattr(r, "match_type", None) is not MatchType.EMBEDDING]
         if isinstance(query, int):
             return results
         if results and not _is_uncertain_bm25(results):
@@ -132,7 +154,7 @@ class BotCatalogClient:
 
     async def rebuild_search_embeddings(self, game_code: str) -> dict[str, Any]:
         gc = str(game_code).strip().lower()
-        if gc in {"maimai", "chunithm"}:
+        if gc in {"maimai", "chunithm"} or self.aliases_enabled:
             return await rebuild_song_embeddings(self, gc)
 
         songs = await self.data.catalog.arcade_songs.catalog(gc)
@@ -147,17 +169,62 @@ class BotCatalogClient:
         return await self.search.get_song_aliases(song_query, game_code=game_code)
 
     async def load_all_songs(self, game_code: str):
-        if self._uses_db_catalog(game_code):
+        if self._uses_db_catalog(game_code) or self.aliases_enabled:
             return await self.service.load_all_songs(game_code)
         return await self.data.catalog.arcade_songs.catalog(game_code)
 
     async def load_song_index(self, game_code: str) -> dict[int, str]:
-        if self._uses_db_catalog(game_code):
+        if self._uses_db_catalog(game_code) or self.aliases_enabled:
             return await self.service.load_song_index(game_code)
         songs = await self.data.catalog.arcade_songs.catalog(game_code)
         return {song_id: song.title for song_id, song in songs.items()}
 
+    async def query_title_exact(self, game_code: str, title: str):
+        if self._uses_db_catalog(game_code) or self.aliases_enabled:
+            query = getattr(self.service, "query_title_exact", None)
+            if query is not None:
+                return await query(game_code, title)
+        return [(sid, text) for sid, text in (await self.load_song_index(game_code)).items() if text.lower() == title.lower()]
+
+    async def load_search_songs(self, game_code: str):
+        return (await self.load_embedding_inputs(game_code))[0]
+
+    async def _load_search_songs(self, game_code: str):
+        if self._uses_db_catalog(game_code) or self.aliases_enabled:
+            load = getattr(self.service, "load_search_songs", self.service.load_all_songs)
+            return await load(game_code)
+        return await self.data.catalog.arcade_songs.catalog(game_code)
+
+    async def load_embedding_inputs(self, game_code: str):
+        async with self._input_locks.setdefault(game_code, asyncio.Lock()):
+            revision = await self.get_revision()
+            identities = getattr(self.service, "identities", None)
+            db = getattr(identities, "_db", None)
+            generation = (db, revision)
+            cached = self._embedding_inputs.get(game_code)
+            if (cached is not None and cached[0] == generation
+                    and (revision is not None or monotonic() - cached[3] < 270)):
+                return cached[1], cached[2]
+            songs = await self._load_search_songs(game_code)
+            populated = bool(songs) and all("aliases" in song.model_fields_set for song in songs.values())
+            aliases = ([(sid, text) for sid, song in songs.items() for text in song.aliases]
+                       if populated else await self.load_alias_records(game_code))
+            if not populated:
+                by_song = {}
+                for sid, text in aliases:
+                    by_song.setdefault(sid, []).append(text)
+                songs = {sid: song.model_copy(update={"aliases": list(dict.fromkeys([
+                    *song.aliases, *by_song.get(sid, []),
+                ]))}) for sid, song in songs.items()}
+            if (await self.get_revision() != revision
+                    or getattr(getattr(self.service, "identities", None), "_db", None) is not db):
+                raise ValueError("曲库已变化，请重新构建搜索缓存")
+            self._embedding_inputs[game_code] = (generation, songs, aliases, monotonic())
+            return songs, aliases
+
     async def query_alias_exact(self, game_code: str, alias_lower: str) -> list[tuple[int, str]]:
+        if self.aliases_enabled:
+            return self._dedupe_alias_records(await self.service.query_alias_exact(game_code, alias_lower))
         if self._uses_db_catalog(game_code):
             records = await self.service.query_alias_exact(game_code, alias_lower)
         else:
@@ -168,11 +235,10 @@ class BotCatalogClient:
                 for alias in (getattr(song, "aliases", None) or [])
                 if alias.lower() == alias_lower
             ]
-        records.extend(query_accepted_alias_exact(game_code, alias_lower))
         return self._dedupe_alias_records(records)
 
     async def load_alias_records(self, game_code: str) -> list[tuple[int, str]]:
-        if self._uses_db_catalog(game_code):
+        if self._uses_db_catalog(game_code) or self.aliases_enabled:
             records = await self.service.load_alias_records(game_code)
         else:
             songs = await self.data.catalog.arcade_songs.catalog(game_code)
@@ -181,17 +247,72 @@ class BotCatalogClient:
                 for song_id, song in songs.items()
                 for alias in (getattr(song, "aliases", None) or [])
             ]
-        records.extend(accepted_alias_records(game_code))
         return self._dedupe_alias_records(records)
 
     async def get_song_aliases_for_song_id(self, game_code: str, song_id: int) -> list[str]:
-        if self._uses_db_catalog(game_code):
+        if self._uses_db_catalog(game_code) or self.aliases_enabled:
             aliases = await self.service.get_song_aliases_for_song_id(game_code, song_id)
         else:
             song = await self.get_song_by_id(game_code, song_id)
             aliases = list(getattr(song, "aliases", None) or []) if song is not None else []
-        aliases.extend(accepted_aliases_for_song_id(game_code, song_id))
         return self._dedupe_aliases(aliases)
+
+    @property
+    def aliases_enabled(self) -> bool:
+        store = getattr(self.service, "identities", None)
+        return bool(store is not None and store.enable_aliases)
+
+    async def get_revision(self) -> int | None:
+        method = getattr(self.service, "get_revision", None)
+        return await method() if method else None
+
+    async def search_all(self, query: str):
+        result = await self.service.search_all(query)
+        return replace(result, candidates=tuple(c for c in result.candidates if c.match_type != "embedding"))
+
+    async def internal_song_id(self, game_code: str, song_id: int) -> int:
+        game_code = str(game_code).strip().lower()
+        if song_id <= 0:
+            raise ValueError("歌曲 ID 必须为正整数")
+        if game_code in _DB_GAME_CODES:
+            internal_id = await self.service.identities.resolve_reference(
+                game_code, str(song_id), provider="catalog", namespace="native",
+            )
+        else:
+            song = await self.service.get_song_by_id(game_code, song_id)
+            internal_id = song.game_song_id if song else None
+        if internal_id is None:
+            raise ValueError("歌曲尚未导入或 ID 无效，请先同步曲库")
+        return internal_id
+
+    async def public_song_id(self, game_code: str, internal_id: int) -> int:
+        return (await self.public_song_ids([(game_code, internal_id)]))[(game_code, internal_id)]
+
+    async def public_song_ids(self, songs: list[tuple[str, int]]) -> dict[tuple[str, int], int]:
+        result = {pair: pair[1] for pair in songs if pair[0] not in _DB_GAME_CODES}
+        native = {pair for pair in songs if pair[0] in _DB_GAME_CODES}
+        if not native:
+            return result
+        references = await SongReference.filter(
+            game_song_id__in={pair[1] for pair in native}, game_code__in={pair[0] for pair in native},
+            provider="catalog", namespace="native", present=True,
+        ).order_by("id").values("game_song_id", "game_code", "external_key")
+        for reference in references:
+            pair = reference["game_code"], reference["game_song_id"]
+            if pair in native and reference["external_key"].isdecimal():
+                result.setdefault(pair, int(reference["external_key"]))
+        if native - result.keys():
+            raise ValueError("内部收录没有可用的游戏原生 ID")
+        return result
+
+    async def alias_candidate_result(self, candidate) -> SongQueryResult:
+        song_id = await self.public_song_id(candidate.game_code, candidate.game_song_id)
+        return SongQueryResult(
+            song_id=song_id, title=candidate.title,
+            match_type=MatchType(candidate.match_type), match_score=candidate.score,
+            matched_text=candidate.matched_text,
+            song_data=await self.get_song_by_id(candidate.game_code, song_id),
+        )
 
     async def get_song_with_difficulty(
         self,
@@ -216,6 +337,7 @@ class BotCatalogClient:
 
     def invalidate_alias_cache(self, game_code: str) -> None:
         try:
+            self.search.invalidate_alias_cache(game_code)
             self.service.invalidate_search_cache(game_code)
         except Exception as e:
             self.logger.warning(f"[{game_code}] 失效别名缓存失败（可忽略，下次 TTL 到期会自动刷新）: {e}")
@@ -259,22 +381,24 @@ class BotCatalogClient:
             result = await self.service.sync_game_from_remote(
                 gc,
                 current_data_version=plugin_data.data_version if gc == "maimai" else None,
+                include_songs=False,
             )
             if result.status == "already_running":
                 self.logger.info(f"{gc} 乐曲数据后台更新跳过：同步已在进行中")
                 return False
-            if not result.ok or result.songs is None:
+            if not result.ok:
                 raise result.error or RuntimeError("catalog sync failed")
             if gc == "maimai":
                 plugin_data.data_version = result.data_version
             setattr(
                 plugin_data,
                 self._song_index_attr(adapter),
-                {song_id: song.title for song_id, song in result.songs.items()},
+                await self.service.load_song_index(gc),
             )
             setattr(plugin_data, self._song_store_attr(adapter), {})
             adapter.clear_image_cache()
             self.invalidate_alias_cache(gc)
+            self._embedding_generations.pop(gc, None)
             self.logger.info(f"{gc} 乐曲数据后台更新完成")
             return True
         except Exception as e:
@@ -286,9 +410,20 @@ class BotCatalogClient:
         adapters = self._domain_adapters()
         results = await asyncio.gather(*(self._sync_adapter_from_remote(adapter) for adapter in adapters))
 
-        ok_count = sum(1 for ok in results if ok)
         succeeded = [adapter.display_name for adapter, ok in zip(adapters, results, strict=True) if ok]
         failed = [adapter.display_name for adapter, ok in zip(adapters, results, strict=True) if not ok]
+        if self.aliases_enabled:
+            games = await CatalogImport.filter(provider="arcade_songs", namespace="default").values_list("game_code", flat=True)
+            for game in games:
+                try:
+                    await self.service.import_catalog(game)
+                    succeeded.append(game)
+                    results.append(True)
+                except Exception as exc:
+                    self.logger.warning(f"[{game}] 持久曲库同步失败，继续使用本地数据: {exc}")
+                    failed.append(game)
+                    results.append(False)
+        ok_count = sum(1 for ok in results if ok)
         if ok_count == len(results):
             self.logger.info("全部乐曲数据后台同步完成")
             return f"后台同步完成：{'、'.join(succeeded)} 全部成功"
@@ -350,6 +485,8 @@ class BotCatalogClient:
 
     async def refresh_song_data(self, *, manual: bool = False) -> tuple[bool, str]:
         local_available, local_msg = await self.load_song_data_from_db()
+        if self._cache_task is None or self._cache_task.done():
+            self._cache_task = asyncio.create_task(self._cache_refresh_loop())
         started = self.start_background_refresh()
         if manual:
             self.start_auto_sync()
@@ -357,6 +494,42 @@ class BotCatalogClient:
         if started:
             return local_available, f"{local_msg}；已启动后台同步"
         return local_available, f"{local_msg}；后台同步已在进行中"
+
+    async def _refresh_search_caches(self) -> None:
+        revision = await self.get_revision()
+        if self.aliases_enabled and self._identity_revision != revision:
+            first = await GameSong.filter(active=True).only('title').first()
+            if first is not None:
+                await self.data.aliases.search_all(first.title)
+            self._identity_revision = revision
+        games = (await GameSong.filter(active=True).distinct().values_list('game_code', flat=True)
+                 if self.aliases_enabled else [a.game_code for a in self._domain_adapters()])
+        identities = getattr(self.service, "identities", None)
+        generation = (getattr(identities, "_db", None), revision, embedding_endpoint(), embedding_model())
+        for game in sorted(games):
+            try:
+                await self.search._warm_search_index(game)
+            except Exception as exc:
+                self.logger.warning(f'[{game}] 后台文本索引更新失败，稍后重试: {exc}')
+            if not embedding_enabled():
+                continue
+            if self._embedding_generations.get(game) == generation:
+                continue
+            try:
+                result = await self.rebuild_search_embeddings(game)
+                if await self.get_revision() == revision:
+                    self._embedding_generations[game] = generation
+                self.logger.info(f"[{game}] 后台 embedding 缓存更新完成：{result['songs']} 首")
+            except Exception as exc:
+                self.logger.warning(f'[{game}] 后台 embedding 更新失败，稍后重试: {exc}')
+
+    async def _cache_refresh_loop(self) -> None:
+        while True:
+            try:
+                await self._refresh_search_caches()
+            except Exception as exc:
+                self.logger.warning(f'查歌缓存后台更新失败，稍后重试: {exc}')
+            await asyncio.sleep(30)
 
     async def _auto_sync_loop(self) -> None:
         try:
@@ -384,15 +557,13 @@ class BotCatalogClient:
         return True
 
     async def stop_auto_sync(self) -> None:
-        if not self._auto_sync_task or self._auto_sync_task.done():
-            return
-        self._auto_sync_task.cancel()
-        try:
-            await self._auto_sync_task
-        except asyncio.CancelledError:
-            self.logger.info("自动曲库同步任务已停止")
-        finally:
-            self._auto_sync_task = None
+        tasks = [t for t in (self._auto_sync_task, self._cache_task) if t is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._auto_sync_task = self._cache_task = None
+        await self.search._stop_index_builds()
+        await _stop_query_tasks()
 
 
 __all__ = ["BotCatalogClient"]

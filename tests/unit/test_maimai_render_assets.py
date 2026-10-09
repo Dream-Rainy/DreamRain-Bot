@@ -42,10 +42,16 @@ async def test_b50_render_uses_maimai_data_asset_root(
         captured.update(kwargs)
         return b"fake-image"
 
+    async def background(root, path, width, height):
+        assert root == mai_bg_draw._MAIMAI_ASSETS_DIR
+        assert path == "bg_html/prism_plus/prism_plus.html"
+        return f"file:///background-{width}x{height}.png"
+
     mai_bg_draw.clear_b50_img_cache()
     monkeypatch.setattr(mai_bg_draw, "template_to_pic", fake_template_to_pic)
+    monkeypatch.setattr(mai_bg_draw, "_background_image_uri", background)
 
-    img = await mai_bg_draw.render_b50_img(_b50_user_data(), width=1280, height=536)
+    img = await mai_bg_draw.render_b50_img(_b50_user_data(), width=1280, height=2280)
 
     assert img == b"fake-image"
     assert captured["template_path"] == mai_bg_draw.template_search_paths
@@ -53,18 +59,29 @@ async def test_b50_render_uses_maimai_data_asset_root(
     assert captured["pages"]["base_url"] == mai_bg_draw._template_base_uri
     assert captured["pages"]["base_url"].startswith("file:")
     assert Path(captured["templates"]["base_url"]) == mai_bg_draw._MAIMAI_ASSETS_DIR
+    assert captured["templates"]["bg_image_url"] == "file:///background-1280x1744.png"
 
 
 async def test_song_info_render_uses_maimai_data_asset_root(
-    maimai_render_modules, monkeypatch: pytest.MonkeyPatch
+    maimai_render_modules, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    from src.plugins.chiffon_bot.infra import html_render
     MaiSongData, mai_bg_draw = maimai_render_modules
     captured: dict[str, Any] = {}
+    monkeypatch.setattr(html_render, '_background_epochs', {})
+    monkeypatch.setattr(html_render, '_BACKGROUND_CACHE_DIR', tmp_path / 'backgrounds')
+
+    async def background(root, path, width, height):
+        assert root == mai_bg_draw._MAIMAI_ASSETS_DIR
+        assert path == "bg_html/prism/prism.html"
+        epoch = html_render._background_epoch(root.resolve().as_uri())
+        return f"file:///background-{epoch}-{width}x{height}.png"
 
     async def fake_template_to_pic(**kwargs: Any) -> bytes:
         captured.update(kwargs)
-        return b"fake-song-info"
+        return kwargs["templates"]["song_info"]["title"].encode()
 
+    monkeypatch.setattr(mai_bg_draw, "_background_image_uri", background)
     mai_bg_draw.clear_song_info_img_cache()
     monkeypatch.setattr(mai_bg_draw, "template_to_pic", fake_template_to_pic)
 
@@ -82,7 +99,8 @@ async def test_song_info_render_uses_maimai_data_asset_root(
 
     img = await mai_bg_draw.render_song_info_img(song_data)
 
-    assert img == b"fake-song-info"
+    assert img == MAI_SONG_TITLE.encode()
+    initial_background = captured['templates']['bg_image_url']
     assert captured["template_path"] == mai_bg_draw.template_search_paths
     assert captured["template_name"] == "song_info.html"
     assert captured["pages"]["base_url"] == mai_bg_draw._template_base_uri
@@ -90,6 +108,10 @@ async def test_song_info_render_uses_maimai_data_asset_root(
     assert Path(captured["templates"]["base_url"]) == mai_bg_draw._MAIMAI_ASSETS_DIR
     assert captured["templates"]["bg_page_url"] == "bg_html/prism/prism.html"
     assert captured["templates"]["song_info"]["image_name"] == "jacket/UI_Jacket_000181.png"
+    mai_bg_draw.clear_song_info_img_cache()
+    song_data.title = 'Updated title'
+    assert await mai_bg_draw.render_song_info_img(song_data) == b'Updated title'
+    assert captured['templates']['bg_image_url'] == initial_background
 
 
 def test_maimai_asset_root_matches_runtime_data_dir(maimai_render_modules) -> None:

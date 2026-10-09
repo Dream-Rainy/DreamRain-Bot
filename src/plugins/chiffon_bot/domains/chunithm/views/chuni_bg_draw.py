@@ -6,7 +6,7 @@ from typing import Any
 import diskcache
 from nonebot import logger
 
-from ....infra.html_render import template_to_pic
+from ....infra.html_render import _background_image_uri, template_to_pic
 
 _CHIFFON_BOT_ROOT = Path(__file__).resolve().parents[3]  # views → chunithm → domains → chiffon_bot
 
@@ -49,7 +49,7 @@ def _chart_to_template_data(chart: Any) -> dict[str, Any]:
 async def render_chuni_song_info_img(song_data) -> bytes:
     """渲染 CHUNITHM 乐曲信息图（与 ``chuni_song_info.html`` 模板配套）。"""
     song_id = int(song_data.id if hasattr(song_data, "id") else song_data["id"])
-    cache_key = f"chuni_song_v2_{song_id}"
+    cache_key = f"chuni_song_v3_{song_id}"
     cached_img = _chuni_song_info_img_cache.get(cache_key, default=None)
     if cached_img is not None and isinstance(cached_img, bytes):
         return cached_img
@@ -90,7 +90,7 @@ async def render_chuni_song_info_img(song_data) -> bytes:
         "base_url": str(_CHUNI_ASSETS_DIR),
         "fonts_dir": _FONTS_DIR_URI,
         "bg_page_url": _CHUNI_DEFAULT_BG_PAGE,
-        "bg_image_url": None,
+        "bg_image_url": await _background_image_uri(_CHUNI_ASSETS_DIR, _CHUNI_DEFAULT_BG_PAGE, width, height),
         "song_info": song_info,
         "standard_charts": standard_charts,
         "we_charts": we_charts,
@@ -102,6 +102,8 @@ async def render_chuni_song_info_img(song_data) -> bytes:
         template_name=template_name,
         templates=templates,
         device_scale_factor=1,
+        type="jpeg",
+        quality=92,
         pages={
             "viewport": {"width": width, "height": height},
             "base_url": _template_base_uri,

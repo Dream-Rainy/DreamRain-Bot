@@ -11,6 +11,7 @@ from nonebot_plugin_saa import MessageFactory, Text, Image as SaaImage, Reply
 from nonebot_plugin_saa.adapters.onebot_v11 import OB11MessageId
 
 from ...shared.bot_response import BotResponse
+from ...shared.search.timing import stage
 
 
 def _reply(message_id: int) -> Reply:
@@ -32,9 +33,11 @@ def _build(response: BotResponse) -> list:
 
 async def finish_with(response: BotResponse) -> NoReturn:
     """用 SAA 发送 BotResponse 并结束当前 matcher。"""
-    await MessageFactory(_build(response)).finish()
+    with stage("message.finish"):
+        await MessageFactory(_build(response)).finish()
 
 
 async def send_with(response: BotResponse) -> None:
     """用 SAA 发送 BotResponse 但不结束 matcher（用于先发图片再发文本等场景）。"""
-    await MessageFactory(_build(response)).send()
+    with stage("message.send"):
+        await MessageFactory(_build(response)).send()

@@ -8,7 +8,7 @@
         /* ── 西文/通用 ── */
         @font-face {
             font-family: "Inter";
-            src: url("{{ fonts_dir }}/Inter-VariableFont_opsz,wght.ttf") format("truetype");
+            src: local("Inter-Regular"), url("{{ fonts_dir }}/Inter-VariableFont_opsz,wght.ttf") format("truetype");
             font-weight: 100 900;   /* 可变字体：声明完整字重范围 */
             font-style: normal;
             font-display: swap;
@@ -17,7 +17,7 @@
         /* ── 日文 ── */
         @font-face {
             font-family: "NotoSansJP";
-            src: url("{{ fonts_dir }}/NotoSansJP-VariableFont_wght.ttf") format("truetype");
+            src: local("NotoSansJP-Thin"), url("{{ fonts_dir }}/NotoSansJP-VariableFont_wght.ttf") format("truetype");
             font-weight: 100 900;   /* 可变字体 */
             font-style: normal;
             font-display: swap;
@@ -25,7 +25,7 @@
 
         @font-face {
             font-family: "ヒラギノ角ゴ Pro W3";
-            src: url("{{ fonts_dir }}/ヒラギノ角ゴ Pro W3.otf") format("opentype");
+            src: local("HiraKakuPro-W3"), url("{{ fonts_dir }}/ヒラギノ角ゴ Pro W3.otf") format("opentype");
             font-weight: 300;       /* W3 对应 Light/300 */
             font-style: normal;
             font-display: swap;
@@ -53,21 +53,21 @@
            通过 font-weight 区分，CSS 会自动选择最接近的字重文件 */
         @font-face {
             font-family: "FOT-NewRodinPro";
-            src: url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-M.otf") format("opentype");
+            src: local("NewRodinProN-M"), url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-M.otf") format("opentype");
             font-weight: 500;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "FOT-NewRodinPro";
-            src: url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-DB.otf") format("opentype");
+            src: local("NewRodinProN-DB"), url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-DB.otf") format("opentype");
             font-weight: 600;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "FOT-NewRodinPro";
-            src: url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-B.otf") format("opentype");
+            src: local("NewRodinProN-B"), url("{{ fonts_dir }}/FOT-NewRodinPro/FOT-NewRodinProN-B.otf") format("opentype");
             font-weight: 700;
             font-style: normal;
             font-display: swap;
@@ -87,47 +87,46 @@
             font-display: swap;
         }
 
-        /* GenSenRounded2 (源ノ角ゴシック2 丸)：多字重 TTC 系列
-           .ttc 格式在 Chromium (Playwright) 中通过 format("collection") 声明；
-           Firefox 不支持 .ttc，但本项目使用 Playwright/Chromium 渲染，无需担心。 */
+        /* GenSenRounded2：原 TTC 首 face 的 TW 字形，修复溢出的 cmap 后转为 TTF。
+           系统字体优先；未安装时加载同字节文件。重建工具：tools/repair_gensen_fonts.py。 */
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-EL.ttc") format("collection");
+            src: local("GenSenRounded2TW-EL"), url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-TW-EL.ttf") format("truetype");
             font-weight: 200;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-L.ttc") format("collection");
+            src: local("GenSenRounded2TW-L"), url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-TW-L.ttf") format("truetype");
             font-weight: 300;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-R.ttc") format("collection");
+            src: local("GenSenRounded2TW-R"), url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-TW-R.ttf") format("truetype");
             font-weight: 400;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-M.ttc") format("collection");
+            src: local("GenSenRounded2TW-M"), url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-TW-M.ttf") format("truetype");
             font-weight: 500;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-B.ttc") format("collection");
+            src: local("GenSenRounded2TW-B"), url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-TW-B.ttf") format("truetype");
             font-weight: 700;
             font-style: normal;
             font-display: swap;
         }
         @font-face {
             font-family: "GenSenRounded2";
-            src: url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-H.ttc") format("collection");
+            src: local("GenSenRounded2TW-H"), url("{{ fonts_dir }}/GenSenRounded2-ttc/GenSenRounded2-TW-H.ttf") format("truetype");
             font-weight: 800;
             font-style: normal;
             font-display: swap;
@@ -135,8 +134,20 @@
 
         /* ── 中文 ── */
         @font-face {
+            font-family: "SourceHanSansCN";
+            src: local("SourceHanSansCNVF-ExtraLight"), url("{{ fonts_dir }}/SourceHanSansCN-VF.ttf") format("truetype");
+            font-weight: 250 900;
+            font-style: normal;
+            font-display: swap;
+            /* 只替换汉字及中文标点，保留原有西文和数字字体。 */
+            unicode-range: U+2E80-2FFF, U+3000-303F, U+31C0-31EF, U+3400-4DBF,
+                           U+4E00-9FFF, U+F900-FAFF, U+FE10-FE1F, U+FE30-FE4F,
+                           U+FF01-FF60, U+FFE0-FFE6, U+20000-323AF;
+        }
+
+        @font-face {
             font-family: "思源黑体";
-            src: url("{{ fonts_dir }}/思源黑体CN-Bold.otf") format("opentype");
+            src: local("SourceHanSansSC-Bold"), url("{{ fonts_dir }}/思源黑体CN-Bold.otf") format("opentype");
             font-weight: 700;       /* 仅有 Bold 字重 */
             font-style: normal;
             font-display: swap;
@@ -154,8 +165,8 @@
         body {
             margin: 0;
             padding: 0;
-            /* 优先使用 maimai 原生字体，依次回退到通用字体 */
-            font-family: 'FOT-NewRodinPro', 'GenSenRounded2', 'Inter', 'NotoSansJP',
+            /* 辅助中文统一，曲名和曲师由各模板保留原字体。 */
+            font-family: 'SourceHanSansCN', 'FOT-NewRodinPro', 'GenSenRounded2', 'Inter', 'NotoSansJP',
                          'ヒラギノ角ゴ Pro W3', '思源黑体', 'arial', 'Microsoft YaHei', sans-serif;
             display: flex;
             flex-direction: column;
@@ -227,15 +238,30 @@
     {# Playwright：主文档 domcontentloaded 后 iframe 子文档可能仍未就绪，由 Python 侧 wait_for_function 等待 __BG_IFRAME_READY__ #}
     <script>
         (function () {
+            clearTimeout(window.__BG_READY_TIMER__);
+            var token = {};
+            window.__BG_READY_TOKEN__ = token;
             window.__BG_IFRAME_READY__ = false;
             window.__BG_IFRAME_ERROR__ = false;
             window.__BG_BG_MODE__ = "unknown";
             var SAFETY_MS = 25000;
 
-            function markReady() {
+            async function markReady() {
+                await document.fonts.ready;
+                await Promise.all(Array.from(document.images).map(function (img) {
+                    return img.decode().catch(function () {});
+                }));
+                await new Promise(function (resolve) {
+                    requestAnimationFrame(function () { requestAnimationFrame(resolve); });
+                });
+                if (window.__BG_READY_TOKEN__ !== token) return;
+                clearTimeout(window.__BG_READY_TIMER__);
+                var background = document.querySelector('.bg-container > img');
+                if (background && !background.naturalWidth) window.__BG_IFRAME_ERROR__ = true;
                 window.__BG_IFRAME_READY__ = true;
             }
             function markError() {
+                if (window.__BG_READY_TOKEN__ !== token) return;
                 window.__BG_IFRAME_ERROR__ = true;
                 markReady();
             }
@@ -270,7 +296,8 @@
                     window.__BG_IFRAME_ERROR__ = true;
                     waitForAllImages(markReady);
                 }, { once: true });
-                setTimeout(function () {
+                window.__BG_READY_TIMER__ = setTimeout(function () {
+                    if (window.__BG_READY_TOKEN__ !== token) return;
                     if (window.__BG_IFRAME_READY__) return;
                     try {
                         var doc = iframe.contentDocument;

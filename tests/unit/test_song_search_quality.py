@@ -552,6 +552,26 @@ async def test_bm25_artist_title_query(quality_search):
 
 
 @pytest.mark.asyncio
+async def test_bm25_repeated_query_terms_preserve_field_weights_and_ranking(quality_search):
+    from arcade_helper.core.song import SongData
+    from arcade_helper.search import MatchType, song_query
+
+    repository = quality_search.repository
+    repository.songs_by_game["quality"] = {
+        1: SongData(id=1, title="Pulse", artist="Echo"),
+        2: SongData(id=2, title="Echo", artist="Pulse"),
+    }
+    repository.aliases_by_game["quality"] = {1: [], 2: []}
+    # Equal query weights tie these symmetric songs; repetition favors the
+    # title containing Echo over an artist-only Echo match.
+    equal = await quality_search._run(song_query._query_song_bm25, "pulse echo", 0, game_code="quality")
+    repeated = await quality_search._run(song_query._query_song_bm25, "echo echo pulse", 0, game_code="quality")
+    assert [result.song_id for result in equal] == [1, 2]
+    assert [result.song_id for result in repeated] == [2, 1]
+    assert all(result.match_type is MatchType.BM25 for result in repeated)
+
+
+@pytest.mark.asyncio
 async def test_short_ascii_query_keeps_token_boundary_path(quality_search):
     from arcade_helper.search import MatchType
 

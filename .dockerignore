@@ -44,6 +44,8 @@ stubs
 .gitignore
 .fnsync_temp_dir
 dev_run
+docs/plan
+docs/ai
 src/submodule/
 !src/submodule/
 !src/submodule/arcade-helper/

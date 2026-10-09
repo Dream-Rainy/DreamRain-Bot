@@ -303,6 +303,7 @@ def import_alias_candidates(
 
 
 def accepted_alias_records(game_code: str, path: Path | None = None) -> list[tuple[int, str]]:
+    """Read legacy review history for migration, never as a live alias overlay."""
     game = str(game_code).strip().lower()
     audit_path = path or _audit_path()
     cache_key = (_path_key(audit_path), game)

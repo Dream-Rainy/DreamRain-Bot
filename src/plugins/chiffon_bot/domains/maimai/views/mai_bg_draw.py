@@ -13,7 +13,7 @@ from nonebot import logger
 
 from arcade_helper.games.maimai.schemas import MaiSongData
 
-from ....infra.html_render import template_to_pic
+from ....infra.html_render import _background_image_uri, template_to_pic
 
 _CHIFFON_BOT_ROOT = Path(__file__).resolve().parents[
     3
@@ -140,6 +140,7 @@ def _generate_cache_key(user_data: dict, b35_data: list, b15_data: list, r50_dat
 	"""生成B50图片的缓存键（基于数据哈希）。"""
 	# 构建用于哈希的数据结构
 	cache_data = {
+		"render_version": 3,
 		"user_data": user_data,
 		"b35_data": b35_data,
 		"b15_data": b15_data,
@@ -170,12 +171,13 @@ async def render_b50_img(
 	template_name = "b50.html"
 
 	_b50_bg_page = "bg_html/prism_plus/prism_plus.html"
+	bg_image_url = await _background_image_uri(_MAIMAI_ASSETS_DIR, _b50_bg_page, width, height - 536)
 
 	templates = {
 		"base_url": str(_MAIMAI_ASSETS_DIR),
 		"fonts_dir": _FONTS_DIR_URI,
 		"bg_page_url": _b50_bg_page,
-		"bg_image_url": None,
+		"bg_image_url": bg_image_url,
 		"title_img": "assets/title_bg_prism.png",
 		"gradients": gradients,
 		"shadows": shadows,
@@ -233,8 +235,8 @@ def clear_b50_img_cache() -> None:
 
 def clear_all_img_cache() -> None:
 	"""清除所有图片缓存（歌曲信息和B50）。"""
-	clear_song_info_img_cache()
-	clear_b50_img_cache()
+	_song_info_img_cache.clear()
+	_b50_img_cache.clear()
 
 
 async def render_song_info_img(song_data: MaiSongData) -> bytes:
@@ -247,7 +249,7 @@ async def render_song_info_img(song_data: MaiSongData) -> bytes:
 		图片字节数据
 	"""
 	# 检查磁盘缓存
-	cache_key = f"song_{song_data.id}"
+	cache_key = f"song_v3_{song_data.id}"
 	cached_img = _song_info_img_cache.get(cache_key, default=None)
 	if cached_img is not None and isinstance(cached_img, bytes):
 		return cached_img
@@ -367,10 +369,14 @@ async def render_song_info_img(song_data: MaiSongData) -> bytes:
 			logger.warning(f"BG API 背景获取失败，回退至本地模板: {e}")
 			song_version_formatted = "buddies"
 
+	bg_page_url = f"bg_html/{song_version_formatted}/{song_version_formatted}.html"
+	if bg_image_url is None:
+		bg_image_url = await _background_image_uri(_MAIMAI_ASSETS_DIR, bg_page_url, width, height)
+
 	templates = {
 		"base_url": str(_MAIMAI_ASSETS_DIR),
 		"fonts_dir": _FONTS_DIR_URI,
-		"bg_page_url": f"bg_html/{song_version_formatted}/{song_version_formatted}.html",
+		"bg_page_url": bg_page_url,
 		"bg_image_url": bg_image_url,
 		"song_info": song_info,
 		"dx_charts": song_data_dx,
@@ -384,6 +390,8 @@ async def render_song_info_img(song_data: MaiSongData) -> bytes:
 		template_name=template_name,
 		templates=templates,
 		device_scale_factor=1,
+		type="jpeg",
+		quality=92,
 		pages={
 			"viewport": {"width": width, "height": height},
 			"base_url": _template_base_uri,
@@ -391,7 +399,6 @@ async def render_song_info_img(song_data: MaiSongData) -> bytes:
 	)
 	
 	# 缓存生成的图片到磁盘
-	cache_key = f"song_{song_data.id}"
 	_song_info_img_cache.set(cache_key, img_bytes, expire=None)  # 永久缓存，直到手动清除
 	
 	return img_bytes
