@@ -269,7 +269,7 @@ async def handle_alias_command(text: str, bot: Bot, event: Event, *, admin: bool
             if game in {"maimai", "chunithm"}:
                 count = len(await lxns_client.data.catalog.load_song_index(game))
                 return f"曲库同步完成：{game}，{count} 首"
-            return f"曲库同步完成：{game}，导入 {report.imported}，更新 {report.updated}，待定 {len(report.pending)}，无效 {len(report.invalid)}"
+            return f"曲库同步完成：{game}，新增 {report.created}，更新 {report.updated}，待定 {len(report.pending)}，无效 {len(report.invalid)}"
         if action == "imports" and len(parts) == 2:
             return json.dumps(await lxns_client.identities.get_import(parts[1].lower()), ensure_ascii=False, default=str)
         if action == "map":

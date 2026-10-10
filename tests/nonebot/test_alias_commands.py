@@ -41,6 +41,27 @@ async def test_native_alias_sync_uses_light_result_and_reports_real_count(app, s
     assert responses[-1].text == "曲库同步完成：maimai，1 首"
 
 
+async def test_imported_alias_sync_reports_catalog_import_counts(app, seeded_song_db, monkeypatch):
+    from arcade_helper.catalog.importer import CatalogImportReport
+    from src.plugins.chiffon_bot.app.commands import alias
+
+    monkeypatch.setattr(nonebot.get_driver().config, "superusers", {"456"})
+    responses, calls = [], []
+    _finish_capture(monkeypatch, alias, responses)
+
+    async def import_catalog(game):
+        calls.append(game)
+        return CatalogImportReport(
+            game_code=game, revision=1, created=2, updated=3,
+            pending=[{"external_key": "unresolved"}], invalid=["invalid record"],
+        )
+
+    monkeypatch.setattr(alias.lxns_client.data.catalog, "import_catalog", import_catalog)
+    await _dispatch(app, alias, "_admin_alias", "/admin.alias sync sdvx", 93, 456)
+    assert calls == ["sdvx"]
+    assert responses[-1].text == "曲库同步完成：sdvx，新增 2，更新 3，待定 1，无效 1"
+
+
 async def test_alias_submit_review_revoke_and_conflict(app, seeded_song_db, monkeypatch):
     from src.plugins.chiffon_bot.app.commands import alias
     client = alias.lxns_client
