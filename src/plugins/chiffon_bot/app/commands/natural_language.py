@@ -179,7 +179,7 @@ def _resolve_game_choice(choice_text: str, game_codes: list[str]) -> str | None:
     if not text:
         return None
 
-    if text.isdigit():
+    if text.isdecimal():
         index = int(text)
         if 1 <= index <= len(game_codes):
             return game_codes[index - 1]
@@ -296,40 +296,63 @@ async def _query_alias_song(song_query: str, event: Event) -> BotResponse:
     preferred = [c for c in candidates if c.game_code == resolution.inferred_game]
     if len(preferred) == 1 and preferred[0].match_type.startswith("exact_"):
         candidates = preferred
-    else:
-        game_codes = list(dict.fromkeys(c.game_code for c in candidates))
-        if len(game_codes) > 1:
-            lines = ["在多个游戏中找到匹配，请回复序号或游戏名："]
-            for index, code in enumerate(game_codes, start=1):
-                matches = [c for c in candidates if c.game_code == code]
-                name = adapters[code].display_name if code in adapters else code
-                title = matches[0].title if len(matches) == 1 else f"{len(matches)} 首候选歌曲"
-                lines.append(f"{index}. [{name}] {title}")
-            selected = await _wait_for_game_choice(
-                event=event, game_codes=game_codes,
-                prompt=BotResponse(text="\n".join(lines), reply_to=event.message_id),
-            )
-            if selected is None:
-                return BotResponse(text="没有识别到要查询的游戏，已取消。", reply_to=event.message_id)
-            candidates = tuple(c for c in candidates if c.game_code == selected)
 
-    if len(candidates) == 1:
+    if len(candidates) > 1:
+        groups = {}
+        for candidate in candidates:
+            groups.setdefault(candidate.work_id, []).append(candidate)
+        choices = [candidate for matches in groups.values() for candidate in matches][:10]
+        public_ids = await lxns_client.catalog.public_song_ids([
+            (candidate.game_code, candidate.game_song_id) for candidate in choices
+        ])
+        lines = [f"找到 {len(groups)} 首匹配乐曲，请回复选项序号："]
+        number = 0
+        for matches in groups.values():
+            visible = matches[:len(choices) - number]
+            if not visible:
+                break
+            title = matches[0].title
+            score = max(candidate.score for candidate in matches)
+            suffix = "" if any(candidate.match_type.startswith("exact_") for candidate in matches) else f" ({score:.0f}%)"
+            lines.append(title + suffix)
+            options = []
+            for candidate in visible:
+                number += 1
+                adapter = adapters.get(candidate.game_code)
+                name = adapter.display_name if adapter else candidate.game_code
+                song_id = public_ids[(candidate.game_code, candidate.game_song_id)]
+                variant = f"（{candidate.title}）" if candidate.title != title else ""
+                options.append(f"{number}. {name} [{song_id}]{variant}")
+            lines.append("  " + " / ".join(options))
+        if len(candidates) > len(choices):
+            lines.append(f"还有 {len(candidates) - len(choices)} 个收录，请缩小查询范围后重试。")
+
+        choice = await _wait_for_choice_text(
+            event=event, prompt=BotResponse(text="\n".join(lines), reply_to=event.message_id),
+        )
+        if choice is None:
+            return BotResponse(text="选曲超时，已取消。", reply_to=event.message_id)
+        selected = None
+        if choice.isdecimal():
+            if 1 <= int(choice) <= len(choices):
+                selected = choices[int(choice) - 1]
+        else:
+            game_code = _resolve_game_choice(choice, list(dict.fromkeys(c.game_code for c in choices)))
+            matches = [candidate for candidate in candidates if candidate.game_code == game_code]
+            if len(matches) == 1:
+                selected = matches[0]
+        if selected is None:
+            return BotResponse(text="没有识别到唯一的歌曲选项，已取消。请重新查歌并回复列表序号。", reply_to=event.message_id)
+        candidate = selected
+        song_id = public_ids[(candidate.game_code, candidate.game_song_id)]
+    else:
         candidate = candidates[0]
         song_id = await lxns_client.catalog.public_song_id(candidate.game_code, candidate.game_song_id)
-        adapter = adapters.get(candidate.game_code)
-        if adapter is not None:
-            return await generic_song_info(song_id, event.get_user_id(), event.message_id, adapter)
-        return await query_arcade_song(candidate.game_code, song_id, event.message_id)
 
-    lines = ["请选择明确的游戏和歌曲 ID："]
-    for candidate in candidates[:10]:
-        song_id = await lxns_client.catalog.public_song_id(candidate.game_code, candidate.game_song_id)
-        adapter = adapters.get(candidate.game_code)
-        command = f"/{adapter.command_prefix}.song {song_id}" if adapter else f"/arcade.song {candidate.game_code} {song_id}"
-        lines.append(f"{candidate.title} ({candidate.score:.0f}%) → {command}")
-    if len(candidates) > 10:
-        lines.append(f"...还有 {len(candidates) - 10} 个结果")
-    return BotResponse(text="\n".join(lines), reply_to=event.message_id)
+    adapter = adapters.get(candidate.game_code)
+    if adapter is not None:
+        return await generic_song_info(song_id, event.get_user_id(), event.message_id, adapter)
+    return await query_arcade_song(candidate.game_code, song_id, event.message_id)
 
 
 def register_natural_language_commands() -> None:

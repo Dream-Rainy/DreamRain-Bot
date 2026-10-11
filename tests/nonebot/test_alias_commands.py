@@ -145,8 +145,9 @@ async def test_alias_numeric_native_ids_do_not_select_internal_id_collisions(app
     assert 'Wanted Native Song' in responses[-1].text and 'Other Native Song' not in responses[-1].text
 
 
-async def test_natural_language_ambiguous_alias_never_selects_first(app, seeded_song_db, monkeypatch):
-    from src.plugins.chiffon_bot.app.commands import natural_language
+@pytest.mark.parametrize("choice", ["2", "sdvx", None])
+async def test_natural_language_ambiguous_alias_selects_song_or_cancels(app, seeded_song_db, monkeypatch, choice):
+    from src.plugins.chiffon_bot.app.commands import arcade, natural_language
     first = await _import_song("sdvx", aliases=["same nickname"])
     second = await _import_song("sdvx", title="Different Work", artist="Other", aliases=["same nickname"], native="2")
     responses = []
@@ -155,12 +156,38 @@ async def test_natural_language_ambiguous_alias_never_selects_first(app, seeded_
         pass
     async def sites():
         return [{"gameCode": "sdvx"}]
+    async def jacket(*_args, **_kwargs):
+        return None
+    async def reply(prompt):
+        responses.append(prompt)
+        if choice is None:
+            return
+        waiter = _find_matcher(natural_language, "handle_choice")
+        waiter._default_state["__nonebug_matcher__"] = waiter
+        ctx = app.context
+        ctx.receive_event(nonebot.get_bot("10000"), _group_event(choice, 202))
+        ctx.should_pass_rule(waiter)
+        ctx.should_finished(waiter)
+        await ctx.run()
+    wait_for_choice = natural_language._wait_for_choice_text
+    async def short_wait(**kwargs):
+        return await wait_for_choice(**kwargs, timeout_seconds=0.01)
+    monkeypatch.setattr(natural_language, "_wait_for_choice_text", short_wait)
+    monkeypatch.setattr(natural_language, "send_with", reply)
+    monkeypatch.setattr(arcade, "load_song_jacket_bytes", jacket)
     monkeypatch.setattr(natural_language, "ack_message", ack)
     monkeypatch.setattr(natural_language.lxns_client.data.catalog.arcade_songs, "sites", sites)
     await _dispatch(app, natural_language, "handle_cross_game_song_query", "same nickname是什么歌？", 201, 123)
-    assert f"/arcade.song sdvx {first}" in responses[-1].text
-    assert f"/arcade.song sdvx {second}" in responses[-1].text
-    assert "请选择" in responses[-1].text
+    assert "回复选项序号" in responses[0].text
+    assert f"1. sdvx [{first}]" in responses[0].text
+    assert f"2. sdvx [{second}]" in responses[0].text
+    if choice == "2":
+        assert f"Different Work ({second})" in responses[-1].text
+        assert f"FLOWER ({first})" not in responses[-1].text
+    else:
+        assert "已取消" in responses[-1].text
+    with pytest.raises(AssertionError):
+        _find_matcher(natural_language, "handle_choice")
 
 
 async def test_alias_query_combines_sources_without_merging_evidence(app, seeded_song_db, monkeypatch):
@@ -192,7 +219,7 @@ async def test_alias_query_combines_sources_without_merging_evidence(app, seeded
     assert len([e for e in before if e["alias_key"] == "light"]) == 4
 
 
-@pytest.mark.parametrize("choice,ambiguous", [("1", False), ("舞萌", False), ("2", False), ("sdvx", False), ("2", True)])
+@pytest.mark.parametrize("choice,ambiguous", [("1", False), ("舞萌", False), ("2", False), ("sdvx", False), ("3", True)])
 async def test_natural_language_game_choice_dispatches_reply(app, seeded_song_db, monkeypatch, choice, ambiguous):
     from tests.fixtures.song_seed import MAI_SONG_TITLE
     from src.plugins.chiffon_bot.app.commands import arcade, natural_language
@@ -246,19 +273,65 @@ async def test_natural_language_game_choice_dispatches_reply(app, seeded_song_db
     monkeypatch.setattr(natural_language.lxns_client.data.catalog.arcade_songs, "sites", sites)
     await _dispatch(app, natural_language, "handle_cross_game_song_query", f"{MAI_SONG_TITLE}是什么歌？", 401, 123)
 
-    assert "回复序号或游戏名" in responses[0].text
-    assert "1. [" in responses[0].text and "2. [sdvx]" in responses[0].text
+    assert "回复选项序号" in responses[0].text
+    assert "1. maimai" in responses[0].text and "2. sdvx" in responses[0].text
+    # Identical titles with unconfirmed work identities remain separate groups.
+    assert responses[0].text.splitlines().count(MAI_SONG_TITLE) == 2
     if choice in {"1", "舞萌"}:
         assert native_queries == [MAI_SONG_ID]
         assert responses[-1].image == b"native-song-image"
     else:
         assert not native_queries
         if ambiguous:
-            assert f"/arcade.song sdvx {first}" in responses[-1].text
-            assert f"/arcade.song sdvx {second}" in responses[-1].text
-            assert "请选择" in responses[-1].text
+            assert f"Another Work ({second})" in responses[-1].text
+            assert f"{MAI_SONG_TITLE} ({first})" not in responses[-1].text
         else:
             assert f"{MAI_SONG_TITLE} ({first})" in responses[-1].text
+
+
+async def test_natural_language_groups_confirmed_works_and_selects_in_one_reply(app, seeded_song_db, monkeypatch):
+    from src.plugins.chiffon_bot.app.commands import arcade, natural_language
+
+    await _import_song("sdvx", title="conflict", aliases=["shared nickname"])
+    await _import_song("ongeki", title="conflict")
+    selected = await _import_song("sdvx", title="PUPA", aliases=["shared nickname"], native="2")
+    await _import_song("ongeki", title="PUPA", native="2")
+    responses, queries = [], []
+    _finish_capture(monkeypatch, natural_language, responses)
+    search_all = natural_language.lxns_client.catalog.search_all
+
+    async def search(query):
+        queries.append(query)
+        return await search_all(query)
+    async def ack(*_args, **_kwargs):
+        pass
+    async def sites():
+        return [{"gameCode": "sdvx"}, {"gameCode": "ongeki"}]
+    async def jacket(*_args, **_kwargs):
+        return None
+    async def reply(prompt):
+        responses.append(prompt)
+        waiter = _find_matcher(natural_language, "handle_choice")
+        waiter._default_state["__nonebug_matcher__"] = waiter
+        ctx = app.context
+        ctx.receive_event(nonebot.get_bot("10000"), _group_event("3", 702))
+        ctx.should_pass_rule(waiter)
+        ctx.should_finished(waiter)
+        await ctx.run()
+
+    monkeypatch.setattr(natural_language.lxns_client.catalog, "search_all", search)
+    monkeypatch.setattr(natural_language, "ack_message", ack)
+    monkeypatch.setattr(natural_language, "send_with", reply)
+    monkeypatch.setattr(arcade, "load_song_jacket_bytes", jacket)
+    monkeypatch.setattr(natural_language.lxns_client.data.catalog.arcade_songs, "sites", sites)
+    await _dispatch(app, natural_language, "handle_cross_game_song_query", "shared nickname是什么歌？", 701, 123)
+    assert queries == ["shared nickname"]
+    assert len(responses) == 2  # One selection prompt, then the selected song.
+    assert responses[0].text.splitlines().count("conflict") == 1
+    assert responses[0].text.splitlines().count("PUPA") == 1
+    assert f"3. sdvx [{selected}]" in responses[0].text
+    assert "4. ongeki" in responses[0].text
+    assert f"PUPA ({selected})" in responses[-1].text
 
 
 async def test_alias_add_resolves_titles_aliases_and_shared_works(app, seeded_song_db, monkeypatch):
