@@ -77,31 +77,246 @@
 
 相同范围、来源游戏和标准化别名的待审请求会复用：`work` 按作品去重，`game_song` 按具体收录去重；不同歌曲可以使用相同别名。兼容升级前已存在的待审请求，不重写审核历史。
 
-`pending` 每页显示最多 20 条曲名、别名与范围摘要；只有还有结果时才提供下一页命令。可直接复制该命令，其中数字表示上一页末尾的请求编号。完整影响、冲突候选与目标版本通过 `show` 查看。
+#### admin.alias 管理命令
 
-SUPERUSER 使用以下命令审核。请求版本从 `show` 结果获取，批准和驳回均需理由；提交者及共同提交者不能自审，包括管理员。因此管理员自己提交的维护请求需要另一位 SUPERUSER 审核。
+以下命令均要求 `SUPERUSER`。发送 `/admin.alias` 可查看简短帮助。尖括号表示必填参数，方括号表示可选参数；示例中的编号、版本和来源记录键均需替换为实际输出。
+
+| 操作方式 | 命令 | 生效方式 |
+| --- | --- | --- |
+| 查看数据 | `pending`、`show`、`candidates`、`imports` | 只读取数据 |
+| 提交维护请求 | `retract`、`replace`、`block`、`unblock`、`relink`、`map` | 返回请求编号，审核通过后生效 |
+| 审核请求 | `approve`、`reject`、`confirm` | 当场完成审核；批准时应用请求中的操作 |
+| 直接管理 | `decide`、`source`、`sync` | 当场执行，不再创建待审请求 |
+
+提交者及共同提交者不能审核自己的请求，批准和驳回均受此限制，包括管理员。管理员提交的维护请求需要另一位 `SUPERUSER` 审核；重复提交而成为共同提交者也不能自审。
+
+**先区分参数中的 ID 和版本：**
+
+| 参数 | 含义与获取方式 |
+| --- | --- |
+| 请求 ID | 待审核操作的编号，例如 `pending` 中的 `#42`；用于 `show/approve/reject/confirm` |
+| 请求版本 | 请求的版本，例如 `#42 v1` 中的 `1`；从 `show` 获取，用来避免对已变化或已处理的请求重复决策 |
+| 证据 ID | 某一来源的一条别名或标题证据的数据库编号；用于 `retract/replace`，不是请求 ID |
+| 歌曲 ID | 日常查歌使用的公开 ID；舞萌/中二为原生歌曲 ID，其他游戏为导入后的稳定收录 ID |
+| 内部收录 ID | 持久曲库中 `GameSong` 的编号；用于 `relink` 和 `map bind`。可从 `/arcade.alias <game> <歌曲ID或名称>` 输出的“内部收录 #编号”获取 |
+| 候选 ID 与版本 | 系统生成的作品关联候选的 `id` 和 `version`；从 `candidates` 获取，用于 `decide` |
+| 目标版本 JSON | 请求涉及的歌曲、作品、证据、来源等对象的当前版本集合；从 `show` 的“目标版本”一行完整复制，用于 `confirm` |
+
+请求 ID、证据 ID、候选 ID 是不同表的编号，即使数字相同也不能互换。公开歌曲 ID 与内部收录 ID 对部分游戏可能相同，但不能据此假定所有游戏都相同。
+
+##### 查看和审核请求
+
+**`pending [上一页末尾请求ID]`：查看待审列表。**
+
+每页最多 20 条可见的待审核请求，显示曲名、别名、范围和请求版本。省略参数从第一页开始；分页参数是上一页最后一个请求的 ID，不是页码。只有还有结果时才显示下一页命令，可直接复制发送。
 
 ```text
-/admin.alias pending [上一页末尾请求ID]
-/admin.alias show <请求ID>
-/admin.alias approve <请求ID> <版本> <理由>
-/admin.alias reject <请求ID> <版本> <理由>
-/admin.alias confirm <请求ID> <版本> <目标版本JSON> <理由>
-/admin.alias retract <证据ID> <理由>
-/admin.alias replace <证据ID> <game> <歌曲ID> <work|game_song> <新别名>
-/admin.alias block <game> <歌曲ID> <别名>
-/admin.alias unblock <game> <歌曲ID> <别名>
-/admin.alias relink <merge|split> <内部收录ID,内部收录ID> <理由>
-/admin.alias candidates [游标]
-/admin.alias decide <候选ID> <版本> <accept|reject> <理由>
-/admin.alias sync <game>
-/admin.alias imports <game>
-/admin.alias map <game> <provider> <namespace> <external_key> <bind|new|reject> <内部收录ID或-> <理由>
+/admin.alias pending
+/admin.alias pending 42
 ```
 
-目标发生变化时，先重新 `show` 查看内容、影响游戏和同名候选，再决定是否 `confirm`。复制 `show` 输出的紧凑目标版本 JSON，不要自行编造版本。作品关联使用内部收录 ID，别名查询输出中可查看；`retract/replace/block/unblock/relink/map` 创建维护请求，仍需另一位审核员批准。关联候选的 `decide` 是管理员直接决策，需携带候选版本。`imports` 查看通用曲库导入报告；其中身份不确定的记录可用 `map` 绑定已有收录、确认为新收录或拒绝，原文由库读取已保存的抓取快照。
+第二条从请求 ID 大于 `42` 的记录继续读取。列表中自己的请求也可能可见，但不能由自己审核。
 
-已知来源的外部别名由 arcade-helper 同步。未知外部来源默认禁用；SUPERUSER 可用 `/admin.alias source <来源键> <game或global> <enable|disable>` 配置外部来源。旧 `/admin.search accept/reject` 已停用：舞萌、中二历史搜索候选可用 `/admin.search submit <旧记录编号>` 转成新版待审请求；其他游戏需核对当前 ID 后重新 `add`。搜索历史的查看、导入和导出仍可用，但不直接使别名生效。
+**`show <请求ID>`：查看完整请求。**
+
+显示操作类型、内容、状态、请求版本、提交理由、影响游戏、是否可审核、同名候选、当前目标版本 JSON 和处理理由。审核前用它核对目标与范围。
+
+```text
+/admin.alias show 42
+```
+
+“可审核”为 `False` 时，应检查是否为本人或共同提交的请求、权限不足，或者请求已处理。“同名候选”用于判断别名碰撞，不表示这些候选已被自动合并。
+
+**`approve <请求ID> <版本> <理由>`：批准请求。**
+
+版本填 `show` 中的请求版本，理由必填，可以包含空格。批准后应用新增别名、撤销证据、封禁或关联等对应操作；已经处理、请求版本不符或目标变化时会拒绝执行。
+
+```text
+/admin.alias approve 42 1 已核实曲名及别名范围
+```
+
+**`reject <请求ID> <版本> <理由>`：驳回请求。**
+
+参数与 `approve` 相同。驳回后请求结束，不应用其中的操作；它不会撤销已经生效的别名。
+
+```text
+/admin.alias reject 43 1 别名指向错误歌曲
+```
+
+**`confirm <请求ID> <版本> <目标版本JSON> <理由>`：目标变化后重新确认并批准。**
+
+若批准时提示 `TARGET_CHANGED`，说明从提交到审核期间，目标歌曲、作品、证据或来源等发生变化。先重新 `show`，核对新的影响与冲突，再将“目标版本”一行的完整 JSON 粘贴到命令中。
+
+```text
+/admin.alias show 42
+/admin.alias confirm 42 1 <原样复制show输出的目标版本JSON> 已核实变化后的目标
+```
+
+第二条中的尖括号部分是粘贴位置，不要照字面发送。JSON 必须是完整对象，不能删字段、加省略号或在外面再包引号；使用 `show` 提供的不含格式化空格的紧凑输出。请求版本和 JSON 中的目标版本是两种不同参数。`confirm` 仍检查权限、自审限制和请求状态，也会拒绝再次发生变化的目标。
+
+##### 维护别名与证据
+
+以下操作先返回“已提交请求 #编号”，仍需另一位管理员用 `show` 和 `approve` 审核。
+
+**`retract <证据ID> <理由>`：撤销一条证据。**
+
+用于纠正某个来源提供的错误别名。批准后将指定证据标记为已撤销，保留历史记录；其他来源的同名证据仍可能使这个别名有效。
+
+```text
+/admin.alias retract 16588 该来源的别名对应错误歌曲
+```
+
+证据 ID 可从请求详情的同名候选 `evidence_ids` 辅助定位。当前合并来源后的别名展示不会逐条显示证据编号；需要核对来源、范围和编号时，可通过 SDK 或数据库读取证据详情，不能把请求编号当作证据编号。
+
+**`replace <证据ID> <game> <歌曲ID> <work|game_song> <新别名>`：撤销旧证据并添加替代别名。**
+
+`game` 和歌曲 ID 指定新别名的目标，歌曲 ID 使用日常查询的公开 ID；`work` 作用于该作品的所有已关联游戏收录，`game_song` 只作用于指定收录。批准时撤销旧证据，并创建一条经过审核的社区别名证据，操作在同一事务内完成。
+
+```text
+/admin.alias replace 16588 sdvx 5459 game_song 修正后的简称
+/admin.alias replace 16588 maimai 1451 work 超越之光
+```
+
+两条是不同用法的独立示例，不应对同一旧证据连续照抄执行。此命令仍需显式填写范围；它没有沿用 `arcade.alias add` 的自动范围推断。新别名是最后一个参数，可以包含空格；此处不需要用引号包住，输入的引号会成为别名内容。命令没有额外的理由参数。
+
+**`block <game> <歌曲ID> <别名>`：对一个作品封禁指定别名。**
+
+游戏和公开歌曲 ID 用于定位作品。批准后建立作品级规则，使该作品所有关联收录中的同名证据不再生效，覆盖各来源；不是仅封禁参数中指定的游戏，也不会对其他作品封禁同名别名。
+
+```text
+/admin.alias block maimai 1451 错误简称
+```
+
+封禁按标准化后的文本匹配，保留原有证据。适合多个来源都提供了同一个错误简称，或者不希望它被后续来源同步重新带回的情况。最后的别名可以包含空格，不需要引号；命令没有理由参数。
+
+**`unblock <game> <歌曲ID> <别名>`：解除作品级封禁。**
+
+参数与 `block` 相同，审核通过后解除对应规则。它不会重新创建证据；实际恢复的仍是来源已启用、来源记录存在且未被撤销等条件均满足的证据。
+
+```text
+/admin.alias unblock maimai 1451 错误简称
+```
+
+##### 关联跨游戏作品
+
+**`relink <merge|split> <内部收录ID,内部收录ID> <理由>`：提交人工作品关联调整。**
+
+ID 列表使用内部收录 ID，以英文逗号分隔，不能重复，逗号周围不要加空格。理由必填。
+
+- `merge`：将这些收录所属的作品合并。合并范围包括原作品中的其他收录，并非只移动列出的几首歌；`work` 范围别名会随着新关联共享。
+- `split`：将列出的收录一起移到一个新作品。它们必须来自同一个原作品，而且原作品至少保留一个未列出的收录；不是把每个 ID 分别拆成一个作品。
+
+```text
+/admin.alias relink merge 2510,3828 已核实为同一作品的跨游戏收录
+/admin.alias relink split 3828 该收录是不同版本作品，应与原作品分离
+```
+
+第二条只有在 `3828` 所属作品还有其他收录时才可执行。这两种操作都是待审请求，审核通过后生效；原作品的封禁规则会保留到合并或拆分后的对应作品中。
+
+**`candidates [上一页末尾候选ID]`：查看系统生成的待定作品关联。**
+
+每次最多 20 条，按候选 ID 升序返回 JSON 数组。可查看 `id`、`version`、`left_id`、`right_id`、`reason` 和 `target_versions` 等字段。`left_id/right_id` 是内部收录 ID，不是请求 ID。
+
+```text
+/admin.alias candidates
+/admin.alias candidates 17
+```
+
+第二条查看候选 ID 大于 `17` 的记录。当前输出没有自动生成的下一页命令，需要取数组最后一条的 `id` 继续查询；返回 `[]` 表示没有更多待定候选。
+
+**`decide <候选ID> <版本> <accept|reject> <理由>`：直接处理作品关联候选。**
+
+ID 和版本从 `candidates` 获取，理由必填。`accept` 合并候选两侧所属作品；`reject` 拒绝这对关联，自动匹配会考虑该拒绝记录。此命令直接执行管理员决策，不创建另一个待审请求。
+
+```text
+/admin.alias decide 17 1 accept 已确认两侧为同一作品
+/admin.alias decide 18 1 reject 同名但曲师和作品不同
+```
+
+版本或目标已变化时，重新查看候选并核对曲库状态；候选不是别名请求，不能用 `confirm` 代替 `decide`。
+
+##### 同步与导入身份处理
+
+**`sync <game>`：立即同步指定游戏曲库。**
+
+`game` 使用游戏代码，例如 `maimai`、`chunithm`、`sdvx`。舞萌和中二走各自数据源同步，成功后显示本地曲库歌曲数量；其他支持的游戏导入通用街机曲库，显示新增、更新、待定和无效记录数量。支持的游戏可先通过 `/arcade.list` 查看。
+
+```text
+/admin.alias sync maimai
+/admin.alias sync sdvx
+```
+
+同步会更新持久曲库和来源提供的别名，并可能产生作品关联候选或待定导入记录。它不等于批准用户提交的别名请求。
+
+**`imports <game>`：查看最近一次通用曲库导入报告。**
+
+返回 JSON，包括 `created`、`updated`、`unchanged`、`withdrawn`、`pending`、`invalid`、`song_ids` 和同步版本等信息。`pending` 中的 `external_key`、标题和原因用于定位身份不确定的来源记录。
+
+```text
+/admin.alias imports sdvx
+```
+
+当前命令固定读取 `provider=arcade_songs`、`namespace=default` 的报告，没有额外的来源选择参数。因此不能用它查看舞萌/中二原生同步的所有报告；无对应导入报告时返回 `null`。导入报告的 `pending` 是来源身份待定项，与 `/admin.alias pending` 中的维护请求是不同列表。
+
+**`map <game> <provider> <namespace> <external_key> <bind|new|reject> <内部收录ID或-> <理由>`：提交来源记录的身份决策。**
+
+| 参数 | 含义 |
+| --- | --- |
+| `game` | 来源记录所在的游戏代码 |
+| `provider` | 导入提供方；当前通用曲库通常为 `arcade_songs` |
+| `namespace` | 同一提供方下的记录命名空间；当前通用曲库通常为 `default` |
+| `external_key` | 导入报告中的来源记录键，可能是身份摘要，不是临时枚举 ID；原样复制 |
+| `bind` | 绑定到同游戏内已有收录，下一参数填内部收录 ID |
+| `new` | 确认为新收录并创建作品，下一参数必须填 `-` |
+| `reject` | 拒绝该来源记录，下一参数必须填 `-` |
+| 理由 | 说明人工判断依据，可以包含空格 |
+
+```text
+/admin.alias map sdvx arcade_songs default <external_key> bind 3828 核实为现有收录
+/admin.alias map sdvx arcade_songs default <external_key> new - 已确认是新增曲目
+/admin.alias map sdvx arcade_songs default <external_key> reject - 来源记录有误
+```
+
+将 `<external_key>` 替换为报告中的实际键后再发送。命令从已保存的最新抓取快照读取原文，无需粘贴整首歌曲的 JSON。记录必须在快照中唯一存在；`bind` 不能跨游戏，批准后还会更新目标收录的曲库信息及对应来源证据。`reject` 会撤下该来源引用和证据；如果收录已没有其他有效来源引用，该收录也会变为不活跃。三种决策都先创建待审请求。
+
+##### 配置别名来源
+
+**`source <来源键> <game或global> <enable|disable>`：直接启用或禁用来源。**
+
+来源键是别名展示中的完整名称，例如 `lxns:maimai`、`dxrating:maimai`、`yuzuchan:maimai`。第二个参数表示来源所属游戏；`global` 表示来源没有限定游戏，不是修改一个现有来源的作用范围。
+
+```text
+/admin.alias source lxns:maimai maimai disable
+/admin.alias source lxns:maimai maimai enable
+```
+
+已知来源的外部别名由 arcade-helper 同步，未知外部来源默认禁用。禁用后，该来源的证据不再生效，但记录仍保留；启用后，满足其他有效条件的证据可重新生效。此命令当场更新，不需另行审核，也不会代替 `sync` 抓取新的数据。
+
+现有来源的所属游戏和类型不可更改，需填写其原有游戏或 `global`；命令保留现有来源的类型及导入信任设置。未知来源会以指定归属创建为外部来源，命令本身不会将其升级为可信导入。
+
+##### 兼容入口与常用流程
+
+当前实现还接受以下两个未列在管理员简短帮助中的入口：
+
+```text
+/admin.alias add [游戏] <曲名/已有别名/ID> <新别名>
+/admin.alias request <请求ID>
+```
+
+`add` 与 `/arcade.alias add` 共用提交逻辑，仍需审核，指定游戏自动使用 `game_song`，省略游戏使用 `work`；例如 `/admin.alias add "Transcend Lights" 超越灯`。`request` 与管理员 `show` 共用详情逻辑，例如 `/admin.alias request 42`。撤回本人请求的入口仍为 `/arcade.alias withdraw <请求ID> <版本>`，`admin.alias` 没有管理员撤回他人请求的命令；拒绝待审请求使用 `reject`。
+
+审核用户新别名的常用顺序：
+
+```text
+/admin.alias pending
+/admin.alias show 42
+/admin.alias approve 42 1 已核实
+/arcade.alias maimai 1451
+```
+
+管理员维护别名时，先用 `retract/replace/block/unblock/relink/map` 提交，再由另一位管理员按上述流程审核。作品关联候选直接走 `candidates` → `decide`；通用曲库身份待定项走 `imports` → `map` → 另一位管理员审核。
+
+旧 `/admin.search accept/reject` 已停用：舞萌、中二历史搜索候选可用 `/admin.search submit <旧记录编号>` 转成新版待审请求；其他游戏需核对当前 ID 后重新 `add`。搜索历史的查看、导入和导出仍可用，但不直接使别名生效。
 
 ### 首次升级与旧别名迁移
 

@@ -4,6 +4,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.dates import AutoDateLocator, DateFormatter
+from nonebot import logger
 
 from arcade_helper import MaimaiPlayer
 
@@ -14,25 +15,37 @@ rcParams["axes.unicode_minus"] = False
 
 
 async def generate_trend_plot(player: MaimaiPlayer, headers: dict) -> BotResponse:
-    trend_data = (await player.trend(headers=headers)).data.raw
+    try:
+        trend_data = (await player.trend(headers=headers)).data
+    except Exception as exc:
+        logger.warning(f"查询趋势失败: {player.friend_code} - {exc}")
+        return BotResponse(text="查询失败，请稍后重试。")
+    payload = trend_data.model_extra or {}
+    if payload.get("code", 200) != 200 or payload.get("success") is False:
+        return BotResponse(text=f"查询失败, {payload.get('message', '查分器返回异常')}")
     dates = []
     totals = []
     standard_totals = []
     dx_totals = []
 
-    for entry in trend_data["data"]:
+    for entry in trend_data.trend:
         try:
-            date = datetime.strptime(entry["date"], "%Y-%m-%d")
-            total = entry["total"]
+            date = datetime.strptime(entry.date, "%Y-%m-%d")
+            total = entry.total
+            standard = entry.standard if entry.standard is not None else entry.raw["standard_total"]
+            dx = entry.dx if entry.dx is not None else entry.raw["dx_total"]
+            if total is None or standard is None or dx is None:
+                raise ValueError("Missing rating totals")
+        except (KeyError, TypeError, ValueError):
+            logger.warning(f"跳过无效趋势数据: {entry}")
+            continue
+        dates.append(date)
+        totals.append(total)
+        standard_totals.append(standard)
+        dx_totals.append(dx)
 
-            dates.append(date)
-            totals.append(total)
-            standard_totals.append(entry["standard_total"])
-            dx_totals.append(entry["dx_total"])
-        except (KeyError, ValueError):
-            import traceback
-            traceback.print_exc()
-            print(f"跳过无效数据: {entry}")
+    if not dates:
+        return BotResponse(text="暂无 DX Rating 趋势数据。")
 
     plt.figure(figsize=(15, 6))
     plt.plot(dates, totals, marker="o", linestyle="-", color="blue", label="DX Rating")

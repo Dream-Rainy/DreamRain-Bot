@@ -85,12 +85,11 @@ async def get_recent_records(qq: str, dev_headers: dict[str, str]) -> list[dict[
         identity = PlatformIdentity.qq(qq)
         player = await lxns_client.data.players.maimai.default_player(identity)
         result = await player.recents(headers=dev_headers)
-        response = result.data.raw
-        if isinstance(response, dict) and response.get("success"):
-            data = response.get("data", [])
-            if isinstance(data, list):
-                return data
-        return []
+        payload = result.data.model_extra or {}
+        if payload.get("code", 200) != 200 or payload.get("success") is False:
+            logger.warning(f"获取游玩记录失败 (QQ: {qq}): {payload.get('message', '查分器返回异常')}")
+            return []
+        return [score.raw for score in result.data.scores]
     except Exception as e:
         traceback.print_exc()
         logger.error(f"获取游玩记录失败 (QQ: {qq}): {e}")
