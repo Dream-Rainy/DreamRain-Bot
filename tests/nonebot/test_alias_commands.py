@@ -1,5 +1,7 @@
 """Real adapter commands, persisted decisions and search-cache invalidation."""
 
+import re
+
 import nonebot
 import pytest
 
@@ -145,7 +147,7 @@ async def test_alias_numeric_native_ids_do_not_select_internal_id_collisions(app
     assert 'Wanted Native Song' in responses[-1].text and 'Other Native Song' not in responses[-1].text
 
 
-@pytest.mark.parametrize("choice", ["2", "sdvx", None])
+@pytest.mark.parametrize("choice", ["2", "sdvx", "取消", None])
 async def test_natural_language_ambiguous_alias_selects_song_or_cancels(app, seeded_song_db, monkeypatch, choice):
     from src.plugins.chiffon_bot.app.commands import arcade, natural_language
     first = await _import_song("sdvx", aliases=["same nickname"])
@@ -186,6 +188,111 @@ async def test_natural_language_ambiguous_alias_selects_song_or_cancels(app, see
         assert f"FLOWER ({first})" not in responses[-1].text
     else:
         assert "已取消" in responses[-1].text
+    with pytest.raises(AssertionError):
+        _find_matcher(natural_language, "handle_choice")
+
+
+@pytest.mark.parametrize("initial_query,next_message", [
+    ("song", "command"), ("alias", "command"), ("song", "chat"),
+])
+async def test_selection_passes_new_command_and_abandons_old_request(
+    app, seeded_song_db, monkeypatch, initial_query, next_message,
+):
+    from src.plugins.chiffon_bot.app.commands import alias, arcade, natural_language
+
+    await _import_song("sdvx", aliases=["same nickname"])
+    selected = await _import_song("sdvx", title="Different Work", artist="Other", aliases=["same nickname"], native="2")
+    responses = []
+    for module in (alias, arcade, natural_language):
+        _finish_capture(monkeypatch, module, responses)
+    command = _find_matcher(arcade, "_song")
+
+    async def ack(*_args, **_kwargs):
+        pass
+    async def sites():
+        return [{"gameCode": "sdvx"}]
+    async def jacket(*_args, **_kwargs):
+        return None
+    async def reply(prompt):
+        responses.append(prompt)
+        assert not await AliasRequest.all().count()
+        waiter = _find_matcher(natural_language, "handle_choice")
+        waiter._default_state["__nonebug_matcher__"] = waiter
+        ctx = app.context
+        text = f"/arcade.song sdvx {selected}" if next_message == "command" else "只是聊天"
+        ctx.receive_event(nonebot.get_bot("10000"), _group_event(text, 802))
+        ctx.should_pass_rule(waiter)
+        ctx.should_finished(waiter)
+        if next_message == "command":
+            ctx.should_pass_rule(command)
+            ctx.should_finished(command)
+        await ctx.run()
+
+    monkeypatch.setattr(natural_language, "ack_message", ack)
+    monkeypatch.setattr(natural_language, "send_with", reply)
+    monkeypatch.setattr(arcade, "load_song_jacket_bytes", jacket)
+    monkeypatch.setattr(natural_language.lxns_client.data.catalog.arcade_songs, "sites", sites)
+    initial = _find_matcher(alias, "_alias") if initial_query == "alias" else _find_matcher(natural_language, "handle_cross_game_song_query")
+    text = '/arcade.alias add sdvx "same nickname" 新简称' if initial_query == "alias" else "same nickname是什么歌？"
+    async with app.test_matcher([initial, command]) as ctx:
+        bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id="10000")
+        ctx.receive_event(bot, _group_event(text, 801))
+    assert not await AliasRequest.all().count()
+    assert len(responses) == (2 if next_message == "command" else 1)
+    if next_message == "command":
+        assert f"Different Work ({selected})" in responses[-1].text
+        assert responses[-1].reply_to == 802
+    with pytest.raises(AssertionError):
+        _find_matcher(natural_language, "handle_choice")
+
+
+async def test_new_song_question_replaces_menu_before_selecting(app, seeded_song_db, monkeypatch):
+    from src.plugins.chiffon_bot.app.commands import arcade, natural_language
+
+    await _import_song("sdvx", aliases=["old nickname"])
+    await _import_song("sdvx", title="Different Work", artist="Other", aliases=["old nickname"], native="2")
+    await _import_song("sdvx", title="PUPA", aliases=["new nickname"], native="3")
+    selected = await _import_song("ongeki", title="PUPA", aliases=["new nickname"], native="3")
+    responses, waiters = [], []
+    _finish_capture(monkeypatch, natural_language, responses)
+    query_matcher = _find_matcher(natural_language, "handle_cross_game_song_query")
+
+    async def ack(*_args, **_kwargs):
+        pass
+    async def sites():
+        return [{"gameCode": "sdvx"}, {"gameCode": "ongeki"}]
+    async def jacket(*_args, **_kwargs):
+        return None
+    async def reply(prompt):
+        responses.append(prompt)
+        waiter = _find_matcher(natural_language, "handle_choice")
+        assert waiter not in waiters
+        waiters.append(waiter)
+        waiter._default_state["__nonebug_matcher__"] = waiter
+        ctx = app.context
+        if len(waiters) == 1:
+            text = "new nickname是什么歌？"
+        else:
+            option = re.search(rf"(\d+)\. ongeki \[{selected}\]", prompt.text)
+            assert option is not None
+            text = option.group(1)
+        ctx.receive_event(nonebot.get_bot("10000"), _group_event(text, 901 + len(waiters)))
+        ctx.should_pass_rule(waiter)
+        ctx.should_finished(waiter)
+        if len(waiters) == 1:
+            ctx.should_finished(query_matcher)
+        await ctx.run()
+
+    monkeypatch.setattr(natural_language, "ack_message", ack)
+    monkeypatch.setattr(natural_language, "send_with", reply)
+    monkeypatch.setattr(arcade, "load_song_jacket_bytes", jacket)
+    monkeypatch.setattr(natural_language.lxns_client.data.catalog.arcade_songs, "sites", sites)
+    await _dispatch(app, natural_language, "handle_cross_game_song_query", "old nickname是什么歌？", 901, 123)
+    assert len(waiters) == 2 and len(responses) == 3
+    assert "Different Work" in responses[0].text
+    assert "PUPA" in responses[1].text and "Different Work" not in responses[1].text
+    assert f"PUPA ({selected})" in responses[-1].text
+    assert responses[-1].reply_to == 902
     with pytest.raises(AssertionError):
         _find_matcher(natural_language, "handle_choice")
 

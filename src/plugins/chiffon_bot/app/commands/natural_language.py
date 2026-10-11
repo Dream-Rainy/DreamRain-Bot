@@ -214,23 +214,36 @@ def _register_choice_waiter(
     user_id: str,
     session_id: str,
     timeout_seconds: int,
+    game_codes: list[str] | None = None,
 ) -> tuple[asyncio.Future[str], type[Matcher]]:
     future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    choice_tokens = {"取消", "cancel", *(game_codes or ())}
+    for adapter in iter_searchable_adapters():
+        if adapter.game_code in (game_codes or ()):
+            choice_tokens.update(_choice_tokens(adapter))
 
     async def is_same_conversation(event: Event) -> bool:
-        return event.get_user_id() == user_id and event.get_session_id() == session_id
+        return not future.done() and event.get_user_id() == user_id and event.get_session_id() == session_id
 
     choice_matcher = on_message(
         rule=Rule(is_same_conversation),
         priority=1,
-        block=True,
+        block=False,
         expire_time=timedelta(seconds=timeout_seconds),
     )
 
     @choice_matcher.handle()
-    async def handle_choice(event: Event):
-        if not future.done():
-            future.set_result(event.get_plaintext().strip())
+    async def handle_choice(event: Event, matcher: Matcher):
+        if future.done():
+            return
+        text = event.get_plaintext().strip()
+        if text.isdecimal() or text.lower() in choice_tokens:
+            matcher.stop_propagation()
+            future.set_result(text)
+        else:
+            # Cancel the old handler quietly while this message continues dispatching.
+            future.cancel()
+        _destroy_matcher(choice_matcher)
         await choice_matcher.finish()
 
     return future, choice_matcher
@@ -257,13 +270,16 @@ async def _wait_for_game_choice(
     timeout_seconds: int = _DISAMBIGUATION_TIMEOUT_SECONDS,
     prompt: BotResponse | None = None,
 ) -> str | None:
-    choice_text = await _wait_for_choice_text(event=event, timeout_seconds=timeout_seconds, prompt=prompt)
+    choice_text = await _wait_for_choice_text(
+        event=event, game_codes=game_codes, timeout_seconds=timeout_seconds, prompt=prompt,
+    )
     return _resolve_game_choice(choice_text, game_codes) if choice_text is not None else None
 
 
 async def _wait_for_choice_text(
     *,
     event: Event,
+    game_codes: list[str] | None = None,
     timeout_seconds: int = _DISAMBIGUATION_TIMEOUT_SECONDS,
     prompt: BotResponse | None = None,
 ) -> str | None:
@@ -271,6 +287,7 @@ async def _wait_for_choice_text(
         user_id=event.get_user_id(),
         session_id=event.get_session_id(),
         timeout_seconds=timeout_seconds,
+        game_codes=game_codes,
     )
     try:
         if prompt is not None:
@@ -329,6 +346,7 @@ async def _query_alias_song(song_query: str, event: Event) -> BotResponse:
 
         choice = await _wait_for_choice_text(
             event=event, prompt=BotResponse(text="\n".join(lines), reply_to=event.message_id),
+            game_codes=list(dict.fromkeys(candidate.game_code for candidate in choices)),
         )
         if choice is None:
             return BotResponse(text="选曲超时，已取消。", reply_to=event.message_id)
