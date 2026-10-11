@@ -4,6 +4,46 @@ import math
 
 import pytest
 
+
+async def test_scoped_and_global_queries_share_work_level_rejection(seeded_song_db, monkeypatch):
+    from arcade_helper.catalog import CatalogRecord
+    from arcade_helper.core.song import SongData
+    from arcade_helper.search import MatchType
+    from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client as client
+    from src.plugins.chiffon_bot.shared.search import reranker
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    for game in ("sdvx", "ongeki"):
+        songs = [SongData(id=i, title=f"Fruit {name}", artist="composer", aliases=["红苹果"])
+                 for i, name in enumerate(("One", "Two"), 1)]
+        await client.identities.import_records(game, [CatalogRecord(s, s.model_dump(mode="json"), str(s.id)) for s in songs],
+                                               provider="catalog", namespace="native", complete=False)
+    calls, full_reads = [], []
+    score = 0.1
+    async def rank(query, documents):
+        calls.append(documents)
+        return [score, 0.0]
+    original = client.catalog.get_songs_by_ids
+    async def full(*args):
+        full_reads.append(args)
+        return await original(*args)
+    monkeypatch.setattr(client.catalog, "get_songs_by_ids", full)
+    monkeypatch.setattr(module, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(reranker, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(reranker, "reranker_threshold", lambda: 0.6)
+    monkeypatch.setattr(reranker, "reranker_min_margin", lambda: 0.1)
+    monkeypatch.setattr(reranker, "rerank_texts", rank)
+    text = await client.catalog.search_all("composer 红苹果", allow_semantic=False)
+    assert len(text.candidates) == 4 and {c.match_type for c in text.candidates} == {MatchType.BM25.value}
+    assert not (await client.catalog.search_all("composer 红苹果")).candidates
+    assert await client.catalog.search_song("sdvx", "composer 红苹果") == []
+    assert len(calls) == 2 and all(len(batch) == 2 for batch in calls) and not full_reads
+    score = 0.9
+    global_rows = (await client.catalog.search_all("composer 红苹果")).candidates
+    scoped = await client.catalog.search_song("sdvx", "composer 红苹果")
+    assert {c.title for c in global_rows} == {scoped[0].title}
+    assert {c.game_code for c in global_rows} == {"sdvx", "ongeki"}
+    assert len(full_reads) == 1
+
 from tests.fixtures.song_seed import (
     CHUNI_ALIAS,
     CHUNI_SONG_ID,
@@ -203,7 +243,8 @@ async def test_sql_exact_and_ranking_use_light_catalog(seeded_song_db, monkeypat
     monkeypatch.setattr(client.identities, '_cached_songs', forbidden)
     assert [r.song_id for r in await client.catalog.search_song('maimai', MAI_SONG_TITLE)] == [MAI_SONG_ID]
     assert [r.song_id for r in await client.catalog.search_song('maimai', MAI_ALIAS)] == [MAI_SONG_ID]
-    assert await client.catalog.search_song('maimai', MAI_SONG_TITLE[:3])
+    assert await client.catalog.search_song('maimai', MAI_SONG_TITLE[:3]) == []
+    assert [r.song_id for r in await client.catalog.search_song('maimai', MAI_SONG_TITLE[:-1])] == [MAI_SONG_ID]
     # A numeric title remains a separate candidate alongside an actual numeric ID.
     song = SongData(id=99999, title=str(MAI_SONG_ID), artist='Other')
     await client.identities.import_records('maimai', [CatalogRecord(song, song.model_dump(mode='json'), '99999')],

@@ -38,24 +38,35 @@ def _song_text(result: SongQueryResult, aliases: list[str]) -> str:
     return " | ".join(texts)
 
 
+def song_work_key(result: SongQueryResult, game_code: str | None = None):
+    """Only persisted work links may merge entries across games."""
+    song = result.song_data
+    return getattr(song, "work_id", None) or (getattr(song, "game_code", None) or game_code, result.song_id)
+
+
 async def rerank_song_results(
     catalog: Any,
-    game_code: str,
+    game_code: str | None,
     query: str,
     results: list[SongQueryResult],
     *,
     limit: int = 10,
-) -> list[SongQueryResult]:
-    if not reranker_enabled() or len(results) < 2:
+) -> list[SongQueryResult] | None:
+    if not reranker_enabled():
+        return None
+    if not results:
         return []
 
-    candidates = results[:limit]
+    works = {}
+    for result in sorted(results, key=lambda r: r.match_score, reverse=True):
+        works.setdefault(song_work_key(result, game_code), result)
+    candidates = list(works.values())[:limit]
     documents: list[str] = []
     for result in candidates:
         aliases = getattr(result.song_data, "aliases", None)
         if aliases is None or (hasattr(result.song_data, "model_fields_set") and "aliases" not in result.song_data.model_fields_set):
             try:
-                aliases = await catalog.get_song_aliases_for_song_id(game_code, result.song_id)
+                aliases = await catalog.get_song_aliases_for_song_id(getattr(result.song_data, "game_code", None) or game_code, result.song_id)
             except Exception:
                 aliases = []
         documents.append(_song_text(result, aliases))
@@ -70,4 +81,5 @@ async def rerank_song_results(
         return []
     if len(scored) > 1 and top_score - scored[1][0] < reranker_min_margin():
         return []
-    return [scored[0][1]]
+    selected = song_work_key(scored[0][1], game_code)
+    return [result for result in results if song_work_key(result, game_code) == selected]

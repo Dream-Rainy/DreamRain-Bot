@@ -7,6 +7,55 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_reranker_batches_confirmed_works_without_merging_same_titles(monkeypatch):
+    from arcade_helper.core.song import SongData
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.shared.search import reranker
+
+    rows = []
+    for work in range(12):
+        for game in ("sdvx", "ongeki"):
+            song = SongData(id=work + (100 if game == "ongeki" else 0), title="Same title", aliases=[],
+                            artist=f"Artist {work}", game_code=game, work_id=str(work))
+            rows.append(SongQueryResult(song.id, song.title, MatchType.BM25, 95 - work, song.title, song))
+    calls = []
+    async def infer(query, documents):
+        calls.append(documents)
+        return [0.95, *([0.1] * 9)]
+    monkeypatch.setattr(reranker, "rerank_texts", infer)
+    monkeypatch.setattr(reranker, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(reranker, "reranker_threshold", lambda: 0.6)
+    monkeypatch.setattr(reranker, "reranker_min_margin", lambda: 0.2)
+    assert await reranker.rerank_song_results(object(), None, "query", rows) == rows[:2]
+    assert len(calls) == 1 and len(calls[0]) == 10
+    assert calls[0][:2] == ["Same title | Artist 0", "Same title | Artist 1"]
+
+
+@pytest.mark.asyncio
+async def test_single_candidate_still_requires_absolute_reranker_score(monkeypatch):
+    from arcade_helper.core.song import SongData
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.shared.search import reranker
+
+    song = SongData(id=1, title="Example", aliases=[])
+    candidate = SongQueryResult(1, song.title, MatchType.EMBEDDING, 90, "query", song)
+    monkeypatch.setattr(reranker, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(reranker, "reranker_threshold", lambda: 0.6)
+    monkeypatch.setattr(reranker, "reranker_min_margin", lambda: 0)
+    scores = [0.4]
+
+    async def rank(query, documents):
+        return scores
+
+    monkeypatch.setattr(reranker, "rerank_texts", rank)
+    assert await reranker.rerank_song_results(object(), "sdvx", "query", [candidate]) == []
+    scores[0] = 0.8
+    assert await reranker.rerank_song_results(object(), "sdvx", "query", [candidate]) == [candidate]
+    monkeypatch.setattr(reranker, "reranker_enabled", lambda: False)
+    assert await reranker.rerank_song_results(object(), "sdvx", "query", [candidate]) is None
+
+
+@pytest.mark.asyncio
 async def test_reranker_reuses_loaded_aliases_with_legacy_repository_fallback(monkeypatch):
     from arcade_helper.core.song import SongData
     from arcade_helper.search import SongQueryResult, MatchType

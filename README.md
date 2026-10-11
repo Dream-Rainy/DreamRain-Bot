@@ -518,7 +518,7 @@ Compose 示例默认启用容器内地址，不发布生产 HTTP 端口。开发
 | `song_search_reranker_enabled` | 是否启用查歌 reranker 精排，默认 `false` |
 | `song_search_reranker_endpoint` | 本地 reranker HTTP 端点，兼容 Hugging Face TEI `/rerank`，默认 `http://127.0.0.1:11435/rerank` |
 | `song_search_reranker_model` | reranker 模型名，例如 `Alibaba-NLP/gte-multilingual-reranker-base` / `bge-reranker-v2-m3` |
-| `song_search_reranker_threshold` | reranker top1 最低分，默认 `0.0` |
+| `song_search_reranker_threshold` | reranker top1 最低分，默认 `0.0`；纯语义候选须设置正值并通过此门槛 |
 | `song_search_reranker_min_margin` | reranker top1/top2 最小分差，默认 `0.0` |
 | `ONEBOT_ACCESS_TOKEN` | OneBot 鉴权 Token |
 | `PLAYWRIGHT_GPU_MODE` | 渲染服务模式：`auto`（默认，硬件不可用时回退）、`cpu`、`gpu`（硬件失败则拒绝启动）；通过 Compose 环境传给渲染服务 |
@@ -527,7 +527,15 @@ Compose 示例默认启用容器内地址，不发布生产 HTTP 端口。开发
 
 ## 查歌可靠性
 
-查歌会优先使用确定性结果：ID、标题、别名、归一化标题、简繁/拼音/罗马音和模糊匹配。BM25 只作为候选召回；如果 BM25 返回多个分数接近的候选，会先尝试可选 reranker 精排，再尝试 embedding 语义匹配，并要求 top1 与 top2 拉开差距后才接管，避免宽泛抢答。普通无结果场景也会使用 embedding 兜底；reranker 和 embedding 默认关闭，不影响普通部署。
+查歌先尝试 ID、曲名和已生效别名的精确或归一化匹配。归一化后 1–4 个字符的短查询只做文本检索：保留完整词、完整拼音缩写和完整拼音；1–2 个字符不扩展错字或词片段，3–4 个字符只允许完整目标或完整英文词的一次编辑。不对短查询调用 BM25、embedding 或 reranker。已收录的梗别名仍可精确查询，数字 ID 与数字曲名并存，难度/版本前缀仍只在无结果时重试一次。
+
+较长查询保留模糊、拼音和罗马音匹配；有实际输入覆盖的多关键词查询才进入 BM25。“曲师＋曲名/单个别名”可以组合，不能把多个别名或拼音里的碎片拼成命中。BM25 需要覆盖至少 60% 的查询词项，且包含全部有效英文关键词；模糊文本匹配也不能忽略额外的有效英文关键词。列表中的百分数是排序分数，不是命中概率；精确匹配由匹配类型判定。
+
+指定游戏和全游戏查询共用一条链路：限定游戏范围 → 精确身份解析 → 轻量文本候选 → 按已确认的作品关系去重 → 必要时进行模型验证 → 返回游戏收录。不会只因曲名相同就自动关联作品；maimai/CHUNITHM 仍使用原生歌曲 ID，其他游戏使用内部收录 ID。文本索引与后台预热共享，完整谱面只在候选接受后按需补全。
+
+多个作品的 BM25 得分接近时，可由 reranker 验证；同作品的多个游戏收录不会作为竞争项。每次最多验证 10 个作品、一个批次；跨游戏向量检索最多并发两个游戏，共用一次输入向量推理。reranker 未执行时可以继续尝试 embedding，保留配置的相似度阈值及不同作品之间的最小分差检查。模型明确拒绝即返回未找到，不恢复旧候选；缓存或服务不可用时仅保留该游戏已通过文本规则的候选。别名提交使用同一文本核心，关闭语义兜底，非精确目标仍须明确选择并提交审核。
+
+没有文本依据的纯语义结果，必须同时启用 embedding、reranker，并将已有 `song_search_reranker_threshold` 设为正值；包括单个候选，也要通过 reranker 的绝对分数门槛。默认 `0.0` 只用于文本候选排序，不授权纯语义猜测。阈值须用实际有效查询和无关查询校验，不能将分数当作概率；相对分差也不能代替绝对门槛。两项推理功能默认关闭。
 
 推荐基准方案是 TEI 跑 Qwen3 dense embedding，再用 GTE multilingual reranker 做重排：
 

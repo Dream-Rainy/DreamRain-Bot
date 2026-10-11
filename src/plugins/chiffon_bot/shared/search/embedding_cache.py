@@ -399,9 +399,11 @@ async def search_song_by_embedding(
     embedder: Embedder = embed_texts,
     threshold: float | None = None,
     min_margin: float | None = None,
-) -> list[SongQueryResult]:
+    hydrate: bool = True,
+    internal_ids: bool = False,
+) -> list[SongQueryResult] | None:
     if not embedding_enabled():
-        return []
+        return None
     query_text = normalize_width(str(query or "")).strip()
     if not query_text:
         return []
@@ -417,38 +419,45 @@ async def search_song_by_embedding(
                  and (row.get('model') == model or (revision is None and not row.get('model')))
                  and (row.get('endpoint') == endpoint or (revision is None and not row.get('endpoint')))]
     if not indices:
-        return []
+        return None
 
     query_vector = await _query_vector(target, query_text, embedder)
 
     scored: list[tuple[float, dict[str, Any]]] = []
     effective_threshold = embedding_threshold() if threshold is None else float(threshold)
     if matrix.shape[1] != len(query_vector):
-        return []
+        return None
     # BLAS and sorting run off the message loop; keep the cached matrix shared.
     def rank():
         scores = matrix @ np.asarray(query_vector, dtype=np.float32) * 100.0
         order = sorted(indices, key=lambda index: float(scores[index]), reverse=True)[:10]
         return [(float(scores[index]), rows[index]) for index in order]
     scored = await asyncio.to_thread(rank)
-    if not scored or scored[0][0] < effective_threshold:
-        return []
-    if min_margin is not None and len(scored) > 1 and scored[0][0] - scored[1][0] < float(min_margin):
+    if (not scored or scored[0][0] < effective_threshold
+            or (min_margin is not None and len(scored) > 1 and scored[0][0] - scored[1][0] < float(min_margin))):
+        if get_revision and await get_revision() != revision:
+            return None
         return []
 
     results: list[SongQueryResult] = []
     seen: set[int] = set()
     limit = 1 if min_margin is not None else 10
+    metadata = None if hydrate else await catalog.load_search_songs(game)
     for score, row in scored[:limit]:
         if score < effective_threshold:
             break
         song_id = int(row["song_id"])
         if song_id in seen:
             continue
-        song_data = await catalog.get_song_by_id(game, song_id)
+        song_data = await catalog.get_song_by_id(game, song_id) if hydrate else metadata.get(song_id)
         if not song_data:
             continue
         seen.add(song_id)
+        if internal_ids:
+            song_id = getattr(song_data, "game_song_id", None)
+            if song_id is None:
+                return None
+            song_data = song_data.model_copy(update={"id": song_id})
         results.append(SongQueryResult(
             song_id=song_id,
             title=str(getattr(song_data, "title", "") or row.get("title") or ""),
@@ -458,5 +467,5 @@ async def search_song_by_embedding(
             song_data=song_data,
         ))
     if get_revision and await get_revision() != revision:
-        return []
+        return None
     return results

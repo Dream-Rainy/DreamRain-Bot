@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from arcade_helper.core.errors import ArcadeHelperError
 from arcade_helper.aliases import AliasCandidate
-from arcade_helper.aliases.models import alias_key
 from arcade_helper.storage.tortoise.catalog_models import GameSong
 from nonebot.adapters import Bot, Event, Message
 from nonebot.params import CommandArg
@@ -62,18 +61,7 @@ def _detail_text(detail: dict) -> str:
 
 
 async def _alias_candidates(game: str, query: str) -> list[AliasCandidate]:
-    candidates = [c for c in (await lxns_client.data.catalog.search_all(query, game_code=game)).candidates
-                  if c.match_type != "embedding"]
-    if query.isdecimal():
-        internal_id = int(query)
-        if lxns_client.catalog._uses_db_catalog(game):
-            internal_id = await lxns_client.identities.resolve_reference(game, query, provider="catalog", namespace="native")
-        # Numeric native IDs must not accidentally select an unrelated internal entry ID.
-        exact = [c for c in candidates if c.game_song_id == internal_id or alias_key(c.title) == alias_key(query)]
-        if exact:
-            return exact
-        candidates = [c for c in candidates if c.match_type != "exact_id"]
-    return candidates
+    return list((await lxns_client.catalog.search_all(query, game_code=game, allow_semantic=False)).candidates)
 
 
 async def alias_query_text(game: str, query: str) -> str:
@@ -139,7 +127,7 @@ async def _add_alias(text: str, bot: Bot, event: Event, actor: int) -> str:
     if game:
         candidates = await _alias_candidates(game, query)
     else:
-        candidates = list((await lxns_client.catalog.search_all(query)).candidates)
+        candidates = list((await lxns_client.catalog.search_all(query, allow_semantic=False)).candidates)
     exact = [candidate for candidate in candidates if candidate.match_type.startswith("exact_")]
     matches = exact or candidates
     if not matches:

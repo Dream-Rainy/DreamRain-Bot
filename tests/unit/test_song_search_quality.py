@@ -9,6 +9,28 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.mark.asyncio
+async def test_text_candidates_skip_full_payload_and_sdk_vectors(quality_search, monkeypatch):
+    from arcade_helper.search import song_query
+    repository = quality_search.repository
+    full_reads = []
+    original = repository.get_song_by_id
+    async def full(game, sid):
+        full_reads.append(sid)
+        return await original(game, sid)
+    model_calls = []
+    async def vectors(*args, **kwargs):
+        model_calls.append(args)
+        return []
+    monkeypatch.setattr(repository, "get_song_by_id", full)
+    monkeypatch.setattr(song_query, "_query_song_embedding", vectors)
+    for query in ("Blue Noise", "Blue Nois", "basic Blue Noise", "unregistered request"):
+        await quality_search.search_candidates(query, game_code="quality")
+    assert full_reads == [] and model_calls == []
+    complete = await quality_search.search_song("Blue Nois", game_code="quality")
+    assert complete and complete[0].song_id in full_reads
+
+
 QUALITY_CASES = Path("tests/fixtures/song_search_quality_cases.jsonl")
 
 
@@ -18,6 +40,36 @@ def _load_quality_cases() -> list[dict]:
         if line.strip():
             rows.append(json.loads(line))
     return rows
+
+
+@pytest.mark.asyncio
+async def test_short_queries_require_whole_text_or_complete_initials(quality_search, monkeypatch):
+    from arcade_helper.core.song import SongData
+    from arcade_helper.search import song_query
+
+    quality_search.repository.songs_by_game["quality"][3000] = SongData(id=3000, title="测试")
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("short queries must not use BM25 or embeddings")
+
+    monkeypatch.setattr(song_query, "_query_song_bm25", forbidden)
+    monkeypatch.setattr(song_query, "_query_song_embedding", forbidden)
+    for query in ("shi", "测", "测式", "zzzz"):
+        assert await quality_search.search_song(query, game_code="quality") == []
+    for query, expected in (("cs", 3000), ("测试", 3000), ("eris", 1002), ("erix", 1002), ("qby", 1015)):
+        assert (await quality_search.search_song(query, game_code="quality"))[0].song_id == expected
+
+
+@pytest.mark.asyncio
+async def test_bm25_cannot_stitch_different_aliases(quality_search):
+    from arcade_helper.core.song import SongData
+
+    quality_search.repository.songs_by_game["quality"][3000] = SongData(
+        id=3000, title="Independent Song", artist="Composer", aliases=["红苹果", "蓝香蕉"],
+    )
+    assert await quality_search.search_song("红苹果蓝香蕉", game_code="quality") == []
+    assert await quality_search.search_song("blue noise eating bananas", game_code="quality") == []
+    assert (await quality_search.search_song("composer 红苹果", game_code="quality"))[0].song_id == 3000
 
 
 @pytest.fixture
@@ -166,7 +218,7 @@ async def test_song_search_audit_writes_editable_history(quality_search, monkeyp
     assert row["results"][0]["artist"] == "test"
     assert row["top_song_id"] == 1002
     assert row["top_match_type"] == "fuzzy_title"
-    assert row["top_score"] == 99.0
+    assert row["top_score"] == results[0].match_score
     assert row["is_suspicious"] is True
     assert row["alias_candidate"]["alias"] == "eris"
     assert row["alias_candidate"]["song_id"] == 1002
@@ -552,6 +604,44 @@ async def test_bm25_artist_title_query(quality_search):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["teto做眼保健操", "teto completely unrelated request"])
+async def test_bm25_rejects_queries_with_most_terms_unmatched(quality_search, query):
+    from arcade_helper.core.song import SongData
+
+    songs = quality_search.repository.songs_by_game["quality"]
+    songs[1005] = SongData(id=1005, title="Blue Noise", artist="Teto")
+    songs[1006] = SongData(id=1006, title="Red Noise", artist="Teto")
+
+    assert await quality_search.search_song(query, game_code="quality") == []
+    assert [r.song_id for r in await quality_search.search_song("teto blue", game_code="quality")] == [1005]
+
+
+@pytest.mark.asyncio
+async def test_bm25_rejects_terms_split_across_unrelated_songs(quality_search):
+    assert await quality_search.search_song("sakuzyo moonlight", game_code="quality") == []
+
+
+@pytest.mark.asyncio
+async def test_bm25_requires_ascii_keyword_even_when_cjk_terms_match(quality_search):
+    quality_search.repository.aliases_by_game["quality"][1005].append("做眼保健操")
+    assert await quality_search.search_song("teto做眼保健操", game_code="quality") == []
+    assert [r.song_id for r in await quality_search.search_song("做眼保健操", game_code="quality")] == [1005]
+
+
+@pytest.mark.asyncio
+async def test_romaji_from_song_metadata_remains_searchable(quality_search):
+    from arcade_helper.core.song import SongData
+    from arcade_helper.search import MatchType
+
+    quality_search.repository.songs_by_game["quality"][1015] = SongData(
+        id=1015, title="千本樱", artist="黒うさP", aliases=["UniqueTransliteration"],
+    )
+    results = await quality_search.search_song("uniquetrans", game_code="quality")
+    assert results[0].song_id == 1015
+    assert results[0].match_type is MatchType.ROMAJI
+
+
+@pytest.mark.asyncio
 async def test_bm25_repeated_query_terms_preserve_field_weights_and_ranking(quality_search):
     from arcade_helper.core.song import SongData
     from arcade_helper.search import MatchType, song_query
@@ -698,6 +788,31 @@ async def test_embedding_fallback_returns_local_vector_match(quality_search, mon
     assert results
     assert results[0].song_id == 1005
     assert results[0].match_type is MatchType.EMBEDDING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cache_state", ["missing", "query_absent", "dimensions", "reject"])
+async def test_local_embedding_unavailable_differs_from_rejection(quality_search, monkeypatch, tmp_path, cache_state):
+    from arcade_helper.search import MatchType, SongQueryResult, song_query
+
+    songs = quality_search.repository.songs_by_game["quality"]
+    candidates = [SongQueryResult(sid, songs[sid].title, MatchType.BM25, 95, "noise", songs[sid])
+                  for sid in (1005, 1006)]
+
+    async def bm25(*args, **kwargs):
+        return candidates
+
+    query = "zzzz semantic miss"
+    path = tmp_path / "embeddings.jsonl"
+    rows = [{"game": "quality", "song_id": 1005, "vector": [0, 1, 0] if cache_state == "dimensions" else [0, 1]}]
+    if cache_state != "query_absent":
+        rows.append({"game": "quality", "query": query, "vector": [1, 0]})
+    if cache_state != "missing":
+        path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    monkeypatch.setenv("SONG_SEARCH_EMBEDDING_ENABLED", "1")
+    monkeypatch.setenv("SONG_SEARCH_EMBEDDING_PATH", str(path))
+    monkeypatch.setattr(song_query, "_query_song_bm25", bm25)
+    assert await quality_search.search_song(query, game_code="quality") == (candidates if cache_state != "reject" else [])
 
 
 @pytest.mark.asyncio

@@ -123,7 +123,7 @@ async def build_arcade_song_response(
     if not results:
         return BotResponse(text=f"未找到 {game_code} 曲目", reply_to=message_id)
 
-    perfect = [result for result in results if result.match_score == 100.0]
+    perfect = [result for result in results if result.match_type.value.startswith("exact_")]
     if len(perfect) > 1 or (not perfect and len(results) > 1):
         lines = [f"[{game_code}] 找到多个结果，请使用明确的歌曲 ID 查询：", ""]
         for result in results[:5]:

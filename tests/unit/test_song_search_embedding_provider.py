@@ -8,6 +8,33 @@ from typing import Any
 import httpx
 import pytest
 
+
+@pytest.mark.asyncio
+async def test_multigame_light_vector_queries_share_input_inference(loaded_chiffon_bot, monkeypatch, tmp_path):
+    import asyncio
+    from src.plugins.chiffon_bot.shared.search import embedding_cache as cache
+    path = tmp_path / "vectors.jsonl"
+    games = ("sdvx", "ongeki", "maimai")
+    async def seed(texts):
+        return [[1.0, 0.0] for _ in texts]
+    for game in games:
+        await cache.rebuild_song_embeddings_from_songs(game, {1: SongData(id=1, title="One")}, path=path, embedder=seed)
+    calls = []
+    async def infer(texts):
+        calls.append(texts)
+        await asyncio.sleep(0.01)
+        return [[1.0, 0.0]]
+    class Catalog:
+        async def load_search_songs(self, game):
+            return {1: SongData(id=1, game_song_id=123, game_code=game, work_id="linked", title="One", aliases=[])}
+        async def get_song_by_id(self, *args):
+            raise AssertionError("vector candidates must not hydrate full songs")
+    monkeypatch.setattr(cache, "embedding_enabled", lambda: True)
+    results = await asyncio.gather(*(cache.search_song_by_embedding(Catalog(), game, "new input", path=path,
+                 embedder=infer, threshold=80, hydrate=False, internal_ids=True) for game in games))
+    assert calls == [["new input"]]
+    assert [rows[0].song_id for rows in results] == [123] * 3
+
 from arcade_helper.core.song import SongData
 
 

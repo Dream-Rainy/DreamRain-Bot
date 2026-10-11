@@ -30,8 +30,8 @@ async def generic_song_info(
     if early_exit:
         return early_exit
 
-    perfect = [r for r in results if r.match_score == 100.0]
-    fuzzy = [r for r in results if r.match_score < 100.0]
+    perfect = [r for r in results if r.match_type.value.startswith("exact_")]
+    fuzzy = [r for r in results if not r.match_type.value.startswith("exact_")]
 
     result = perfect[0] if perfect else results[0]
     song_id = result.song_id

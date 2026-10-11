@@ -407,9 +407,10 @@ async def test_natural_language_groups_confirmed_works_and_selects_in_one_reply(
     _finish_capture(monkeypatch, natural_language, responses)
     search_all = natural_language.lxns_client.catalog.search_all
 
-    async def search(query):
-        queries.append(query)
-        return await search_all(query)
+    async def search(query, **kwargs):
+        if not kwargs:
+            queries.append(query)
+        return await search_all(query, **kwargs)
     async def ack(*_args, **_kwargs):
         pass
     async def sites():

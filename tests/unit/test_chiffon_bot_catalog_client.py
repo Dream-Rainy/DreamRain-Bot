@@ -25,6 +25,224 @@ class _Logger:
         pass
 
 
+@pytest.mark.asyncio
+async def test_cross_game_vector_checks_are_bounded_and_keep_only_unverified_text(loaded_chiffon_bot, monkeypatch):
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    catalog = _catalog(loaded_chiffon_bot)
+    games = [f"game{i}" for i in range(6)]
+    rows = [SongQueryResult(i, "Example", MatchType.BM25, 95, "query", SongData(
+                id=i, title="Example", game_code=game, work_id=f"work{i}")) for i, game in enumerate(games)]
+    active = peak = 0
+    calls = []
+    async def skip(*args, **kwargs):
+        return None
+    async def vectors(catalog, game, query, **kwargs):
+        nonlocal active, peak
+        calls.append(game)
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return None if game == games[0] else []
+    monkeypatch.setattr(module, "rerank_song_results", skip)
+    monkeypatch.setattr(module, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(module, "reranker_enabled", lambda: False)
+    monkeypatch.setattr(module, "search_song_by_embedding", vectors)
+    assert await catalog._validate_results("unsupported query", rows, games) == rows[:1]
+    assert peak == 2 and sorted(calls) == games
+
+
+@pytest.mark.asyncio
+async def test_same_work_entries_do_not_trigger_ambiguity_models(loaded_chiffon_bot, monkeypatch):
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    catalog = _catalog(loaded_chiffon_bot)
+    rows = [SongQueryResult(i, "Example", MatchType.BM25, 95, "query", SongData(
+                id=i, title="Example", game_code=game, work_id="confirmed-work")) for i, game in enumerate(("sdvx", "ongeki"))]
+    calls = []
+    async def forbidden(*args, **kwargs):
+        calls.append(args)
+        return []
+    monkeypatch.setattr(module, "rerank_song_results", forbidden)
+    monkeypatch.setattr(module, "search_song_by_embedding", forbidden)
+    assert await catalog._validate_results("composer example", rows, ["sdvx", "ongeki"]) == rows
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_short_catalog_queries_never_invoke_models(loaded_chiffon_bot, monkeypatch):
+    from types import SimpleNamespace
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    catalog = _catalog(loaded_chiffon_bot)
+
+    async def no_text(*args, **kwargs):
+        return []
+
+    calls = []
+
+    async def forbidden(*args, **kwargs):
+        calls.append(args)
+        return []
+
+    catalog.search = SimpleNamespace(search_candidates=no_text)
+    monkeypatch.setattr(module, "search_song_by_embedding", forbidden)
+    monkeypatch.setattr(module, "rerank_song_results", forbidden)
+    for query in ("ｔｅｔｏ", "测", "qby", "zzzz"):
+        assert await catalog.search_song("sdvx", query) == []
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_model_rejection_never_restores_bm25(loaded_chiffon_bot, monkeypatch):
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    catalog = _catalog(loaded_chiffon_bot)
+    songs = [SongData(id=1, title="First"), SongData(id=2, title="Second")]
+    candidates = [SongQueryResult(s.id, s.title, MatchType.BM25, 95, s.title, s) for s in songs]
+
+    async def reject(*args, **kwargs):
+        return []
+
+    calls = []
+    async def forbidden(*args, **kwargs):
+        calls.append(args)
+        return candidates
+
+    monkeypatch.setattr(module, "rerank_song_results", reject)
+    monkeypatch.setattr(module, "search_song_by_embedding", forbidden)
+    assert await catalog._validate_results("unsupported query", candidates, ["sdvx"]) == []
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_failed_text_reranker_is_not_called_again_for_novel_vector_candidates(loaded_chiffon_bot, monkeypatch):
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    catalog = _catalog(loaded_chiffon_bot)
+    rows = [SongQueryResult(i, f"Text {i}", MatchType.BM25, 95, "query", SongData(id=i, title=f"Text {i}")) for i in (1, 2)]
+    novel = SongQueryResult(3, "Other work", MatchType.EMBEDDING, 99, "query", SongData(id=3, title="Other work"))
+    calls = []
+    async def fail(*args):
+        calls.append(args)
+        raise RuntimeError("offline")
+    async def vectors(*args, **kwargs):
+        return [novel]
+    monkeypatch.setattr(module, "rerank_song_results", fail)
+    monkeypatch.setattr(module, "search_song_by_embedding", vectors)
+    monkeypatch.setattr(module, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(module, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(module, "reranker_threshold", lambda: 0.6)
+    assert await catalog._validate_results("query words", rows, ["sdvx"]) == []
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offline", [False, True])
+async def test_embedding_rejection_and_failure_are_distinct(loaded_chiffon_bot, monkeypatch, offline):
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    catalog = _catalog(loaded_chiffon_bot)
+    songs = [SongData(id=1, title="First"), SongData(id=2, title="Second")]
+    candidates = [SongQueryResult(s.id, s.title, MatchType.BM25, 95, s.title, s) for s in songs]
+
+    async def skipped(*args, **kwargs):
+        return None
+
+    async def embedding(*args, **kwargs):
+        assert kwargs == {"hydrate": False, "internal_ids": False}
+        if offline:
+            raise RuntimeError("service offline")
+        return []
+
+    monkeypatch.setattr(module, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(module, "rerank_song_results", skipped)
+    monkeypatch.setattr(module, "search_song_by_embedding", embedding)
+    assert await catalog._validate_results("query words", candidates, ["sdvx"]) == (candidates if offline else [])
+
+
+@pytest.mark.asyncio
+async def test_missing_embedding_cache_preserves_validated_text(loaded_chiffon_bot, monkeypatch, tmp_path):
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    from src.plugins.chiffon_bot.shared.search import embedding_cache as cache
+    catalog = _catalog(loaded_chiffon_bot)
+    songs = [SongData(id=1, title="First"), SongData(id=2, title="Second")]
+    candidates = [SongQueryResult(s.id, s.title, MatchType.BM25, 95, s.title, s) for s in songs]
+
+    async def skipped(*args, **kwargs):
+        return None
+
+    async def revision():
+        return 1
+
+    async def embedding(*args, **kwargs):
+        return await cache.search_song_by_embedding(*args, path=tmp_path / "absent.jsonl", **kwargs)
+
+    monkeypatch.setattr(catalog, "get_revision", revision)
+    monkeypatch.setattr(module, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(cache, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(module, "rerank_song_results", skipped)
+    monkeypatch.setattr(module, "search_song_by_embedding", embedding)
+    assert await catalog._validate_results("query words", candidates, ["sdvx"]) == candidates
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query_vector", [[1.0, 0.0], [0.0, 1.0]])
+async def test_embedding_revision_change_invalidates_acceptance_and_rejection(monkeypatch, tmp_path, query_vector):
+    from types import SimpleNamespace
+    from src.plugins.chiffon_bot.shared.search import embedding_cache as cache
+
+    current_revision = 1
+
+    async def revision():
+        return current_revision
+
+    async def song(*args):
+        return SongData(id=1, title="First")
+
+    async def embed(texts):
+        nonlocal current_revision
+        current_revision = 2
+        return [query_vector]
+
+    path = tmp_path / "embeddings.jsonl"
+    path.write_text(json.dumps({"game": "sdvx", "song_id": 1, "vector": [1.0, 0.0],
+                                "revision": 1, "model": "test", "endpoint": "test"}), encoding="utf-8")
+    monkeypatch.setattr(cache, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(cache, "embedding_model", lambda: "test")
+    monkeypatch.setattr(cache, "embedding_endpoint", lambda: "test")
+    catalog = SimpleNamespace(get_revision=revision, get_song_by_id=song)
+    assert await cache.search_song_by_embedding(catalog, "sdvx", "query", path=path, embedder=embed, threshold=80) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("threshold", [0.0, 0.6])
+async def test_pure_semantic_candidates_require_positive_gate(loaded_chiffon_bot, monkeypatch, threshold):
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    catalog = _catalog(loaded_chiffon_bot)
+    song = SongData(id=1, title="Example")
+    candidates = [SongQueryResult(1, song.title, MatchType.EMBEDDING, 90, "query", song)]
+    calls = []
+
+    async def embedding(*args, **kwargs):
+        calls.append("embedding")
+        return candidates
+
+    async def reject(*args, **kwargs):
+        calls.append("reranker")
+        return []
+
+    monkeypatch.setattr(module, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(module, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(module, "reranker_threshold", lambda: threshold)
+    monkeypatch.setattr(module, "search_song_by_embedding", embedding)
+    monkeypatch.setattr(module, "rerank_song_results", reject)
+    assert await catalog._validate_results("unrelated query", [], ["sdvx"]) == []
+    assert calls == (["embedding", "reranker"] if threshold else [])
+
+
 async def _get_json(_url: str, **_kwargs: Any) -> dict[str, Any]:
     return {}
 
@@ -411,58 +629,27 @@ async def test_bot_catalog_search_uses_embedding_fallback(
 ) -> None:
     import src.plugins.chiffon_bot.integrations.lxns.catalog as catalog_module
     from src.plugins.chiffon_bot.integrations.lxns.catalog import BotCatalogClient
+    from arcade_helper.search import MatchType, SongQueryResult
 
-    class _Service:
-        async def search_song(self, game_code: str, query: str | int):
-            return []
+    song = SongData(id=1005, title="Blue Noise", aliases=[])
+    semantic = [SongQueryResult(song.id, song.title, MatchType.EMBEDDING, 90, "query", song)]
 
-        async def get_song_by_id(self, game_code: str, song_id: int):
-            return None
+    async def fake_embedding(catalog, game_code: str, query: str, **kwargs):
+        return semantic
 
-        async def load_all_songs(self, game_code: str):
-            return {}
-
-        async def load_song_index(self, game_code: str) -> dict[int, str]:
-            return {}
-
-        async def query_alias_exact(self, game_code: str, alias_lower: str) -> list[tuple[int, str]]:
-            return []
-
-        async def load_alias_records(self, game_code: str) -> list[tuple[int, str]]:
-            return []
-
-        async def get_song_aliases_for_song_id(self, game_code: str, song_id: int) -> list[str]:
-            return []
-
-        async def get_song_with_difficulty(
-            self,
-            game_code: str,
-            song_id: int,
-            song_type: str = "standard",
-            level_index: int = 3,
-        ) -> dict | None:
-            return None
-
-        def invalidate_search_cache(self, game_code: str) -> None:
-            pass
-
-    class _Data:
-        def __init__(self) -> None:
-            self.catalog = _Service()
-
-    async def fake_embedding(catalog, game_code: str, query: str):
-        return ["embedding-result"]
+    async def confirm(catalog, game_code, query, candidates):
+        assert candidates == semantic
+        return candidates
 
     monkeypatch.setattr(catalog_module, "search_song_by_embedding", fake_embedding)
+    monkeypatch.setattr(catalog_module, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(catalog_module, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(catalog_module, "reranker_threshold", lambda: 0.6)
+    monkeypatch.setattr(catalog_module, "rerank_song_results", confirm)
 
-    catalog = BotCatalogClient(
-        _Data(),  # type: ignore[arg-type]
-        song_store=object(),  # type: ignore[arg-type]
-        logger=_Logger(),
-        auto_sync_enabled=False,
-    )
+    catalog = _catalog(loaded_chiffon_bot)
 
-    assert await catalog.search_song("maimai", "semantic miss") == ["embedding-result"]
+    assert await catalog._validate_results("semantic miss", [], ["maimai"]) == semantic
 
 
 @pytest.mark.asyncio
@@ -484,28 +671,17 @@ async def test_bot_catalog_search_defers_uncertain_bm25_to_embedding(
         SongQueryResult(1006, "Red Noise", MatchType.EMBEDDING, 96.0, "semantic miss", red_noise),
     ]
 
-    class _Search:
-        async def search_song(self, query: str | int, *, game_code: str):
-            return bm25_results
-
-    class _Data:
-        catalog = object()
-
     async def fake_embedding(catalog, game_code: str, query: str, **kwargs):
-        assert kwargs == {"threshold": 55.0, "min_margin": 4.0}
+        assert kwargs == {"hydrate": False, "internal_ids": False}
         return embedding_results
 
     monkeypatch.setattr(catalog_module, "search_song_by_embedding", fake_embedding)
+    monkeypatch.setattr(catalog_module, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(catalog_module, "reranker_enabled", lambda: False)
 
-    catalog = BotCatalogClient(
-        _Data(),  # type: ignore[arg-type]
-        song_store=object(),  # type: ignore[arg-type]
-        logger=_Logger(),
-        auto_sync_enabled=False,
-    )
-    catalog.search = _Search()  # type: ignore[assignment]
+    catalog = _catalog(loaded_chiffon_bot)
 
-    assert await catalog.search_song("popn", "semantic miss") == embedding_results
+    assert await catalog._validate_results("semantic miss", bm25_results, ["popn"]) == embedding_results
 
 
 @pytest.mark.asyncio
@@ -524,13 +700,6 @@ async def test_bot_catalog_search_defers_uncertain_bm25_to_reranker(
         SongQueryResult(1006, "Red Noise", MatchType.BM25, 94.0, "Red Noise", red_noise),
     ]
 
-    class _Search:
-        async def search_song(self, query: str | int, *, game_code: str):
-            return bm25_results
-
-    class _Data:
-        catalog = object()
-
     async def fake_reranker(catalog, game_code: str, query: str, results):
         assert results == bm25_results
         return [bm25_results[1]]
@@ -541,15 +710,9 @@ async def test_bot_catalog_search_defers_uncertain_bm25_to_reranker(
     monkeypatch.setattr(catalog_module, "rerank_song_results", fake_reranker)
     monkeypatch.setattr(catalog_module, "search_song_by_embedding", fake_embedding)
 
-    catalog = BotCatalogClient(
-        _Data(),  # type: ignore[arg-type]
-        song_store=object(),  # type: ignore[arg-type]
-        logger=_Logger(),
-        auto_sync_enabled=False,
-    )
-    catalog.search = _Search()  # type: ignore[assignment]
+    catalog = _catalog(loaded_chiffon_bot)
 
-    assert await catalog.search_song("popn", "semantic miss") == [bm25_results[1]]
+    assert await catalog._validate_results("semantic miss", bm25_results, ["popn"]) == [bm25_results[1]]
 
 
 @pytest.mark.asyncio

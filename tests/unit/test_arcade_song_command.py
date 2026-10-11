@@ -18,6 +18,32 @@ def test_parse_arcade_song_args():
     assert parse_arcade_song_args("sdvx") is None
 
 
+@pytest.mark.asyncio
+async def test_high_fuzzy_score_does_not_bypass_multiple_choice(monkeypatch):
+    from dataclasses import replace
+    from src.plugins.chiffon_bot.app.commands.arcade import build_arcade_song_response
+    from src.plugins.chiffon_bot.shared.search.result_message import build_fuzzy_list_message
+    from src.plugins.chiffon_bot.shared.handlers import generic_song_info as module
+
+    first = replace(_song_result(), match_type=MatchType.FUZZY_TITLE, match_score=100)
+    second = replace(_song_result(), song_id=1499, match_type=MatchType.FUZZY_ALIAS, match_score=90)
+    candidates = [first, second]
+
+    async def text(*args, **kwargs):
+        return candidates
+
+    class Adapter:
+        game_code, display_name = "sdvx", "sdvx"
+
+        async def render_song_image(self, song):
+            raise AssertionError("ambiguous fuzzy matches must require selection")
+
+    monkeypatch.setattr(module, "search_song_with_audit", text)
+    assert build_fuzzy_list_message(candidates, 123) is not None
+    assert "多个结果" in (await build_arcade_song_response("sdvx", candidates, 123)).text
+    assert "多个结果" in (await module.generic_song_info("query", "user", 123, Adapter())).text
+
+
 def test_format_arcade_song_detail():
     from src.plugins.chiffon_bot.shared.handlers.song_text import (
         format_song_text_detail,

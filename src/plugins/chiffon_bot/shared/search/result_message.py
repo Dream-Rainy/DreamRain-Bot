@@ -42,7 +42,7 @@ def build_fuzzy_list_message(
     if not results:
         return BotResponse(text=not_found_text, reply_to=message_id)
 
-    perfect = [r for r in results if r.match_score == 100.0]
+    perfect = [r for r in results if r.match_type.value.startswith("exact_")]
 
     if len(perfect) > 1 or (len(perfect) == 0 and len(results) > 1):
         lines = ["找到多个结果，请使用明确的歌曲 ID 查询：\n"]

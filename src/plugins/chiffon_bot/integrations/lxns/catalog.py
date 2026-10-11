@@ -9,8 +9,10 @@ from time import monotonic
 from typing import Any
 
 from arcade_helper import ArcadeHelperClient
-from arcade_helper.aliases.models import alias_key
-from arcade_helper.search import MatchType, SongQueryResult, SongSearchService
+from arcade_helper.aliases.models import alias_key, AliasCandidate, AliasResolution
+from arcade_helper.core.song import SongData
+from arcade_helper.core.song_identity import parse_chart_title
+from arcade_helper.search import MatchType, SongQueryResult, SongSearchService, is_short_song_query
 from arcade_helper.storage.tortoise import TortoiseSongStore
 from arcade_helper.storage.tortoise.catalog_models import SongReference, CatalogImport, GameSong
 
@@ -21,19 +23,22 @@ from ...shared.search.embedding_cache import (
     search_song_by_embedding,
     embedding_enabled, embedding_model, embedding_endpoint, _stop_query_tasks,
 )
-from ...shared.search.reranker import rerank_song_results
+from ...shared.search.reranker import rerank_song_results, reranker_enabled, reranker_threshold, song_work_key
 from .plugin_data import plugin_data
 
 
 _DB_GAME_CODES = {"maimai", "chunithm"}
-_UNCERTAIN_BM25_EMBEDDING_THRESHOLD = 55.0
 _UNCERTAIN_BM25_EMBEDDING_MIN_MARGIN = 4.0
 
 
-def _is_uncertain_bm25(results: list[SongQueryResult]) -> bool:
-    if len(results) < 2 or results[0].match_type is not MatchType.BM25:
+def _is_uncertain_bm25(results: list[SongQueryResult], game_code=None) -> bool:
+    works = {}
+    for result in sorted(results, key=lambda r: r.match_score, reverse=True):
+        works.setdefault(song_work_key(result, game_code), result)
+    ranked = list(works.values())
+    if len(ranked) < 2 or ranked[0].match_type is not MatchType.BM25:
         return False
-    return (results[0].match_score - results[1].match_score) < 8.0
+    return (ranked[0].match_score - ranked[1].match_score) < 8.0
 
 
 class BotCatalogClient:
@@ -105,6 +110,8 @@ class BotCatalogClient:
         return songs.get(song_id)
 
     async def get_songs_by_ids(self, game_code: str, song_ids: list[int]):
+        if not song_ids:
+            return {}
         if self._uses_db_catalog(game_code) or self.aliases_enabled:
             batch = getattr(self.service, "get_songs_by_ids", None)
             if batch is not None:
@@ -123,34 +130,82 @@ class BotCatalogClient:
         game_code: str,
         query: str | int,
     ) -> list[SongQueryResult]:
-        results = await self.search.search_song(query, game_code=game_code)
-        # The bot owns revision-checked semantic search. Library-local JSONL
-        # vectors have no catalog generation and must not bypass that check.
-        results = [r for r in results if getattr(r, "match_type", None) is not MatchType.EMBEDDING]
-        if isinstance(query, int):
+        if self.aliases_enabled:
+            resolution = await self.search_all(str(query), game_code=game_code, allow_semantic=not isinstance(query, int))
+            candidates = resolution.candidates
+            if not candidates:
+                return []
+            ids = await self.public_song_ids([(game_code, c.game_song_id) for c in candidates])
+            songs = await self.get_songs_by_ids(game_code, [ids[(game_code, c.game_song_id)] for c in candidates])
+            return [SongQueryResult(ids[(game_code, c.game_song_id)], c.title, MatchType(c.match_type), c.score,
+                                    c.matched_text, songs[ids[(game_code, c.game_song_id)]])
+                    for c in candidates if ids[(game_code, c.game_song_id)] in songs]
+        results = await self.search.search_candidates(query, game_code=game_code)
+        results = await self._validate_results(query, results, [game_code])
+        songs = await self.get_songs_by_ids(game_code, [r.song_id for r in results])
+        return [replace(r, song_data=songs[r.song_id], title=songs[r.song_id].title) for r in results if r.song_id in songs]
+
+    async def _validate_results(self, query: str | int, results: list[SongQueryResult], games: list[str]) -> list[SongQueryResult]:
+        """One acceptance policy for scoped and cross-game text candidates."""
+        game_code = games[0] if len(games) == 1 else None
+        if isinstance(query, int) or is_short_song_query(query):
             return results
-        if results and not _is_uncertain_bm25(results):
+        if results and not _is_uncertain_bm25(results, game_code):
             return results
+        reranker_attempted = bool(results and reranker_enabled())
         if results:
             try:
                 reranked_results = await rerank_song_results(self, game_code, str(query), results)
             except Exception as e:
                 self.logger.warning(f"[{game_code}] reranker 搜索失败，已跳过: {e}")
             else:
-                if reranked_results:
+                if reranked_results is not None:
                     return reranked_results
-        kwargs = {}
-        if results:
-            kwargs = {
-                "threshold": _UNCERTAIN_BM25_EMBEDDING_THRESHOLD,
-                "min_margin": _UNCERTAIN_BM25_EMBEDDING_MIN_MARGIN,
-            }
-        try:
-            embedding_results = await search_song_by_embedding(self, game_code, str(query), **kwargs)
-        except Exception as e:
-            self.logger.warning(f"[{game_code}] embedding 搜索失败，已跳过: {e}")
+        if not embedding_enabled():
             return results
-        return embedding_results or results
+        semantic_acceptance = not reranker_attempted and reranker_enabled() and reranker_threshold() > 0
+        if not results and not semantic_acceptance:
+            return []
+        semaphore = asyncio.Semaphore(2)
+        async def find(game):
+            async with semaphore:
+                try:
+                    rows = await search_song_by_embedding(self, game, str(query), hydrate=False, internal_ids=self.aliases_enabled)
+                    markers = parse_chart_title(str(query))[1]
+                    if rows is not None and markers:
+                        rows = [r for r in rows if tuple(r.song_data.chart_variant or ()) == markers]
+                    return game, rows
+                except Exception as e:
+                    self.logger.warning(f"[{game}] embedding 搜索失败，已跳过: {e}")
+                    return game, None
+        by_game = dict(await asyncio.gather(*(find(game) for game in games)))
+        unverified = [r for r in results if by_game.get(getattr(r.song_data, "game_code", None) or game_code) is None]
+        embedding_results = sorted([r for rows in by_game.values() if rows is not None for r in rows],
+                                   key=lambda r: r.match_score, reverse=True)
+        if not embedding_results:
+            return unverified
+        if results:
+            works = {}
+            for row in embedding_results:
+                works.setdefault(song_work_key(row, game_code), row)
+            ranked = list(works.values())
+            if len(ranked) > 1 and ranked[0].match_score - ranked[1].match_score < _UNCERTAIN_BM25_EMBEDDING_MIN_MARGIN:
+                return unverified
+            best = song_work_key(ranked[0], game_code)
+            embedding_results = [r for r in embedding_results if song_work_key(r, game_code) == best]
+        text_works = {song_work_key(result, game_code) for result in results}
+        supported = [result for result in embedding_results if song_work_key(result, game_code) in text_works]
+        if supported:
+            seen = {(getattr(r.song_data, "game_code", None) or game_code, r.song_id) for r in supported}
+            return supported + [r for r in unverified if (getattr(r.song_data, "game_code", None) or game_code, r.song_id) not in seen]
+        if not semantic_acceptance:
+            return unverified
+        try:
+            accepted = await rerank_song_results(self, game_code, str(query), embedding_results)
+            return unverified if accepted is None else accepted
+        except Exception as e:
+            self.logger.warning(f"[{game_code}] 语义候选验证失败: {e}")
+            return unverified
 
     async def rebuild_search_embeddings(self, game_code: str) -> dict[str, Any]:
         gc = str(game_code).strip().lower()
@@ -266,9 +321,50 @@ class BotCatalogClient:
         method = getattr(self.service, "get_revision", None)
         return await method() if method else None
 
-    async def search_all(self, query: str):
-        result = await self.service.search_all(query)
-        return replace(result, candidates=tuple(c for c in result.candidates if c.match_type != "embedding"))
+    async def search_all(self, query: str, *, game_code: str | None = None, allow_semantic: bool = True):
+        """Unified persistent query core; alias targets request text-only resolution."""
+        if query == "":
+            return AliasResolution("unknown", game_code, "candidates_require_choice", ())
+        validate = allow_semantic and not is_short_song_query(query) and (reranker_enabled() or embedding_enabled())
+        for _ in range(3):
+            before = await self.get_revision() if validate else None
+            result = await self.service.search_all(query, game_code=game_code, text_only=True)
+            candidates = tuple(c for c in result.candidates if c.match_type != "embedding")
+            exact = tuple(c for c in candidates if c.match_type.startswith("exact_"))
+            if exact:
+                candidates = exact
+            elif any(c.match_type != "bm25" for c in candidates):
+                candidates = tuple(c for c in candidates if c.match_type != "bm25")
+            if not validate or exact:
+                return replace(result, candidates=candidates)
+            rows = [SongQueryResult(c.game_song_id, c.title, MatchType(c.match_type), c.score, c.matched_text,
+                    SongData(id=c.game_song_id, title=c.title, work_id=c.work_id, game_code=c.game_code)) for c in candidates]
+            if rows and not _is_uncertain_bm25(rows, game_code):
+                return replace(result, candidates=candidates)
+            if not rows and not (embedding_enabled() and reranker_enabled() and reranker_threshold() > 0):
+                return replace(result, candidates=())
+            games = ([game_code] if game_code else
+                     sorted(await GameSong.filter(active=True).distinct().values_list("game_code", flat=True)))
+            if _is_uncertain_bm25(rows, game_code) and reranker_enabled():
+                # Only ambiguous text needs richer documents; these remain payload-free.
+                for game in {c.game_code for c in candidates}:
+                    metadata = await self.service.identities.get_search_songs_by_ids(game,
+                                   [c.game_song_id for c in candidates if c.game_code == game])
+                    rows = [replace(r, song_data=metadata[r.song_id]) if r.song_data.game_code == game and r.song_id in metadata else r for r in rows]
+            accepted = await self._validate_results(query, rows, games)
+            originals = {(c.game_code, c.game_song_id): c for c in candidates}
+            selected = []
+            for row in accepted:
+                song = row.song_data
+                key = (song.game_code, row.song_id)
+                original = originals.get(key)
+                selected.append(replace(original, match_type=row.match_type.value, score=row.match_score) if original else
+                    AliasCandidate(row.song_id, str(song.work_id), song.game_code, row.title, row.matched_text,
+                                   row.match_type.value, row.match_score, chart_variant=song.chart_variant))
+            if await self.get_revision() == before:
+                return AliasResolution("explicit" if game_code else "ambiguous" if selected else "unknown", game_code,
+                                       "explicit_game" if game_code else "candidates_require_choice", tuple(selected))
+        raise ValueError("曲库在查询期间连续变化，请重试")
 
     async def internal_song_id(self, game_code: str, song_id: int) -> int:
         game_code = str(game_code).strip().lower()
@@ -508,7 +604,8 @@ class BotCatalogClient:
         generation = (getattr(identities, "_db", None), revision, embedding_endpoint(), embedding_model())
         for game in sorted(games):
             try:
-                await self.search._warm_search_index(game)
+                search = identities.text_search if self.aliases_enabled else self.search
+                await search._warm_search_index(game)
             except Exception as exc:
                 self.logger.warning(f'[{game}] 后台文本索引更新失败，稍后重试: {exc}')
             if not embedding_enabled():
@@ -563,6 +660,8 @@ class BotCatalogClient:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._auto_sync_task = self._cache_task = None
         await self.search._stop_index_builds()
+        if self.aliases_enabled:
+            await self.service.identities.text_search._stop_index_builds()
         await _stop_query_tasks()
 
 
