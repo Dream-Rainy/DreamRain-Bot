@@ -10,6 +10,14 @@ from ..orm import get_session
 from ..orm.models import SL, Subscribe, Tree, Apply, Record
 from ..util.tools import load_config, lap2stage
 from .base import clan_path
+from .period import get_period
+
+
+async def clear_period_registrations(group_id: int) -> None:
+    async with get_session() as sess:
+        for model in (Subscribe, Tree, Apply):
+            await sess.execute(delete(model).where(model.group_id == group_id))
+        await sess.commit()
 
 
 async def clear_group_data(group_id: int) -> None:
@@ -364,8 +372,28 @@ def _row_to_record(d: tuple) -> Record:
 
 
 class RecordDao:
-    def __init__(self, group_id: int):
+    def __init__(self, group_id: int, period=None):
         self.group_id = group_id
+        self.period = period
+
+    async def _bounds(self):
+        if self.period is None:
+            self.period = await get_period()
+        return Record.time >= self.period.start, Record.time < self.period.end
+
+    async def get_report_records(self, start_ts: int, end_ts: int):
+        async with get_session() as sess:
+            result = await sess.execute(
+                select(
+                    Record.pcrid, Record.name, Record.time, Record.lap,
+                    Record.boss, Record.flag, Record.battle_log_id, Record.damage,
+                ).where(
+                    Record.group_id == self.group_id,
+                    Record.time >= start_ts,
+                    Record.time < end_ts,
+                ).order_by(Record.time, Record.id)
+            )
+            return [dict(row) for row in result.mappings()]
 
     async def add_record(self, dao_list: list[tuple]):
         if not dao_list:
@@ -416,15 +444,17 @@ class RecordDao:
                     Record.unit5_unique_equip,
                 ).where(
                     Record.group_id == self.group_id,
+                    *(await self._bounds()),
                     Record.battle_log_id == battle_log_id,
                 )
             )
             return r.fetchone()
 
     async def get_player_records(self, name: str, day: int):
-        latest_time = await self.get_latest_time()
-        date = pcr_date(latest_time)
-        start_day = date - timedelta(days=day)
+        date = pcr_date(datetime.now().timestamp()) - timedelta(days=day)
+        await self._bounds()
+        start_ts = self.period.start if day >= 5 else date.timestamp()
+        end_ts = self.period.end if day >= 5 else (date + timedelta(days=1)).timestamp()
         async with get_session() as sess:
             r = await sess.execute(
                 select(
@@ -437,8 +467,9 @@ class RecordDao:
                 )
                 .where(
                     Record.group_id == self.group_id,
-                    Record.time >= start_day.timestamp(),
-                    Record.time <= latest_time,
+                    *(await self._bounds()),
+                    Record.time >= start_ts,
+                    Record.time < end_ts,
                     Record.name == name,
                 )
                 .order_by(Record.time.asc())
@@ -458,26 +489,11 @@ class RecordDao:
                 for row in rows
             ]
 
-    async def get_max_dao(self) -> int:
-        latest_time = await self.get_latest_time()
-        date = pcr_date(latest_time)
-        start_day = date - timedelta(days=5)
-        async with get_session() as sess:
-            r = await sess.execute(
-                select(func.min(Record.time)).where(
-                    Record.group_id == self.group_id,
-                    Record.time >= start_day.timestamp(),
-                    Record.time <= latest_time,
-                )
-            )
-            first_time = r.scalar_one_or_none()
-        time_val = first_time if first_time else 0
-        return (int((latest_time - time_val) // (3600 * 24)) + 1) * 3
+    async def get_max_dao(self, now=None) -> int:
+        await self._bounds()
+        return self.period.quota(datetime.now().timestamp() if now is None else now)
 
     async def get_all_records(self):
-        latest_time = await self.get_latest_time()
-        date = pcr_date(latest_time)
-        start_day = date - timedelta(days=5)
         async with get_session() as sess:
             r = await sess.execute(
                 select(
@@ -490,8 +506,7 @@ class RecordDao:
                 )
                 .where(
                     Record.group_id == self.group_id,
-                    Record.time >= start_day.timestamp(),
-                    Record.time <= latest_time,
+                    *(await self._bounds()),
                 )
             )
             rows = r.fetchall()
@@ -510,6 +525,7 @@ class RecordDao:
                 select(Record.damage)
                 .where(
                     Record.group_id == self.group_id,
+                    *(await self._bounds()),
                     Record.time >= start_ts,
                     Record.time <= latest_time,
                     Record.flag == 0,
@@ -529,14 +545,12 @@ class RecordDao:
         latest_time = await self.get_latest_time()
         if not latest_time:
             return None
-        date = pcr_date(latest_time)
-        start_day = date - timedelta(days=5)
         async with get_session() as sess:
             r = await sess.execute(
                 select(Record.lap, Record.boss, func.sum(Record.damage))
                 .where(
                     Record.group_id == self.group_id,
-                    Record.time >= start_day.timestamp(),
+                    *(await self._bounds()),
                     Record.time <= latest_time,
                 )
                 .group_by(Record.lap, Record.boss)
@@ -553,12 +567,13 @@ class RecordDao:
             }
 
     async def get_latest_records(self, pcrid: int, time_val: int):
-        start_day = pcr_date(datetime.now().timestamp())
+        start_day = pcr_date(time_val)
         async with get_session() as sess:
             r = await sess.execute(
                 select(Record.flag)
                 .where(
                     Record.group_id == self.group_id,
+                    *(await self._bounds()),
                     Record.pcrid == pcrid,
                     Record.time >= start_day.timestamp(),
                     Record.time < time_val,
@@ -583,6 +598,7 @@ class RecordDao:
                 )
                 .where(
                     Record.group_id == self.group_id,
+                    *(await self._bounds()),
                     Record.time >= date.timestamp(),
                     Record.time < tomorrow.timestamp(),
                 )
@@ -601,6 +617,7 @@ class RecordDao:
             r = await sess.execute(
                 select(func.sum(Record.damage)).where(
                     Record.group_id == self.group_id,
+                    *(await self._bounds()),
                     Record.lap == lap,
                     Record.boss == boss_str,
                     Record.pcrid == pcrid,
@@ -610,22 +627,15 @@ class RecordDao:
             return int(v) if v is not None else 0
 
     async def refresh(self):
-        date = pcr_date(datetime.now().timestamp())
-        cutoff = date - timedelta(days=28)
-        async with get_session() as sess:
-            await sess.execute(
-                delete(Record).where(
-                    Record.group_id == self.group_id,
-                    Record.time < cutoff.timestamp(),
-                )
-            )
-            await sess.commit()
+        # 历史战绩保留供出刀习惯统计；其他查询通过活动边界隔离。
+        return
 
     async def get_latest_time(self) -> int | float:
         async with get_session() as sess:
             r = await sess.execute(
                 select(func.max(Record.time)).where(
-                    Record.group_id == self.group_id
+                    Record.group_id == self.group_id,
+                    *(await self._bounds()),
                 )
             )
             v = r.scalar_one_or_none()
@@ -636,6 +646,7 @@ class RecordDao:
             r = await sess.execute(
                 select(Record.id).where(
                     Record.group_id == self.group_id,
+                    *(await self._bounds()),
                     Record.battle_log_id == battle_log_id,
                 )
             )
@@ -644,6 +655,7 @@ class RecordDao:
                     update(Record)
                     .where(
                         Record.group_id == self.group_id,
+                        *(await self._bounds()),
                         Record.battle_log_id == battle_log_id,
                     )
                     .values(flag=item)
@@ -663,6 +675,7 @@ class RecordDao:
                         r = await sess.execute(
                             select(Record.id).where(
                                 Record.group_id == self.group_id,
+                                *(await self._bounds()),
                                 Record.time == time_v,
                             )
                         )
@@ -671,6 +684,7 @@ class RecordDao:
                                 update(Record)
                                 .where(
                                     Record.group_id == self.group_id,
+                                    *(await self._bounds()),
                                     Record.time == time_v,
                                 )
                                 .values(flag=flag, damage=damage)
@@ -685,16 +699,15 @@ class RecordDao:
         async with get_session() as sess:
             r = await sess.execute(
                 select(func.max(Record.time)).where(
-                    Record.group_id == self.group_id
+                    Record.group_id == self.group_id,
+                    *(await self._bounds()),
                 )
             )
             latest_time = r.scalar_one_or_none() or 0
-            date = pcr_date(latest_time)
-            start_day = date - timedelta(days=5)
             r2 = await sess.execute(
                 select(Record.pcrid, Record.name).where(
                     Record.group_id == self.group_id,
-                    Record.time >= start_day.timestamp(),
+                    *(await self._bounds()),
                     Record.time <= latest_time,
                 )
             )
@@ -707,6 +720,7 @@ class RecordDao:
                                 update(Record)
                                 .where(
                                     Record.group_id == self.group_id,
+                                    *(await self._bounds()),
                                     Record.pcrid == pcrid,
                                 )
                                 .values(name=nm)

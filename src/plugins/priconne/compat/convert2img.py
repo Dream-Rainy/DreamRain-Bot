@@ -12,7 +12,7 @@ FONT_PATH = _PLUGIN_ROOT / "fonts" / "SourceHanSansCN-Medium.otf"
 
 
 def _load_font(size: int = 24):
-    return get_font(size, [str(FONT_PATH), "arial.ttf"])
+    return get_font(size, [str(FONT_PATH)])
 
 
 def _to_str_rows(data: Iterable[Iterable[object]]) -> list[list[str]]:

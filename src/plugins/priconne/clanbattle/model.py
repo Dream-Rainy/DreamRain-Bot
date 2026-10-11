@@ -1,8 +1,11 @@
 import os
+import asyncio
 import traceback
+from time import time as timestamp
 from nonebot import logger
 from .base import CancleError, find_item, format_bignum, format_precent, clan_path
-from .sql import RecordDao, SubscribeDao, TreeDao, ApplyDao
+from .sql import RecordDao, SubscribeDao, TreeDao, ApplyDao, clear_period_registrations
+from .period import get_period
 from ..util.tools import load_config, write_config, lap2stage, stage_dict
 from ..pcrclient import ApiException
 
@@ -17,6 +20,8 @@ class ClanBattle:
         self.error_count = 0  # 失败计数
         self.loop_check = False  # 循环检查
         self.group_id = group_id
+        self.event = None
+        self.record_sync_lock = asyncio.Lock()
         self.notice_dao = []
         self.notice_tree = []
         self.notice_fighter = []
@@ -25,7 +30,7 @@ class ClanBattle:
         self.boss = [Boss(), Boss(), Boss(), Boss(), Boss()]
 
     def init_database(self):
-        self.record = RecordDao(self.group_id)
+        self.record = RecordDao(self.group_id, self.event)
         self.subscribe = SubscribeDao(self.group_id)
         self.tree = TreeDao(self.group_id)
         self.apply = ApplyDao(self.group_id)
@@ -39,16 +44,35 @@ class ClanBattle:
             home_index = await self.client.callapi('/home/index', {'message_id': 1, 'tips_id_list': [], 'is_first': 1, 'gold_history': 0})
             self.clan_id = home_index['user_clan']['clan_id']
             clan_battle_top = await self.get_clanbattle_top()
-            self.clan_battle_id = clan_battle_top["clan_battle_id"]
+            self.init_database()
+            await self.bind_period(clan_battle_top["clan_battle_id"])
             self.lap_num = clan_battle_top["lap_num"]
             self.period = stage_dict[lap2stage(self.lap_num)]
             self.refresh_latest_time(clan_battle_top)
-            self.init_database()
             # 记录群成员
             await self.save_member(os.path.join(clan_path, f'{self.group_id}', "clanbattle.json"))
         except Exception as e:
             print(traceback.format_exc())
             raise Exception(f"数据库初始化失败 + {str(e)}")
+
+    async def bind_period(self, event_id):
+        if self.event is not None and self.event.id == event_id:
+            return
+        event = await get_period(event_id=event_id)
+        path = os.path.join(clan_path, str(self.group_id), "clanbattle.json")
+        config = await load_config(path) or {}
+        if config.get("clan_battle_id") != event.id:
+            await clear_period_registrations(self.group_id)
+            self.boss = [Boss(), Boss(), Boss(), Boss(), Boss()]
+            for notices in (self.notice_dao, self.notice_tree, self.notice_fighter,
+                            self.notice_subscribe, self.notice_coop):
+                notices.clear()
+            self.latest_time = event.start - 1
+            config.update(clan_battle_id=event.id, battle_start=event.start, battle_end=event.end - 1)
+            await write_config(path, config)
+        self.event = event
+        self.clan_battle_id = event.id
+        self.record = RecordDao(self.group_id, event)
 
     async def rebind_client(self, client):
         self.client = client
@@ -108,6 +132,11 @@ class ClanBattle:
             member_dict[member["name"]] = member["viewer_id"]
         config = dict(await load_config(config_file))
         config["member"] = member_dict
+        config["member_by_id"] = {
+            str(member["viewer_id"]): member["name"]
+            for member in members["clan"]["members"]
+        }
+        config["member_updated_at"] = int(timestamp())
         await write_config(config_file, config)
 
     async def refresh_fighter_num(self, lap_num, order):
@@ -117,6 +146,8 @@ class ClanBattle:
                 reload_detail_info = await self.client.callapi('/clan_battle/reload_detail_info',
                                                                {"clan_id": self.clan_id, "clan_battle_id": self.clan_battle_id, "lap_num": lap_num, "order_num": order})
                 reload_detail_info["fighter_num"]
+                boss.fighter_updated_at = timestamp()
+                boss.fighter_lap = lap_num
                 if reload_detail_info["fighter_num"] != boss.fighter_num:
                     boss.fighter_num = reload_detail_info["fighter_num"]
                     return reload_detail_info["fighter_num"]
@@ -138,18 +169,42 @@ class ClanBattle:
         )
 
     async def add_record(self, damage_history, loop_num):
+        async with self.record_sync_lock:
+            return await self._add_record(damage_history, loop_num)
+
+    async def sync_final_records(self, period):
+        if self.event is None or self.event.id != period.id:
+            return False
+        loop_num = self.loop_num
+        try:
+            top = await self.get_clanbattle_top()
+        except Exception:
+            top = {}
+        if top.get("clan_battle_id") not in (None, 0, period.id) or loop_num != self.loop_num:
+            return False
+        return await self.add_record(top.get("damage_history", []), loop_num)
+
+    async def _add_record(self, damage_history, loop_num):
         log_list = []
         dao_list = []
         try:
+            if loop_num != self.loop_num:
+                raise CancleError
             log_temp = await self.get_battle_log(1)  # 获取最大页数
             if not log_temp["battle_list"]:
-                return  # 数据空
+                if loop_num != self.loop_num:
+                    raise CancleError
+                return True
 
             max_page = log_temp["max_page"]
             latest_time = await self.record.get_latest_time()
+            seen = set()
+            if latest_time and self.event is not None:
+                recent = await self.record.get_report_records(latest_time, self.event.end)
+                seen = {(str(row["pcrid"]), row["battle_log_id"]) for row in recent}
             for page in range(max_page, 0, -1):
                 log = await self.get_battle_log(page)
-                if log["battle_list"][-1]["battle_end_time"] > latest_time:
+                if log["battle_list"][-1]["battle_end_time"] >= latest_time:
                     log_list += log["battle_list"][::-1]
                 else:
                     break
@@ -158,7 +213,12 @@ class ClanBattle:
                 if loop_num != self.loop_num:
                     raise CancleError
 
-                if (time := record["battle_end_time"]) > int(latest_time) and record["battle_type"] == 1:
+                if self.event is not None and not self.event.start <= record["battle_end_time"] < self.event.end:
+                    continue
+
+                key = (str(record["target_viewer_id"]), record["battle_log_id"])
+                if ((time := record["battle_end_time"]) >= int(latest_time)
+                        and record["battle_type"] == 1 and key not in seen):
                     pcrid = record["target_viewer_id"]
                     name = record["user_name"]
                     boss = record["order_num"]
@@ -179,7 +239,7 @@ class ClanBattle:
                     flag = 0 if remain_time == 90 else 0.5
                     if battle_time < 90 and flag == 0:
                         flag = 1
-                        if damage_history[-1]["create_time"] <= time <= damage_history[0]["create_time"]:
+                        if damage_history and damage_history[-1]["create_time"] <= time <= damage_history[0]["create_time"]:
                             for history in damage_history:
                                 if history["create_time"] == time and not history["kill"]:
                                     flag = 0
@@ -199,9 +259,17 @@ class ClanBattle:
 
                     dao_list.append((pcrid, name, time, lap, boss, damage, flag,
                                     battle_log_id, remain_time, battle_time, *units_list))
-        except:
-            pass
-        await self.record.add_record(dao_list)
+                    seen.add(key)
+            if loop_num != self.loop_num:
+                raise CancleError
+            await self.record.add_record(dao_list)
+        except CancleError:
+            raise
+        except Exception as e:
+            # 批次不完整时不推进最新记录时间，下轮可重取失败记录。
+            logger.opt(exception=e).warning(f"公会战战绩同步失败，group={self.group_id}")
+            return False
+        return True
 
     def refresh_latest_time(self, clan_battle_top):
         try:
@@ -222,6 +290,8 @@ class Boss:
         self.stage_num = 0
         self.current_hp = 0
         self.fighter_num = 0
+        self.fighter_updated_at = 0
+        self.fighter_lap = 0
         self.coop_notified = False  # 本 boss 已提醒过合刀
         self.last_kill_name = ""  # 最近一次击杀本 boss 的玩家名
         self.last_kill_time = 0   # 最近一次击杀时间戳

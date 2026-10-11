@@ -1,9 +1,127 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from types import SimpleNamespace
 
 import pytest
+
+
+async def test_final_sync_keeps_last_second_same_time_records_and_serializes_overlapping_collection(clanbattle):
+    from src.plugins.priconne.clanbattle.model import ClanBattle
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    clan = ClanBattle(10001)
+    clan.event = BattlePeriod(42, 1000, 2000)
+    clan.clan_battle_id = 42
+    clan.loop_num = 1
+    committed = []
+
+    async def latest():
+        return 1999
+
+    async def existing(start, end):
+        return [{"pcrid": 123, "battle_log_id": 1},
+                *[{"pcrid": row[0], "battle_log_id": row[7]} for row in committed]]
+
+    async def commit(rows):
+        await asyncio.sleep(0)
+        committed.extend(rows)
+
+    clan.record = SimpleNamespace(get_latest_time=latest, get_report_records=existing, add_record=commit)
+    battles = [dict(battle_end_time=moment, battle_type=1, target_viewer_id=123,
+                    user_name="成员", order_num=1, lap_num=30, total_damage=100,
+                    battle_log_id=log, units=[]) for moment, log in ((1999, 1), (1999, 2), (2000, 3))]
+
+    async def logs(page):
+        return {"max_page": 1, "battle_list": battles}
+
+    async def top():
+        return {"clan_battle_id": 42, "damage_history": []}
+
+    async def api(path, params):
+        return {"start_remain_time": 90, "battle_time": 90}
+
+    clan.get_battle_log, clan.get_clanbattle_top = logs, top
+    clan.client = SimpleNamespace(callapi=api)
+    assert await asyncio.gather(clan.sync_final_records(clan.event), clan.sync_final_records(clan.event)) == [True, True]
+    assert [row[7] for row in committed] == [2]
+
+
+async def test_cancel_and_restore_preserve_only_current_event_summary_recipient(clanbattle, monkeypatch):
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    monkeypatch.setattr(clanbattle.time, "time", lambda: 1001)
+    monkeypatch.setattr(clanbattle, "clanbattle_info", {10001: SimpleNamespace(event=BattlePeriod(42, 1000, 2000))})
+    monkeypatch.setattr(clanbattle, "run_group", {})
+    clanbattle._set_monitor_registered(10001, 10000, 123)
+    clanbattle._set_monitor_stopped(10001)
+    saved = json.loads(json.dumps(clanbattle.run_group))
+    clanbattle._restore_run_group(saved)
+    assert clanbattle.run_group == {10001: {"summary": {"period_id": 42, "self_id": "10000"}}}
+
+
+async def test_failed_record_batch_keeps_watermark_retryable(clanbattle):
+    from src.plugins.priconne.clanbattle.model import ClanBattle
+
+    clan = ClanBattle(10001)
+    clan.loop_num = 1
+    clan.clan_battle_id = 9
+    committed = []
+
+    async def latest():
+        return 0
+
+    async def commit(rows):
+        committed.extend(rows)
+
+    clan.record = SimpleNamespace(get_latest_time=latest, add_record=commit)
+    battles = [{"battle_end_time": moment, "battle_type": 1, "target_viewer_id": 123,
+                "user_name": "成员", "order_num": 1, "lap_num": 30, "total_damage": 100,
+                "battle_log_id": moment, "units": []} for moment in (1000, 1001)]
+
+    async def logs(page):
+        return {"max_page": 1, "battle_list": battles}
+
+    failing = True
+
+    async def api(path, params):
+        if failing and params["battle_log_id"] == 1001:
+            raise RuntimeError("timeline temporarily unavailable")
+        return {"start_remain_time": 90, "battle_time": 90}
+
+    clan.get_battle_log = logs
+    clan.client = SimpleNamespace(callapi=api)
+    assert await clan.add_record([], 1) is False
+    assert committed == []
+    failing = False
+    assert await clan.add_record([], 1) is True
+    assert [row[7] for row in committed] == [1000, 1001]
+
+
+async def test_roster_snapshot_preserves_same_name_game_ids(clanbattle, monkeypatch):
+    from src.plugins.priconne.clanbattle import model
+
+    clan = model.ClanBattle(10001)
+    clan.clan_id = 9
+    saved = []
+
+    async def api(*args):
+        return {"clan": {"members": [{"name": "同名", "viewer_id": 1},
+                                      {"name": "同名", "viewer_id": 2}]}}
+
+    async def config(*args):
+        return {"kpi": {"1": 2}}
+
+    async def save(path, config):
+        saved.append(config)
+
+    clan.client = SimpleNamespace(callapi=api)
+    monkeypatch.setattr(model, "load_config", config)
+    monkeypatch.setattr(model, "write_config", save)
+    await clan.save_member("ignored.json")
+    assert saved[0]["member_by_id"] == {"1": "同名", "2": "同名"}
+    assert saved[0]["kpi"] == {"1": 2} and saved[0]["member_updated_at"] > 0
 
 
 @pytest.fixture()
@@ -19,6 +137,75 @@ def _snapshot():
         "rank": 42,
         "boss": "当前进度：D面3阶段\n30周目1王: HP: 1/2 50%",
     }
+
+
+@pytest.fixture()
+def status_canvas(monkeypatch):
+    from src.plugins.priconne.clanbattle import reports
+
+    captured = {}
+
+    def render(title, metadata, cards, sections, note):
+        captured.update(cards=cards, sections=sections)
+        return "[CQ:image,file=test-status.png]"
+
+    monkeypatch.setattr(reports, "_report_image", render)
+    return captured
+
+
+@pytest.fixture(autouse=True)
+def snapshot_period(clanbattle, monkeypatch):
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    moment = _snapshot()["time"]
+
+    async def schedule(*args, **kwargs):
+        return BattlePeriod(42, moment - 3600, moment + 86400 * 4)
+
+    monkeypatch.setattr(clanbattle, "get_period", schedule)
+
+
+async def test_monitor_switch_clears_old_registrations_once_and_binds_record_queries(clanbattle, monkeypatch):
+    from src.plugins.priconne.clanbattle import model
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    old = BattlePeriod(41, 100, 200)
+    current = BattlePeriod(42, 1000, 2000)
+    clan = model.ClanBattle(11)
+    clan.event = old
+    clan.notice_dao = ["上一期提醒"]
+    clan.boss[0].current_hp = 99
+    config, cleared, saved = {"clan_battle_id": 41, "kpi": {"1": 2}}, [], []
+
+    async def schedule(**kwargs):
+        assert kwargs == {"event_id": 42}
+        return current
+
+    async def load(path):
+        return dict(config)
+
+    async def clear(group):
+        cleared.append(group)
+
+    async def write(path, value):
+        config.update(value)
+        saved.append(dict(value))
+
+    monkeypatch.setattr(model, "get_period", schedule)
+    monkeypatch.setattr(model, "load_config", load)
+    monkeypatch.setattr(model, "write_config", write)
+    monkeypatch.setattr(model, "clear_period_registrations", clear)
+    await clan.bind_period(42)
+    assert cleared == [11] and clan.notice_dao == [] and clan.boss[0].current_hp == 0
+    assert clan.record.period == current and clan.clan_battle_id == 42 and clan.latest_time == 999
+    assert saved == [{"clan_battle_id": 42, "kpi": {"1": 2}, "battle_start": 1000, "battle_end": 1999}]
+    await clan.bind_period(42)
+    restarted = model.ClanBattle(11)
+    await restarted.bind_period(42)
+    assert cleared == [11] and len(saved) == 1
+    clan.init_database()
+    await clan.bind_period(42)
+    assert clan.record.period == current
 
 
 def test_monitor_registration_preserves_snapshot(clanbattle, monkeypatch):
@@ -121,7 +308,7 @@ async def test_cancel_monitor_persists_snapshot_only_entry(clanbattle, monkeypat
     assert persisted == [{10001: {"snapshot": snapshot}}]
 
 
-async def test_status_is_offline_immediately_after_cancel(clanbattle, monkeypatch):
+async def test_status_is_offline_immediately_after_cancel(clanbattle, monkeypatch, status_canvas):
     snapshot = _snapshot()
     clan_info = SimpleNamespace(qq_id=20001, loop_num=7, loop_check=1_777_777_777)
     monkeypatch.setattr(clanbattle, "clanbattle_info", {10001: clan_info})
@@ -148,15 +335,16 @@ async def test_status_is_offline_immediately_after_cancel(clanbattle, monkeypatc
     monkeypatch.setattr(clanbattle, "_save_run_group", fake_save_run_group)
     monkeypatch.setattr(clanbattle, "load_config", fake_load_config)
     monkeypatch.setattr(clanbattle, "safe_send", fake_safe_send)
-    bot = SimpleNamespace(send=unexpected_send)
+    bot = SimpleNamespace(send=lambda event, message: fake_safe_send(None, event, message))
     event = SimpleNamespace(group_id=10001, user_id=20001)
 
     await clanbattle.delete_monitor(bot, event)
     await clanbattle.daostate(bot, event)
 
     assert len(sent) == 1
-    assert "监控状态：关闭" in sent[0]
-    assert "历史排名：42" in sent[0]
+    assert sent[0] == "[CQ:image,file=test-status.png]"
+    assert status_canvas["cards"][1][0] == "42名"
+    assert status_canvas["cards"][3][0] == "历史"
 
 
 async def test_unauthorized_cancel_keeps_monitor_running(clanbattle, monkeypatch):
@@ -182,7 +370,7 @@ async def test_unauthorized_cancel_keeps_monitor_running(clanbattle, monkeypatch
     assert clanbattle.run_group == {10001: original_entry}
 
 
-async def test_offline_status_uses_persisted_snapshot(clanbattle, monkeypatch):
+async def test_offline_status_uses_persisted_snapshot(clanbattle, monkeypatch, status_canvas):
     snapshot = _snapshot()
     monkeypatch.setattr(clanbattle, "clanbattle_info", {})
 
@@ -199,18 +387,18 @@ async def test_offline_status_uses_persisted_snapshot(clanbattle, monkeypatch):
 
     monkeypatch.setattr(clanbattle, "load_config", fake_load_config)
     monkeypatch.setattr(clanbattle, "safe_send", fake_safe_send)
-    bot = SimpleNamespace(send=unexpected_send)
+    bot = SimpleNamespace(send=lambda event, message: fake_safe_send(None, event, message))
     event = SimpleNamespace(group_id=10001)
 
     await clanbattle.daostate(bot, event)
 
     assert len(sent) == 1
-    assert "监控状态：关闭" in sent[0]
-    assert "历史排名：42" in sent[0]
-    assert snapshot["boss"] in sent[0]
+    assert sent[0] == "[CQ:image,file=test-status.png]"
+    assert status_canvas["cards"][1][0] == "42名" and status_canvas["cards"][3][0] == "历史"
+    assert status_canvas["sections"][1][2] == [[snapshot["boss"]]]
 
 
-async def test_offline_status_without_snapshot_keeps_existing_prompt(clanbattle, monkeypatch):
+async def test_offline_status_without_snapshot_keeps_existing_prompt(clanbattle, monkeypatch, status_canvas):
     monkeypatch.setattr(clanbattle, "clanbattle_info", {})
 
     async def fake_load_config(path):
@@ -227,7 +415,9 @@ async def test_offline_status_without_snapshot_keeps_existing_prompt(clanbattle,
 
     await clanbattle.daostate(bot, event)
 
-    assert sent == ["未查询到本群历史状态，请开启出刀监控"]
+    assert sent == ["[CQ:image,file=test-status.png]"]
+    assert status_canvas["cards"][3][0] == "待刷新"
+    assert status_canvas["sections"][1][2] == [["暂无本期状态"]]
 
 
 async def test_offline_reminder_requires_superuser(clanbattle, monkeypatch):

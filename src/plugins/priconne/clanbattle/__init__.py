@@ -4,15 +4,17 @@ import math
 import traceback
 import time
 import asyncio
+from datetime import timedelta
 
 import httpx
 from zoneinfo import ZoneInfo
 
 from nonebot import get_bot, get_driver, logger
 from nonebot.permission import SUPERUSER
+from src.plugins.platform_adapter.sender import send_group
 
 from ..captcha import CaptchaContext
-from ..compat import Service, priv, on_startup
+from ..compat import Service, priv, on_startup, MessageSegment
 from ..compat.typing import NoticeSession
 from ..credentials import build_stored_account, should_update_stored_account
 from ..login import query
@@ -22,35 +24,53 @@ from .model import ClanBattle
 from .kpi import kpi_report
 from .sql import SubscribeDao, RecordDao, SLDao, TreeDao, ApplyDao, clear_group_data
 from .pcr_calculator import calculator
+from .reports import (
+    boss_snapshot, snapshot_bosses, daily_report, preference_report, report_status,
+    control_report, parse_declaration_input, encode_declaration, declaration_text, member_roster, status_report,
+    registration_report,
+)
+from .sql import pcr_date
+from .period import get_period
+from .dispatch import build_dispatch, activity_report, coordination_reports, register_member_link
+from .review import build_review, render_review, REVIEW_PAGES
+from .summary import send_summary, summary_due
+
+_member_link_lock = asyncio.Lock()
 
 from ..pcrclient import init_device_id, ApiException
 
 help_text = '''
-* “+” 表示空格
-【出刀监控】机器人登录账号，监视出刀情况并记录
-【催刀】栞栞谁没出满三刀
-【当前战报】本期会战出刀情况
-【我的战报 + 游戏名称】 栞栞个人出刀情况
-【今日战报 + 游戏名称】 栞栞今日个人出刀情况
-【昨日战报 + 游戏名称】 栞栞昨日个人出刀情况
-【出刀详情 + 出刀编号】 栞栞你这刀怎么出的（出刀编号可以通过查看个人战报获得）
-【今日出刀】今日出刀情况
-【昨日出刀】昨日出刀情况
-【启用肃正协议】数据出现异常使用即可清空所有数据（危险！！！）
-【修正出刀 + 出刀编号 + （完整刀|尾刀|补偿）】修正错误的刀数记录
-【状态】查看当前进度
-【boss状态】看看boss里面有几个人
-【预约表】栞栞谁预约了
-【预约 + 数字 + （周目）+ （留言） 】预约boss, 周目和留言可不写，默认当前周目
-【取消预约 + （数字）】取消预约
-【清空预约 + （数字）】（仅）管理，清空预约
-【查树】栞栞树上有几个人
-【下树】寄，掉刀了
-【挂树 + 数字】失误了, 寄
-【sl】记录sl
-【sl?】栞栞今天有没有用过sl
-【申请出刀 + 数字 + （留言） 】 申请打boss，boss死亡自动清空
-【取消申请】 模拟10次挂10次，老子不打了
+查看进度
+【状态】五王HP、现场人数、登记数量与当前提示
+【boss状态】状态图及申请、挂树明细
+【今日刀表 / 今日出刀】成员出刀记录与参考未完成量
+【会战指挥台 / BOSS推进参考】排刀、合刀候选与时段规划
+【出刀时段】习惯时段与本期可能活跃成员
+【催刀】按已保存记录提醒，需核验实际可用刀
+
+出刀登记（示例中的空格需保留）
+【申请出刀 3 完整 1000万】申报预计伤害，可追加留言
+【申请出刀 3 补偿60秒 450万】申报补偿刀；血量变化后重新申请
+【申请出刀 3 留言】【取消申请】普通申请与取消
+【预约 3 [周目] [留言]】周目、留言可省略
+【预约表】【取消预约 王号】查看与取消预约
+【挂树 3】【查树】【下树】登记、查看与取消挂树
+【sl】【sl?】记录与查询今日SL
+【登记会战成员 游戏ID】【取消会战成员登记】关联QQ与游戏ID；管理员可@成员代操作
+
+战报与复盘
+【会战复盘 / 会战总结】本期五张复盘图
+【刀伤分布】五王分布；【刀伤分档】成员分档
+【当前战报】【昨日出刀】本期汇总与昨日记录
+【我的战报 游戏名称】【今日战报 游戏名称】【昨日战报 游戏名称】个人战报
+【出刀详情 出刀编号】编号可从个人战报查看
+
+监控与管理
+【出刀监控】使用已绑定账号开启监控
+【取消出刀监控】监控人或管理员关闭监控
+【清空预约 王号】管理员清理预约
+【修正出刀 编号 完整刀/尾刀/补偿】修正刀型
+【启用肃正协议】危险操作：清空群会战数据
 '''.strip()
 
 clanbattle_info = {}
@@ -208,12 +228,19 @@ def _set_monitor_registered(group_id, self_id, qq_id):
         "self_id": self_id,
         "qq_id": qq_id,
     }
+    event = getattr(clanbattle_info.get(group_id), "event", None)
+    if event is not None and event.active(time.time()) and self_id is not None:
+        run_group[group_id]["summary"] = {"period_id": event.id, "self_id": str(self_id)}
 
 
 def _set_monitor_stopped(group_id):
     """清除监控运行字段；存在历史快照时保留群记录。"""
     info = run_group.get(group_id)
     snapshot = info.get("snapshot") if isinstance(info, dict) else None
+    summary = info.get("summary") if isinstance(info, dict) else None
+    if summary:
+        run_group[group_id] = {"summary": summary, **({"snapshot": snapshot} if snapshot else {})}
+        return
     if snapshot:
         run_group[group_id] = {"snapshot": snapshot}
     else:
@@ -276,7 +303,14 @@ def _restore_run_group(saved):
                     f"priconne run_group skipped invalid snapshot, group={normalized_group_id}"
                 )
                 continue
-        if "qq_id" not in restored and snapshot is None:
+        summary = restored.get("summary")
+        if summary is not None and (
+            not isinstance(summary, dict) or type(summary.get("period_id")) is not int
+            or summary["period_id"] <= 0 or not isinstance(summary.get("self_id"), str)
+            or not summary["self_id"]
+        ):
+            restored.pop("summary", None)
+        if "qq_id" not in restored and snapshot is None and not restored.get("summary"):
             logger.warning(
                 f"priconne run_group skipped empty entry, group={normalized_group_id}"
             )
@@ -362,6 +396,17 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                 clan_info.loop_check = time.time()
                 # 初始化
                 clan_battle_top = await clan_info.get_clanbattle_top()
+                state_updated_at = int(time.time())
+                changed_event = clan_info.event is None or clan_info.event.id != clan_battle_top["clan_battle_id"]
+                await clan_info.bind_period(clan_battle_top["clan_battle_id"])
+                if changed_event:
+                    await clan_info.save_member(os.path.join(clan_path, str(group_id), "clanbattle.json"))
+                    _set_monitor_registered(group_id, self_id, qq_id)
+                    await _save_run_group()
+                if not clan_info.event.active(state_updated_at):
+                    clan_info.loop_check = False
+                    await asyncio.sleep(30)
+                    continue
                 clan_info.lap_num = clan_battle_top["lap_num"]
                 clan_info.rank = clan_battle_top["period_rank"]
 
@@ -447,16 +492,32 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                     await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_tree))
                     clan_info.notice_tree.clear()
 
+                bosses = boss_snapshot(clan_info, time.time())
                 clan_info.error_count = 0
-                await clan_info.add_record(clan_battle_top["damage_history"], loop_num)
+                record_sync_ok = await clan_info.add_record(clan_battle_top["damage_history"], loop_num)
+                if loop_num != clan_info.loop_num:
+                    raise CancleError
+                previous = run_group.get(group_id, {}).get("snapshot", {})
+                if previous.get("clan_battle_id") != clan_info.event.id:
+                    previous = {}
+                records_synced_at = (
+                    int(time.time()) if record_sync_ok is True
+                    else previous.get("records_synced_at", 0)
+                )
 
                 # 保存最新状态快照，供离线「状态」命令展示
                 if _set_monitor_snapshot(
                     group_id,
                     {
-                        "time": int(time.time()),
+                        "time": state_updated_at,
                         "rank": clan_info.rank,
                         "boss": clan_info.general_boss(),
+                        "bosses": bosses,
+                        "clan_battle_id": clan_battle_top.get("clan_battle_id", getattr(clan_info, "clan_battle_id", 0)),
+                        "battle_start": clan_info.event.start,
+                        "battle_end": clan_info.event.end - 1,
+                        "records_synced_at": records_synced_at,
+                        "record_sync_ok": record_sync_ok is True,
                     },
                 ):
                     await _save_run_group()
@@ -552,78 +613,44 @@ async def delete_monitor(bot, ev):
         await bot.send(ev, "本群未曾开过出刀监控")
 
 
+async def _send_battle_status(bot, ev, details=False):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群中查看状态。")
+        return
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    now = int(time.time())
+    snapshot, online = await _report_context(ev.group_id, now, period)
+    bosses = snapshot_bosses(snapshot)
+    queues, names = {}, {}
+    clan = clanbattle_info.get(ev.group_id)
+    if online and bosses and getattr(getattr(clan, "event", None), "id", None) == period.id:
+        config = await load_config(os.path.join(clan_path, str(ev.group_id), "clanbattle.json")) or {}
+        if config.get("clan_battle_id") == period.id:
+            queues, names = await _report_queues(bot, ev.group_id, bosses, member_names=details)
+            now = int(time.time())
+            snapshot, online = await _report_context(ev.group_id, now, period)
+            if not online or getattr(getattr(clan, "event", None), "id", None) != period.id:
+                queues, names = {}, {}
+    image = await asyncio.to_thread(status_report, snapshot, online, now, period, ev.group_id, queues, names, details)
+    await bot.send(ev, image)
+
+
 @sv.on_fullmatch('状态')
 async def daostate(bot, ev):
-    group_id = ev.group_id
-    if group_id in clanbattle_info and clanbattle_info[group_id].loop_check:
-        clan_info: ClanBattle = clanbattle_info[group_id]
-        now = time.time()
-        msg = f'当前排名：{clan_info.rank}\n监控状态：'
-        msg += '开启'
-        member_info = await bot.get_group_member_info(group_id=group_id, user_id=clan_info.qq_id)
-        msg += f'\n监控人为：{member_info["card"] or member_info["nickname"]}'
-        msg += "(高占用)" if now - clan_info.loop_check > 30 else ""
-        msg += "\n" + clan_info.general_boss()
-        await safe_send(bot, ev, msg)
-
-        msg = ""
-        for i in range(1, 5 + 1):
-            if apply_info := await clan_info.apply.get_apply(i):
-                msg += f"========={i}王=========\n"
-                msg += f"当前有{len(apply_info)}人申请挑战boss\n"
-                for i, info in enumerate(apply_info):
-                    uid, apply_time, text = info
-                    member_info = await bot.get_group_member_info(group_id=group_id, user_id=uid)
-                    name = member_info["card"] or member_info["nickname"]
-                    msg += f"->{i+1}：{name} {text} 已过去{format_time(now - apply_time)}\n"
-        await safe_send(bot, ev, msg.strip())
-    else:
-        snapshot = (await load_config(run_path)).get(str(group_id), {}).get("snapshot")
-        if not snapshot:
-            await bot.send(ev, "未查询到本群历史状态，请开启出刀监控")
-            return
-        latest_time = time.strftime("%Y/%m/%d-%H:%M:%S", time.localtime(snapshot["time"]))
-        msg = (
-            "监控状态：关闭\n"
-            f"历史记录时间：{latest_time}\n"
-            f"历史排名：{snapshot['rank']}\n"
-            + snapshot["boss"]
-        )
-        await safe_send(bot, ev, msg)
+    await _send_battle_status(bot, ev)
 
 
 @sv.on_fullmatch('boss状态')
 async def bosstate(bot, ev):
-    group_id = ev.group_id
-    if group_id in clanbattle_info:
-        clan_info : ClanBattle = clanbattle_info[group_id]
-        now = time.time()
-        msg = '监控状态：'
-        if clan_info.loop_check:
-            msg += '开启'
-            member_info = await bot.get_group_member_info(group_id=group_id, user_id=clan_info.qq_id)
-            msg += f'\n监控人为：{member_info["card"] or member_info["nickname"]}'
-            msg += "(高占用)" if now - clan_info.loop_check > 30 else ""
-        else:
-            msg += '关闭'
-        for i in range(1, 5 + 1):
-            if apply_info := await clan_info.apply.get_apply(i):
-                msg += f"\n========={i}王=========\n"
-                msg += f"当前有{len(apply_info)}人申请挑战boss\n"
-                for i, info in enumerate(apply_info):
-                    uid, apply_time, text = info
-                    member_info = await bot.get_group_member_info(group_id=group_id, user_id=uid)
-                    name = member_info["card"] or member_info["nickname"]
-                    msg += f"->{i+1}：{name} {text} 已过去{format_time(now - apply_time)}\n"
-            if clan_info.boss[i-1].fighter_num:
-                msg += f"当前挑战人数{clan_info.boss[i-1].fighter_num}\n"
-        await bot.send(ev, msg.strip())
-    else:
-        await bot.send(ev, "未查询到本群当前进度，请开启出刀监控")
+    await _send_battle_status(bot, ev, details=True)
 
 
 @sv.on_rex(r'^预约\s?(\d)(\s\d+)?(\s\S*)?$')
 async def subscirbe(bot, ev):
+    if await _registration_period(bot, ev) is None:
+        return
     group_id = ev.group_id
     uid = ev.user_id
     match = ev['match']
@@ -646,28 +673,7 @@ async def subscirbe(bot, ev):
 
 @sv.on_fullmatch('预约表', only_to_me=False)
 async def formsubscribe(bot, ev):
-    group_id = ev.group_id
-    FormSubscribe = ""
-    subscribers = []
-    subDao = SubscribeDao(group_id)
-    for boss in range(1, 5 + 1):
-        if info := await subDao.get_subscriber(boss):
-            for qq, lap, text in info:
-                lap = f"第{lap}周目" if lap else "当前周目"
-                info = await bot.get_group_member_info(group_id=ev.group_id, user_id=qq)
-                name = "card" if info["card"] else "nickname"
-                msg = f'{info[name]}:{text}' if text else info[name]
-                msg += " " + lap
-                subscribers.append(msg)
-        if subscribers:
-            FormSubscribe += f'\n========={boss}王=========\n' + \
-                "\n".join(subscribers)
-            subscribers = []
-
-    if FormSubscribe:
-        await bot.send(ev, "当前预约列表" + FormSubscribe)
-    else:
-        await bot.send(ev, "无人预约呢喵")
+    await _send_registration_list(bot, ev, "subscribe")
 
 
 @sv.on_rex(r'^取消预约\s?(\d)$')
@@ -738,6 +744,8 @@ async def issl(bot, ev):
 
 @sv.on_rex(r"^(上|挂)树\s?(\d)\s?(.+)?$")
 async def climbtree(bot, ev):
+    if await _registration_period(bot, ev) is None:
+        return
     group_id = ev.group_id
     uid = ev.user_id
     match = ev['match']
@@ -764,38 +772,95 @@ async def offtree(bot, ev):
 
 
 @sv.on_fullmatch('查树')
-async def checktree(bot, ev):
-    group_id = ev.group_id
-    reply = ""
-    treeDao = TreeDao(group_id)
-    for i in range(5):
-        if info := await treeDao.get_tree(i+1):
-            reply += f'{i+1}王树上目前有{len(info)}人\n'
-            now = time.time()
-            for i, info in enumerate(info):
-                uid, tree_time, text = info
-                info = await bot.get_group_member_info(group_id=ev.group_id, user_id=uid)
-                name = "card" if info["card"] else "nickname"
-                reply += f"->{i+1}：{info[name]} {text} 已过去{format_time(now - tree_time)}\n"
-    if reply:
-        await bot.send(ev, reply)
-    else:
-        await bot.send(ev, "目前树上空空如也")
+async def tree_list(bot, ev):
+    await _send_registration_list(bot, ev, "tree")
 
 
-@sv.on_rex(r'^(?:申请出刀|进|打)\s?(\d)\s?(\S+)?$')
+async def _send_registration_list(bot, ev, kind):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群中查看登记。")
+        return
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    group_id, now = ev.group_id, int(time.time())
+    path = os.path.join(clan_path, str(group_id), "clanbattle.json")
+    config = await load_config(path) or {}
+    bound = config.get("clan_battle_id") == period.id
+    entries, names = {}, {}
+    if period.active(now) and bound:
+        dao = SubscribeDao(group_id) if kind == "subscribe" else TreeDao(group_id)
+        for order in range(1, 6):
+            rows = await (dao.get_subscriber(order) if kind == "subscribe" else dao.get_tree(order))
+            entries[order] = [row for row in rows if kind == "subscribe" or period.start <= row[1] <= now]
+        for uid in {row[0] for rows in entries.values() for row in rows}:
+            try:
+                member = await bot.get_group_member_info(group_id=group_id, user_id=uid)
+                names[uid] = member.get("card") or member.get("nickname") or f"QQ {uid}"
+            except Exception:
+                names[uid] = f"QQ {uid}"
+        # 名称查询期间可能换期，展示前重新核验绑定与活动边界。
+        now = int(time.time())
+        config = await load_config(path) or {}
+        bound = config.get("clan_battle_id") == period.id
+        if not period.active(now) or not bound:
+            entries, names = {}, {}
+    snapshot, online = await _report_context(group_id, now, period)
+    image = await asyncio.to_thread(registration_report, kind, entries, names, now, period,
+                                    group_id, snapshot, online, bound)
+    await bot.send(ev, image)
+
+
+@sv.on_rex(r'^(?:申请出刀|进|打)\s*(\d)\s*(.*)$')
 async def apply(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群中申请出刀。")
+        return
     group_id = ev.group_id
     at = re.search(r'\[CQ:at,qq=(\d*)]', str(ev.message))
-    uid = at.group(1) if at else ev.user_id
+    uid = int(at.group(1)) if at else ev.user_id
     match = ev['match']
 
     applyDao = ApplyDao(group_id)
-    boss = match.group(1)
-    text = match.group(2)
+    boss = int(match.group(1))
+    text = match.group(2).strip()
+    if not 1 <= boss <= 5:
+        await bot.send(ev, "BOSS编号须为1–5。")
+        return
+    try:
+        declared = parse_declaration_input(text)
+    except ValueError as error:
+        await bot.send(ev, str(error))
+        return
+    if declared:
+        if uid != ev.user_id and not priv.check_priv(ev, priv.ADMIN):
+            await bot.send(ev, "代他人申报伤害需要管理员权限。")
+            return
+        now = int(time.time())
+        period = await _event_period(bot, ev)
+        if period is None:
+            return
+        snapshot, online = await _report_context(group_id, now, period)
+        bosses = snapshot_bosses(snapshot)
+        event = snapshot.get("clan_battle_id")
+        if not online or bosses is None or type(event) is not int or event <= 0:
+            await bot.send(ev, "伤害申报需要最新会战状态，请开启出刀监控并等待刷新。普通留言申请仍可使用。")
+            return
+        target = bosses[boss - 1]
+        if not target["available"] or not target["current_hp"]:
+            await bot.send(ev, "该王当前无法挑战，请使用预约登记后续安排。")
+            return
+        declared.update(event=event, lap=target["lap_num"], hp=target["current_hp"])
+        text = encode_declaration(declared)
 
+    period = await _registration_period(bot, ev)
+    if period is None:
+        return
     if await applyDao.add_apply(uid, boss, text if text else " "):
-        await bot.send(ev, "申请成功", at_sender=True)
+        response = "申请成功"
+        if declared:
+            response += f"｜{boss}王 {declaration_text(text)}\n血量变化或超过30分钟后请重新申请；多王申报需取消后确定目标。"
+        await bot.send(ev, MessageSegment.text(response), at_sender=True)
     else:
         await bot.send(ev, "申请失败", at_sender=True)
 
@@ -816,25 +881,316 @@ async def checktree(bot, ev):
     await bot.send(ev, '取消成功', at_sender=True)
 
 
-@sv.on_fullmatch('今日出刀')
+async def _event_period(bot, ev):
+    try:
+        return await get_period()
+    except ValueError as error:
+        await bot.send(ev, str(error))
+        return None
+
+
+async def _registration_period(bot, ev):
+    period = await _event_period(bot, ev)
+    if period is None:
+        return None
+    if not period.active(time.time()):
+        await bot.send(ev, period.label(time.time()) + "\n当前不在出刀活动时间内。")
+        return None
+    config = await load_config(os.path.join(clan_path, str(ev.group_id), "clanbattle.json"))
+    if not config or config.get("clan_battle_id") != period.id:
+        await bot.send(ev, "登记尚未绑定本期会战，请开启出刀监控刷新；上一期登记不参与调度。")
+        return None
+    return period
+
+
+async def _report_context(group_id, now, period=None):
+    info = run_group.get(group_id)
+    if not isinstance(info, dict) or not isinstance(info.get("snapshot"), dict):
+        saved = await load_config(run_path)
+        info = saved.get(str(group_id), {}) if isinstance(saved, dict) else {}
+    if not isinstance(info, dict):
+        info = {}
+    snapshot = info.get("snapshot", {})
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    clan_info = clanbattle_info.get(group_id)
+    updated = snapshot.get("time", 0)
+    if period is not None:
+        if (type(updated) not in (int, float) or not period.start <= updated < period.end
+                or snapshot.get("clan_battle_id") not in (None, period.id)):
+            return {}, False
+    online = bool(
+        (period is None or period.active(now))
+        and clan_info and clan_info.loop_check and isinstance(updated, (int, float))
+        and 0 <= now - updated <= 120
+    )
+    return snapshot, online
+
+
+async def _report_queues(bot, group_id, bosses, subscribers=False, member_names=True):
+    queues = {}
+    for boss in bosses:
+        order = boss["order"]
+        queues[order] = {
+            "apply": await ApplyDao(group_id).get_apply(order),
+            "subscribe": await SubscribeDao(group_id).get_subscriber(order) if subscribers else [],
+            "tree": await TreeDao(group_id).get_tree(order),
+        }
+    if not member_names:
+        return queues, {}
+    uids = {entry[0] for queue in queues.values() for entries in queue.values() for entry in entries}
+    names = {}
+    for uid in uids:
+        try:
+            member = await bot.get_group_member_info(group_id=group_id, user_id=uid)
+            names[uid] = member.get("card") or member.get("nickname") or f"QQ {uid}"
+        except Exception:
+            names[uid] = f"QQ {uid}"
+    return queues, names
+
+
+@sv.on_prefix('登记会战成员', '取消会战成员登记')
+async def member_registration(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群中登记成员身份。")
+        return
+    mentions = [segment.data.get("qq") for segment in ev.message if segment.type == "at"]
+    if len(mentions) > 1 or any(not re.fullmatch(r'[1-9][0-9]{0,19}', str(qq)) for qq in mentions):
+        await bot.send(ev, "每次只能为一名成员登记，不能@全体。")
+        return
+    qq = int(mentions[0]) if mentions else ev.user_id
+    if qq != ev.user_id and not priv.check_priv(ev, priv.ADMIN):
+        await bot.send(ev, "代他人操作会战成员登记需要群管理员权限。")
+        return
+    argument = "".join(segment.data.get("text", "") for segment in ev.message if segment.type == "text").strip()
+    cancel = ev.prefix == '取消会战成员登记'
+    if (cancel and argument) or (not cancel and not re.fullmatch(r'[1-9][0-9]*', argument)):
+        await bot.send(ev, "格式：【登记会战成员 游戏ID】或【取消会战成员登记】；群管理员可附加@成员。")
+        return
+    path = os.path.join(clan_path, str(ev.group_id), "member_links.json")
+    async with _member_link_lock:
+        links = await load_config(path)
+        if not isinstance(links, dict) and os.path.isfile(path):
+            await bot.send(ev, "身份登记文件无法读取，请管理员检查；未覆盖已有登记。")
+            return
+        if cancel:
+            if not isinstance(links, dict) or str(qq) not in links:
+                await bot.send(ev, "该QQ尚未登记会战成员。")
+                return
+            links = dict(links)
+            links.pop(str(qq))
+            message = f"已取消QQ {qq}的会战成员登记。"
+        else:
+            config = await load_config(os.path.join(clan_path, str(ev.group_id), "clanbattle.json"))
+            try:
+                links = register_member_link(links, member_roster(config), qq, argument)
+            except ValueError as error:
+                await bot.send(ev, str(error))
+                return
+            message = f"已登记QQ {qq} ↔ {member_roster(config)[argument]}（游戏ID {argument}）。\n仅登记身份对应，不需要账号密码。"
+        try:
+            await write_config(path + ".tmp", links)
+            os.replace(path + ".tmp", path)
+        except OSError:
+            logger.exception("priconne member registration save failed")
+            await bot.send(ev, "身份登记保存失败，请重试；原登记已保留。")
+            return
+    await bot.send(ev, MessageSegment.text(message))
+
+
+def _dispatch_ready(snapshot, online, now, period):
+    synced = snapshot.get("records_synced_at")
+    return bool(period and period.active(now) and online and snapshot.get("clan_battle_id") == period.id
+                and snapshot.get("record_sync_ok") is True and type(synced) in (int, float)
+                and 0 <= now - synced <= 120)
+
+
+@sv.on_fullmatch('今日出刀', '今日刀表')
 async def today_state(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群中查询报表。")
+        return
     group_id = ev.group_id
-    db = RecordDao(group_id)
-    data = await db.get_day_rcords(int(time.time()))
-    if not data:
-        await bot.send(ev, "数据库为空，请确保开启出刀监控")
-    players = day_report(data)
-    result = await get_stat(players, group_id)
-    await bot.send(ev, result)
+    now = int(time.time())
+    config = await load_config(os.path.join(clan_path, str(group_id), "clanbattle.json"))
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    data = await RecordDao(group_id).get_report_records(
+        max(period.start, int(pcr_date(now).timestamp())), min(period.end, now + 1)
+    ) if period.active(now) else []
+    snapshot, online = await _report_context(group_id, now, period)
+    await bot.send(ev, report_status(snapshot, online, now) + "\n" + daily_report(data, config, now, period))
+
+
+@sv.on_fullmatch('出刀时段')
+async def time_preference(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群中查询报表。")
+        return
+    group_id = ev.group_id
+    now = int(time.time())
+    config = await load_config(os.path.join(clan_path, str(group_id), "clanbattle.json"))
+    data = await RecordDao(group_id).get_report_records(0, now + 1)
+    try:
+        period = await get_period()
+    except ValueError:
+        period = None
+    snapshot, online = await _report_context(group_id, now, period)
+    bosses = snapshot_bosses(snapshot)
+    queues_ready = period and period.active(now) and config and config.get("clan_battle_id") == period.id
+    queues, _ = await _report_queues(bot, group_id, bosses, subscribers=True, member_names=False) if queues_ready and bosses else ({}, {})
+    links = await load_config(os.path.join(clan_path, str(group_id), "member_links.json"))
+    now = int(time.time())
+    snapshot, online = await _report_context(group_id, now, period)
+    bosses = snapshot_bosses(snapshot)
+    dispatch = build_dispatch(data, config, now, period, links, bosses, queues,
+                              _dispatch_ready(snapshot, online, now, period))
+    await bot.send(ev, report_status(snapshot, online, now) + "\n"
+                   + preference_report(data, config, now, activity_report(dispatch, group_id)))
+
+
+@sv.on_fullmatch('会战指挥台', 'BOSS推进参考', 'boss推进参考')
+async def command_center(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群中查询报表。")
+        return
+    group_id = ev.group_id
+    now = int(time.time())
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    snapshot, online = await _report_context(group_id, now, period)
+    header = "会战指挥台\n" + period.label(now) + "\n" + report_status(snapshot, online, now)
+    bosses = snapshot_bosses(snapshot)
+    records = await RecordDao(group_id).get_report_records(period.start, min(period.end, now + 1))
+    config = await load_config(os.path.join(clan_path, str(group_id), "clanbattle.json"))
+    links = await load_config(os.path.join(clan_path, str(group_id), "member_links.json"))
+    if bosses is None:
+        boss_text = snapshot.get("boss")
+        if not isinstance(boss_text, str):
+            boss_text = "暂无历史进度。"
+        await bot.send(ev, MessageSegment.text(
+            header + "\n" + boss_text
+            + "\n缺少结构化状态，请开启出刀监控刷新；当前队列有效性未知。"
+        ))
+        dispatch = build_dispatch(records, config, now, period, links)
+        if dispatch["active"] and dispatch["members"]:
+            await bot.send(ev, coordination_reports(dispatch, group_id))
+        return
+    queues_ready = period.active(now) and config and config.get("clan_battle_id") == period.id
+    queues, names = await _report_queues(bot, group_id, bosses, subscribers=True) if queues_ready else ({}, {})
+    now = int(time.time())
+    snapshot, online = await _report_context(group_id, now, period)
+    latest_bosses = snapshot_bosses(snapshot)
+    online = online and latest_bosses is not None
+    bosses = latest_bosses or bosses
+    header = "会战指挥台\n" + period.label(now) + "\n" + report_status(snapshot, online, now)
+    if not queues_ready:
+        header += "\n本期登记未就绪或活动已结束，现场队列待确认。"
+    dispatch = build_dispatch(records, config, now, period, links, bosses, queues,
+                              _dispatch_ready(snapshot, online, now, period))
+    table, details = control_report(
+        bosses, records, queues, names, now, online, period.id, coordination_reports(dispatch, group_id)
+    )
+    await bot.send(ev, header + "\n完整刀参考仅使用本期同王同阶段已保存战绩。\n" + table)
+    # 登记留言作为纯文本发送，避免被解析成 CQ 图片或 @。
+    await bot.send(ev, MessageSegment.text(details))
+
+
+async def _review_payload(group_id, period, now, final=False):
+    snapshot, _ = await _report_context(group_id, now, period)
+    synced_at = snapshot.get("records_synced_at", 0)
+    sync_ok = False
+    clan = clanbattle_info.get(group_id)
+    if final and clan is not None and getattr(getattr(clan, "event", None), "id", None) == period.id:
+        try:
+            sync_ok = await clan.sync_final_records(period) is True
+            if sync_ok:
+                synced_at = int(time.time())
+        except Exception as e:
+            logger.opt(exception=e).warning(f"期末战绩补采失败，group={group_id}")
+    config = await load_config(os.path.join(clan_path, str(group_id), "clanbattle.json")) or {}
+    roster = member_roster(config) if config.get("clan_battle_id") == period.id else {}
+    records = await RecordDao(group_id).get_report_records(period.start, min(period.end, now + 1))
+    return dict(period_id=period.id, group_id=group_id, now=now, records=records,
+                config={"clan_battle_id": period.id, "member_by_id": roster},
+                sync_ok=sync_ok, synced_at=synced_at)
+
+
+@sv.on_fullmatch("会战复盘", "会战总结", "刀伤分布", "刀伤分档")
+async def battle_review(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群中查询报表。")
+        return
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    now = int(time.time())
+    payload = await _review_payload(ev.group_id, period, now)
+    data = build_review(payload["records"], payload["config"], now, period, ev.group_id)
+    command = ev.message.extract_plain_text().strip()
+    pages = ("distribution",) if command == "刀伤分布" else (("ranges",) if command == "刀伤分档" else REVIEW_PAGES)
+    for index, page in enumerate(pages):
+        image = await asyncio.to_thread(render_review, data, page)
+        await bot.send(ev, (f"第{period.id}期会战复盘｜已保存战绩\n" if index == 0 else "") + image)
+
+
+async def _send_event_summary(bot, group_id, period, now):
+    async def prepare():
+        return await _review_payload(group_id, period, now, final=True)
+
+    async def render(payload, page):
+        if payload.get("group_id") != group_id:
+            raise ValueError("总结发送记录群号不匹配，取消发送。")
+        data = build_review(payload["records"], payload["config"], payload["now"], period, group_id)
+        image = await asyncio.to_thread(render_review, data, page)
+        if page == "overview":
+            status = "期末战绩已同步" if payload["sync_ok"] else "期末补采未完成，仅展示已保存战绩"
+            return f"第{period.id}期会战总结｜{status}\n" + image
+        return image
+
+    async def send(page, message):
+        await send_group(bot, group_id, message)
+
+    return await send_summary(os.path.join(clan_path, str(group_id), "summary_send.json"),
+                              period, now, prepare, render, send)
+
+
+@sv.scheduled_job("cron", minute="*/5", timezone=ZoneInfo("Asia/Shanghai"), max_instances=1, coalesce=True)
+async def final_summary_broadcast():
+    now = int(time.time())
+    try:
+        period = await get_period(now=now)
+    except ValueError:
+        return
+    if not summary_due(period, now):
+        return
+    from src.plugins.permission_admin.core import get_permission_manager
+
+    blocked = (get_permission_manager().get_snapshot("priconne") or {}).get("blocked_groups", [])
+    for group_id, info in list(run_group.items()):
+        profile = info.get("summary") if isinstance(info, dict) else None
+        if not profile or profile.get("period_id") != period.id or group_id in blocked:
+            continue
+        try:
+            bot = get_bot(profile["self_id"])
+            await _send_event_summary(bot, group_id, period, now)
+        except Exception as e:
+            logger.opt(exception=e).warning(f"会战总结发送失败，将重试，group={group_id}, period={period.id}")
 
 
 @sv.on_fullmatch('昨日出刀')
 async def yesterday_state(bot, ev):
     group_id = ev.group_id
-    db = RecordDao(group_id)
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    db = RecordDao(group_id, period)
     data = await db.get_day_rcords(int(time.time()) - 3600 * 24)
     if not data:
-        await bot.send(ev, "数据库为空，请确保开启出刀监控")
+        await bot.send(ev, period.label(time.time()) + "\n本期该日无战绩，请核验出刀监控。")
+        return
     players = day_report(data)
     result = await get_stat(players, group_id)
     await bot.send(ev, result)
@@ -859,7 +1215,10 @@ async def kill_all(bot, ev):
 @sv.on_fullmatch('当前战报')
 async def get_report(bot, ev):
     group_id = ev.group_id
-    db = RecordDao(group_id)
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    db = RecordDao(group_id, period)
     data = await db.get_all_records()
     if not data:
         await bot.send(ev, "数据库为空，请确保开启出刀监控")
@@ -867,7 +1226,7 @@ async def get_report(bot, ev):
     max_dao = await db.get_max_dao()
     players, all_damage, all_score = clanbattle_report(data, max_dao)
     img = await get_cbreport(players, all_damage, all_score)
-    await bot.send(ev, img)
+    await bot.send(ev, period.label(time.time()) + "\n" + img)
 
 
 @sv.on_prefix('今日战报', '昨日战报', "我的战报")
@@ -880,13 +1239,16 @@ async def player_report(bot, ev):
     else:
         day = 5
     group_id = ev.group_id
-    db = RecordDao(group_id)
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    db = RecordDao(group_id, period)
     data = await db.get_player_records(name, day)
     if not data:
         await bot.send(ev, "数据库为空，请确保开启出刀监控或使用正确的角色名")
         return
     img = await get_plyerreport(data)
-    await bot.send(ev, img)
+    await bot.send(ev, period.label(time.time()) + "\n" + img)
 
 
 @sv.on_prefix('出刀详情')
@@ -895,7 +1257,10 @@ async def player_report(bot, ev):
         if not id.isdigit():
             await bot.send(ev, "请输入正确的出刀编号")
         else:
-            detail = RecordDao(ev.group_id)
+            period = await _event_period(bot, ev)
+            if period is None:
+                return
+            detail = RecordDao(ev.group_id, period)
             info = await detail.get_history(id)
             if info:
                 await bot.send(ev, await dao_detial(info))
@@ -904,7 +1269,10 @@ async def player_report(bot, ev):
 
 @sv.on_rex(r'修正出刀\s?(\d+)\s?(完整刀|尾刀|补偿)?')
 async def correct_dao(bot, ev):
-    records = RecordDao(ev.group_id)
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    records = RecordDao(ev.group_id, period)
     info = ev["match"]
     dao_id = info.group(1)
     dao = info.group(2)
@@ -917,7 +1285,13 @@ async def correct_dao(bot, ev):
 @sv.on_fullmatch('催刀')
 async def nei_gui(bot, ev):
     group_id = ev.group_id
-    db = RecordDao(group_id)
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    if not period.active(time.time()):
+        await bot.send(ev, period.label(time.time()) + "\n当前不在出刀活动时间内，不催刀。")
+        return
+    db = RecordDao(group_id, period)
     data = await db.get_day_rcords(int(time.time()))
     if not data:
         await bot.send(ev, "数据库为空，请确保开启出刀监控或使用“回归性原理”进行修正")
@@ -929,7 +1303,10 @@ async def nei_gui(bot, ev):
 @sv.on_fullmatch('会战KPI', '会战kpi')
 async def get_kpi(bot, ev):
     group_id = ev.group_id
-    db = RecordDao(group_id)
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    db = RecordDao(group_id, period)
     data = await db.get_all_records()
     if not data:
         await bot.send(ev, "数据库为空，请确保开启出刀监控或使用“回归性原理”进行修正")
@@ -938,7 +1315,7 @@ async def get_kpi(bot, ev):
         special = {} if not special else special["kpi"] if "kpi" in special else {}
         players = kpi_report(data, special)
         img = await get_kpireport(players)
-        await bot.send(ev, img)
+        await bot.send(ev, period.label(time.time()) + "\n" + img)
 
 
 @sv.on_prefix("kpi调整")
