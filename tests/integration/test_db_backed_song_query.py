@@ -313,3 +313,109 @@ async def test_full_candidate_batches_have_bounded_queries_and_correct_public_id
     await GameSong.filter(id=target).update(active=False)
     await AliasRevision.filter(id=1).update(revision=F("revision") + 1)
     assert target not in await client.catalog.get_songs_by_ids("sdvx", generic_ids)
+
+
+
+@pytest.mark.parametrize("withdraw_winner", [False, True])
+async def test_revision_retry_reuses_scores_and_reads_current_candidates(seeded_song_db, monkeypatch, withdraw_winner):
+    from arcade_helper.catalog import CatalogRecord
+    from arcade_helper.core.song import SongData
+    from arcade_helper.storage.tortoise.catalog_models import AliasRevision, GameSong
+    from tortoise.expressions import F
+    from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client as client
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+    from src.plugins.chiffon_bot.shared.search import reranker
+
+    songs = [SongData(id=i, title=f"Fruit {name}", artist="composer", aliases=["红苹果"])
+             for i, name in enumerate(("One", "Two"), 1)]
+    report = await client.identities.import_records("sdvx", [
+        CatalogRecord(song, song.model_dump(mode="json"), str(song.id)) for song in songs
+    ], provider="catalog", namespace="native", complete=False)
+    ids = [report.song_ids[str(song.id)] for song in songs]
+    calls = []
+    async def rank(query, documents):
+        calls.append(documents)
+        if len(calls) == 1:
+            if withdraw_winner:
+                await GameSong.filter(id=ids[0]).update(active=False)
+            await AliasRevision.filter(id=1).update(revision=F("revision") + 1)
+        return [0.9, 0.0] if len(calls) == 1 else [0.0, 0.9]
+    monkeypatch.setattr(module, "embedding_enabled", lambda: False)
+    monkeypatch.setattr(module, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(reranker, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(reranker, "reranker_threshold", lambda: 0.6)
+    monkeypatch.setattr(reranker, "reranker_min_margin", lambda: 0.1)
+    monkeypatch.setattr(reranker, "rerank_texts", rank)
+    result = await client.catalog.search_all("composer 红苹果", game_code="sdvx")
+    assert [c.game_song_id for c in result.candidates] == [ids[1 if withdraw_winner else 0]]
+    assert len(calls) == 1
+    if not withdraw_winner:
+        fresh = await client.catalog.search_all("composer 红苹果", game_code="sdvx")
+        assert [c.game_song_id for c in fresh.candidates] == [ids[1]]
+        assert len(calls) == 2  # Scores never leak into another user's query.
+
+
+async def test_startup_refresh_imports_missing_arcade_sources_and_stops_cleanly(seeded_song_db, monkeypatch, tmp_path):
+    import asyncio
+    from arcade_helper import ArcadeHelperClient
+    from arcade_helper.catalog import CatalogRecord
+    from arcade_helper.core.song import SongData
+    from arcade_helper.games.arcade_songs import ARCADE_SONGS_SITES_URL
+    from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client as client
+    from src.plugins.chiffon_bot.integrations.lxns.catalog import BotCatalogClient
+
+    old = SongData(id=77, title="Old SDVX", artist="Existing")
+    report = await client.identities.import_records("sdvx", [CatalogRecord(old, old.model_dump(mode="json"), "77")],
+                                                    provider="fixture", complete=False)
+    old_id = report.song_ids["77"]
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def get_json(url, **kwargs):
+        calls.append(url)
+        if url == ARCADE_SONGS_SITES_URL:
+            return [{"gameCode": "gitadora", "dataSourceUrl": "https://fixture.test/gitadora"},
+                    {"gameCode": "sdvx", "dataSourceUrl": "https://fixture.test/sdvx"},
+                    {"gameCode": "maimai", "dataSourceUrl": "https://fixture.test/maimai"},
+                    {"gameCode": "hidden", "dataSourceUrl": "https://fixture.test/hidden", "isHidden": True}]
+        if "/sdvx/" in url:
+            raise ConnectionError("fixture unavailable")
+        assert "/gitadora/" in url
+        entered.set()
+        await release.wait()
+        return {"songs": [{"songId": "concon", "title": "concon〜INAReMIX〜", "artist": None, "sheets": []}]}
+    data = ArcadeHelperClient(http_get_json=get_json, local_data_dir=tmp_path, catalog_store=client.identities,
+                              song_store=client.songs)
+    await data.lifecycle.start()
+    bot = BotCatalogClient(data, song_store=client.songs, logger=client.catalog.logger,
+                           auto_sync_enabled=False, background_refresh_delay_seconds=0)
+    native = []
+    async def sync_native(adapter):
+        native.append(adapter.game_code)
+        return True
+    monkeypatch.setattr(bot, "_sync_adapter_from_remote", sync_native)
+    try:
+        available, message = await bot.refresh_song_data()
+        assert available and "已启动后台同步" in message
+        await asyncio.wait_for(entered.wait(), 3)
+        assert "后台同步已在进行中" in (await bot.refresh_song_data())[1]
+        release.set()
+        result = await asyncio.wait_for(bot.wait_for_refresh(), 5)
+        assert "失败 arcade-songs" in result and sorted(native) == ["chunithm", "maimai"]
+        assert (await client.identities.get_import("gitadora"))["available_song_count"] == 1
+        assert (await data.catalog.search_song("gitadora", "concon〜INAReMIX〜"))[0].title == "concon〜INAReMIX〜"
+        assert (await client.identities.get_song_by_id("sdvx", old_id)).title == "Old SDVX"
+        assert calls.count("https://fixture.test/gitadora/data.json") == 1
+        assert not any("/hidden/" in url or "/maimai/" in url for url in calls)
+        entered.clear()
+        release.clear()
+        assert bot.start_background_refresh()
+        task = bot._refresh_task
+        await asyncio.wait_for(entered.wait(), 3)
+        await asyncio.wait_for(bot.stop_auto_sync(), 2)
+        await asyncio.wait_for(data.lifecycle.stop(), 2)
+        assert task.cancelled() and bot._refresh_task is None
+        assert all(t.done() for t in data.catalog._catalog_tasks.values())
+    finally:
+        release.set()
+        await bot.stop_auto_sync()
+        await data.lifecycle.stop()

@@ -14,7 +14,7 @@ from arcade_helper.core.song import SongData
 from arcade_helper.core.song_identity import parse_chart_title
 from arcade_helper.search import MatchType, SongQueryResult, SongSearchService, is_short_song_query
 from arcade_helper.storage.tortoise import TortoiseSongStore
-from arcade_helper.storage.tortoise.catalog_models import SongReference, CatalogImport, GameSong
+from arcade_helper.storage.tortoise.catalog_models import SongReference, GameSong
 
 from ...shared.game.adapter import DomainAdapter
 from ...shared.search.embedding_cache import (
@@ -145,17 +145,19 @@ class BotCatalogClient:
         songs = await self.get_songs_by_ids(game_code, [r.song_id for r in results])
         return [replace(r, song_data=songs[r.song_id], title=songs[r.song_id].title) for r in results if r.song_id in songs]
 
-    async def _validate_results(self, query: str | int, results: list[SongQueryResult], games: list[str]) -> list[SongQueryResult]:
+    async def _validate_results(self, query: str | int, results: list[SongQueryResult], games: list[str],
+                                *, rerank_cache: dict | None = None) -> list[SongQueryResult]:
         """One acceptance policy for scoped and cross-game text candidates."""
         game_code = games[0] if len(games) == 1 else None
         if isinstance(query, int) or is_short_song_query(query):
             return results
         if results and not _is_uncertain_bm25(results, game_code):
             return results
+        options = {"score_cache": rerank_cache} if rerank_cache is not None else {}
         reranker_attempted = bool(results and reranker_enabled())
         if results:
             try:
-                reranked_results = await rerank_song_results(self, game_code, str(query), results)
+                reranked_results = await rerank_song_results(self, game_code, str(query), results, **options)
             except Exception as e:
                 self.logger.warning(f"[{game_code}] reranker 搜索失败，已跳过: {e}")
             else:
@@ -201,7 +203,7 @@ class BotCatalogClient:
         if not semantic_acceptance:
             return unverified
         try:
-            accepted = await rerank_song_results(self, game_code, str(query), embedding_results)
+            accepted = await rerank_song_results(self, game_code, str(query), embedding_results, **options)
             return unverified if accepted is None else accepted
         except Exception as e:
             self.logger.warning(f"[{game_code}] 语义候选验证失败: {e}")
@@ -326,6 +328,7 @@ class BotCatalogClient:
         if query == "":
             return AliasResolution("unknown", game_code, "candidates_require_choice", ())
         validate = allow_semantic and not is_short_song_query(query) and (reranker_enabled() or embedding_enabled())
+        rerank_cache = {}
         for _ in range(3):
             before = await self.get_revision() if validate else None
             result = await self.service.search_all(query, game_code=game_code, text_only=True)
@@ -351,7 +354,7 @@ class BotCatalogClient:
                     metadata = await self.service.identities.get_search_songs_by_ids(game,
                                    [c.game_song_id for c in candidates if c.game_code == game])
                     rows = [replace(r, song_data=metadata[r.song_id]) if r.song_data.game_code == game and r.song_id in metadata else r for r in rows]
-            accepted = await self._validate_results(query, rows, games)
+            accepted = await self._validate_results(query, rows, games, rerank_cache=rerank_cache)
             originals = {(c.game_code, c.game_song_id): c for c in candidates}
             selected = []
             for row in accepted:
@@ -509,16 +512,14 @@ class BotCatalogClient:
         succeeded = [adapter.display_name for adapter, ok in zip(adapters, results, strict=True) if ok]
         failed = [adapter.display_name for adapter, ok in zip(adapters, results, strict=True) if not ok]
         if self.aliases_enabled:
-            games = await CatalogImport.filter(provider="arcade_songs", namespace="default").values_list("game_code", flat=True)
-            for game in games:
-                try:
-                    await self.service.import_catalog(game)
-                    succeeded.append(game)
-                    results.append(True)
-                except Exception as exc:
-                    self.logger.warning(f"[{game}] 持久曲库同步失败，继续使用本地数据: {exc}")
-                    failed.append(game)
-                    results.append(False)
+            try:
+                reports = await self.service.prepare_catalogs(force_refresh=True)
+                succeeded.extend(reports)
+                results.extend(True for _ in reports)
+            except Exception as exc:
+                self.logger.warning(f"通用街机曲库同步部分失败，继续使用已发布数据: {exc}")
+                failed.append("arcade-songs")
+                results.append(False)
         ok_count = sum(1 for ok in results if ok)
         if ok_count == len(results):
             self.logger.info("全部乐曲数据后台同步完成")
@@ -654,11 +655,11 @@ class BotCatalogClient:
         return True
 
     async def stop_auto_sync(self) -> None:
-        tasks = [t for t in (self._auto_sync_task, self._cache_task) if t is not None]
+        tasks = [t for t in (self._auto_sync_task, self._cache_task, self._refresh_task) if t is not None]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        self._auto_sync_task = self._cache_task = None
+        self._auto_sync_task = self._cache_task = self._refresh_task = None
         await self.search._stop_index_builds()
         if self.aliases_enabled:
             await self.service.identities.text_search._stop_index_builds()

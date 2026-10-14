@@ -51,6 +51,7 @@ async def rerank_song_results(
     results: list[SongQueryResult],
     *,
     limit: int = 10,
+    score_cache: dict | None = None,
 ) -> list[SongQueryResult] | None:
     if not reranker_enabled():
         return None
@@ -71,7 +72,13 @@ async def rerank_song_results(
                 aliases = []
         documents.append(_song_text(result, aliases))
 
-    scores = await rerank_texts(str(query), documents)
+    key = (str(query), tuple(documents))
+    if score_cache is not None and key in score_cache:
+        scores = score_cache[key]
+    else:
+        scores = await rerank_texts(str(query), documents)
+        if score_cache is not None:
+            score_cache[key] = scores
     if not scores:
         return []
 

@@ -156,7 +156,7 @@ async def test_natural_language_ambiguous_alias_selects_song_or_cancels(app, see
     _finish_capture(monkeypatch, natural_language, responses)
     async def ack(*_args, **_kwargs):
         pass
-    async def sites():
+    async def sites(*, force_refresh=False):
         return [{"gameCode": "sdvx"}]
     async def jacket(*_args, **_kwargs):
         return None
@@ -209,7 +209,7 @@ async def test_selection_passes_new_command_and_abandons_old_request(
 
     async def ack(*_args, **_kwargs):
         pass
-    async def sites():
+    async def sites(*, force_refresh=False):
         return [{"gameCode": "sdvx"}]
     async def jacket(*_args, **_kwargs):
         return None
@@ -259,7 +259,7 @@ async def test_new_song_question_replaces_menu_before_selecting(app, seeded_song
 
     async def ack(*_args, **_kwargs):
         pass
-    async def sites():
+    async def sites(*, force_refresh=False):
         return [{"gameCode": "sdvx"}, {"gameCode": "ongeki"}]
     async def jacket(*_args, **_kwargs):
         return None
@@ -341,7 +341,7 @@ async def test_natural_language_game_choice_dispatches_reply(app, seeded_song_db
     async def ack(*_args, **_kwargs):
         pass
 
-    async def sites():
+    async def sites(*, force_refresh=False):
         return [{"gameCode": "sdvx"}]
 
     async def collections(song_id):
@@ -413,7 +413,7 @@ async def test_natural_language_groups_confirmed_works_and_selects_in_one_reply(
         return await search_all(query, **kwargs)
     async def ack(*_args, **_kwargs):
         pass
-    async def sites():
+    async def sites(*, force_refresh=False):
         return [{"gameCode": "sdvx"}, {"gameCode": "ongeki"}]
     async def jacket(*_args, **_kwargs):
         return None

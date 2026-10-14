@@ -145,3 +145,34 @@ async def test_reranker_provider_rejects_score_count_mismatch() -> None:
                 endpoint="http://reranker.test/rerank",
                 client=client,
             )
+
+
+
+@pytest.mark.asyncio
+async def test_request_scores_follow_document_changes_and_use_current_rows(monkeypatch):
+    from dataclasses import replace
+    from arcade_helper.core.song import SongData
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.shared.search import reranker
+
+    rows = [SongQueryResult(i, title, MatchType.BM25, 95, title,
+                           SongData(id=i, title=title, aliases=[], work_id=str(i)))
+            for i, title in enumerate(("First", "Second"), 1)]
+    calls = []
+    async def rank(query, documents):
+        calls.append(documents)
+        return [0.9, 0.1] if documents[0] == "First" else [0.1, 0.9]
+    monkeypatch.setattr(reranker, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(reranker, "reranker_threshold", lambda: 0.6)
+    monkeypatch.setattr(reranker, "reranker_min_margin", lambda: 0.1)
+    monkeypatch.setattr(reranker, "rerank_texts", rank)
+    cache = {}
+    assert await reranker.rerank_song_results(object(), "sdvx", "query", rows, score_cache=cache) == rows[:1]
+    current = [replace(row, song_data=row.song_data.model_copy(deep=True)) for row in rows]
+    reused = await reranker.rerank_song_results(object(), "sdvx", "query", current, score_cache=cache)
+    assert reused[0] is current[0] and len(calls) == 1
+    current[0].song_data.aliases = ["Updated"]
+    assert await reranker.rerank_song_results(object(), "sdvx", "query", current, score_cache=cache) == current[1:]
+    assert len(calls) == 2
+    await reranker.rerank_song_results(object(), "sdvx", "query", current, score_cache={})
+    assert len(calls) == 3

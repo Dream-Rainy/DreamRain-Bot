@@ -1,6 +1,8 @@
 import io
 from datetime import datetime
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.dates import AutoDateLocator, DateFormatter

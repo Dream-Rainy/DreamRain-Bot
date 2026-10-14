@@ -74,7 +74,7 @@ def loaded_chiffon_bot(app):
 
 
 @pytest_asyncio.fixture()
-async def seeded_song_db(tmp_path: Path, loaded_chiffon_bot):
+async def seeded_song_db(tmp_path: Path, loaded_chiffon_bot, monkeypatch):
     db_path = tmp_path / "songs.sqlite3"
     await Tortoise.init(
         {
@@ -95,6 +95,11 @@ async def seeded_song_db(tmp_path: Path, loaded_chiffon_bot):
     await Tortoise.generate_schemas()
     await seed_song_data()
     from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client
+    async def fixture_sites(**kwargs):
+        return []
+    # Each DB-backed test owns its source scope; do not import live catalogs.
+    monkeypatch.setattr(lxns_client.data.catalog.arcade_songs, "sites", fixture_sites)
+    lxns_client.data.catalog._catalog_games = None
     lxns_client.identities._song_cache.clear()
     lxns_client.catalog.search.invalidate_alias_cache()
     lxns_client.data.catalog.search.invalidate_alias_cache()
