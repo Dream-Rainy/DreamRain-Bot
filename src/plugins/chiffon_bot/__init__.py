@@ -21,6 +21,7 @@ from .app.commands.account import register_account_commands
 from .app.commands.admin import register_admin_commands
 from .app.commands.arcade import register_arcade_commands
 from .app.commands.alias import register_alias_commands
+from .app.web import register_alias_web
 from .app.commands.maimai import register_maimai_commands
 from .app.commands.chunithm import register_chunithm_commands
 from .app.commands.event import register_event_commands, register_event_rank_matcher
@@ -60,6 +61,7 @@ register_admin_commands(admin_group)
 arcade_group = CommandGroup("arcade", prefix_aliases=True, priority=5, block=True)
 register_arcade_commands(arcade_group)
 register_alias_commands(arcade_group, admin_group)
+alias_portal = register_alias_web(arcade_group, plugin_config)
 
 event_group = CommandGroup("event", prefix_aliases=True, priority=5)
 register_event_commands(event_group)
@@ -85,6 +87,8 @@ async def init():
 
 @driver.on_shutdown
 async def close():
+    if alias_portal:
+        await alias_portal.close()
     await stop_render_warmup()
     await _close_render_pages()
     await lxns_client.catalog.stop_auto_sync()

@@ -68,6 +68,11 @@ class Config(BaseModel):
     song_data_auto_sync_interval_seconds: int = 86400
     song_data_auto_sync_startup_delay_seconds: int = 300
 
+    # Independent editor only; the bot never exposes alias HTTP routes.
+    alias_web_enabled: bool = True
+    alias_web_relay_url: str = ""
+    alias_web_relay_token: str = ""
+
     # Song search embedding fallback
     song_search_embedding_enabled: bool = False
     song_search_embedding_endpoint: str = "http://127.0.0.1:11434/api/embed"
