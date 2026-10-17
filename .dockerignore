@@ -50,6 +50,15 @@ src/submodule/
 !src/submodule/
 !src/submodule/arcade-helper/
 !src/submodule/arcade-helper/**
+# 子模块放行后仍排除嵌套的开发环境、版本库及临时文件。
+**/.git
+**/.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/docs/plan
+**/docs/ai
 docker-compose*.yml
 !docker-compose*.example.yml
 tests

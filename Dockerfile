@@ -27,11 +27,9 @@ RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.li
 
 COPY pyproject.toml uv.lock* ./
 COPY src/submodule/arcade-helper/pyproject.toml src/submodule/arcade-helper/README.md ./src/submodule/arcade-helper/
+# editable 安装只需包元数据；真实源码在运行阶段复制，避免源码更新重建依赖层。
 RUN mkdir -p src/submodule/arcade-helper/src/arcade_helper && \
     touch src/submodule/arcade-helper/src/arcade_helper/__init__.py
-RUN --mount=type=cache,target=/app/.cache/uv \
-    uv sync --locked --no-dev --no-install-project --no-install-package arcade-helper
-COPY src/submodule/arcade-helper ./src/submodule/arcade-helper
 RUN --mount=type=cache,target=/app/.cache/uv \
     uv sync --locked --no-dev --no-install-project && \
     uvx pip-licenses \
@@ -44,6 +42,13 @@ RUN --mount=type=cache,target=/app/.cache/uv \
 
 FROM scratch AS dependency-licenses
 COPY --from=builder /app/DEPENDENCY_LICENSES.json /DEPENDENCY_LICENSES.json
+
+FROM astral/uv:python3.12-bookworm-slim AS source
+COPY src /app/src
+# 保持字体原路径，但独立复制为稳定层，避免代码更新时重复下载。
+RUN mkdir -p /app/assets/plugins/chiffon_bot/shared/render_templates && \
+    mv /app/src/plugins/chiffon_bot/shared/render_templates/fonts \
+       /app/assets/plugins/chiffon_bot/shared/render_templates/
 
 FROM astral/uv:python3.12-bookworm-slim
 
@@ -77,12 +82,6 @@ RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.li
 # 使用 ARG 让 UID/GID 可配置
 ARG UID=1000
 ARG GID=1001
-ARG IMAGE_SOURCE=""
-ARG VCS_REF=""
-
-LABEL org.opencontainers.image.source="${IMAGE_SOURCE}" \
-      org.opencontainers.image.description="DreamRain-Bot NoneBot2 container image" \
-      org.opencontainers.image.revision="${VCS_REF}"
 
 ENV UID=${UID} \
     GID=${GID} \
@@ -107,7 +106,8 @@ COPY --from=builder --chown=${UID}:${GID} /app/.venv /app/.venv
 RUN mkdir -p /app/config /app/data /app/logs /app/.cache && \
     chown -R ${UID}:${GID} /app/config /app/data /app/logs /app/.cache
 
-COPY --chown=${UID}:${GID} src /app/src
+COPY --from=source --chown=${UID}:${GID} /app/assets/ /app/src/
+COPY --from=source --chown=${UID}:${GID} /app/src/ /app/src/
 COPY --chown=${UID}:${GID} scripts /app/scripts
 COPY --chown=${UID}:${GID} bot.py /app/bot.py
 COPY --chown=${UID}:${GID} LICENSE README.md THIRD_PARTY_NOTICES.md REUSE.toml /usr/share/doc/dreamrain-bot/
@@ -124,3 +124,10 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
 CMD ["uv", "run", "bot.py"]
+
+# 将易变元数据放在最后，避免每次提交使依赖层缓存失效。
+ARG IMAGE_SOURCE=""
+ARG VCS_REF=""
+LABEL org.opencontainers.image.source="${IMAGE_SOURCE}" \
+      org.opencontainers.image.description="DreamRain-Bot NoneBot2 container image" \
+      org.opencontainers.image.revision="${VCS_REF}"
