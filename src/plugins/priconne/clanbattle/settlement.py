@@ -38,8 +38,10 @@ def _effective_damage(records):
         amount, killed = meta.get("history_damage"), meta.get("killed")
         duplicate = meta.get("history_id") and history_ids[meta["history_id"]] > 1
         if type(amount) is int and 0 <= amount <= raw and type(killed) is bool and not duplicate:
-            record.update(effective_damage=amount, killed=killed,
-                          hp_before=amount if killed else None)
+            record["killed"] = killed
+            # 击杀历史也可能包含溢出，须经同王累计扣血核验后才可作为血量。
+            if not killed:
+                record["effective_damage"] = amount
     observations = [facts(r)["report"] for r in records if isinstance(facts(r).get("report"), dict)]
     if not observations or not _ordered(records):
         return
@@ -56,7 +58,9 @@ def _effective_damage(records):
             return
         amount = min(raw, remaining)
         killed = amount == remaining
-        if record["effective_damage"] is not None and (record["effective_damage"] != amount or record["killed"] != killed):
+        if record["killed"] is not None and record["killed"] != killed:
+            return
+        if record["effective_damage"] is not None and record["effective_damage"] != amount:
             return
         calculated.append((record, remaining, amount, killed))
         totals[str(record["pcrid"])] += amount
@@ -148,7 +152,7 @@ def battle_notice(history, record=None):
     target = f"{history['name']}对{history['lap_num']}周目{history['order_num']}王"
     if not history["kill"]:
         return f"{target}造成了{record['damage'] if record else history['damage']}点伤害。"
-    amount = record.get("effective_damage") if record else history.get("damage")
+    amount = record.get("effective_damage") if record else None
     damage = f"{amount}点伤害" if amount is not None else "伤害待核验"
     raw = str(record["damage"]) if record else "待核验"
     seconds = record.get("extended_seconds") if record else None

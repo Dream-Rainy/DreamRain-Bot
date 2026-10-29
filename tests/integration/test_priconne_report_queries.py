@@ -91,7 +91,9 @@ async def test_settlement_query_uses_earlier_tail_context_and_preserves_later_ma
                 fields.update(group_id=11, pcrid=123, name="成员", lap=42, boss=str(log),
                               time=period.start + log * 120, damage=damage, battle_log_id=log,
                               remain_time=90, battle_time=90, settlement=dict(
-                                  event_id=42, history_damage=actual, killed=killed, history_id=log))
+                                  event_id=42, history_damage=actual, killed=killed, history_id=log,
+                                  report=dict(max_hp=actual, totals={"123": actual}, covered_logs=[["123", log]])
+                                  if killed else None))
                 session.add(Record(**fields))
             await session.commit()
         dao = sql.RecordDao(11, period)

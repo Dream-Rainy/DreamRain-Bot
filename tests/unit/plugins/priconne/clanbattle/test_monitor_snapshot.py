@@ -17,6 +17,9 @@ async def test_settlement_enrichment_matches_members_and_retries_optional_report
     rows = [dict(id=uid, pcrid=uid, name="同名", time=1001, lap=42, boss=str(uid),
                  damage=raw, flag=0, battle_log_id=uid, remain_time=90, battle_time=90, settlement=None)
             for uid, raw in [(1, 500), (2, 700), (3, 900)]]
+    for row, actual in zip(rows[:2], (100, 200)):
+        row["settlement"] = {"report": dict(max_hp=actual, totals={str(row["pcrid"]): actual},
+                                          covered_logs=[[str(row["pcrid"]), row["battle_log_id"]]])}
     calls = []
 
     async def records(start, end):
@@ -987,3 +990,37 @@ async def test_registered_retry_state_is_auto_resumed_after_restart(
         "qq_id": 2,
         "snapshot": snapshot,
     }
+
+async def test_matched_kill_history_still_fetches_damage_report_and_reuses_verified_cache(clanbattle):
+    from src.plugins.priconne.clanbattle.model import ClanBattle
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    clan = ClanBattle(10001)
+    clan.event, clan.clan_battle_id, clan.clan_id, clan.loop_num = BattlePeriod(42, 1000, 2000), 42, 8, 1
+    rows = [dict(id=i, pcrid=i, name='成员', time=1000+i, lap=42, boss='1', damage=raw,
+                 flag=0, battle_log_id=i, remain_time=90, battle_time=90, settlement=None)
+            for i, raw in ((1, 900), (2, 500))]
+    calls = []
+
+    async def records(start, end):
+        return deepcopy(rows)
+
+    async def save(changed):
+        for item in changed:
+            rows[item['id'] - 1]['settlement'] = item['settlement']
+
+    async def api(path, params, **kwargs):
+        assert path == '/clan_battle/damage_report' and kwargs['noerr'] is False
+        calls.append(params)
+        return dict(max_hp=1000, damage_report=[dict(viewer_id=1, damage=900), dict(viewer_id=2, damage=100)])
+
+    clan.record = SimpleNamespace(get_settlement_records=records, save_settlement_facts=save)
+    clan.client = SimpleNamespace(callapi=api)
+    history = [dict(viewer_id=i, lap_num=42, order_num=1, create_time=1000+i,
+                    history_id=i, damage=raw, kill=i == 2) for i, raw in ((1, 900), (2, 500))]
+    for _ in range(2):
+        await clan._enrich_records(history, [dict(lap_num=42, order_num=1, max_hp=1000)], 1)
+        kill = clan.settlements[('2', 42, '1', 1002)]
+        assert kill['damage'] == 500 and kill['effective_damage'] == 100
+        assert kill['hp_before'] == 100 and kill['extended_seconds'] == 90
+    assert len(calls) == 1

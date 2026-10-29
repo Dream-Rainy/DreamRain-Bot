@@ -218,7 +218,7 @@ class ClanBattle:
                 changed.append(row)
             groups.setdefault((row["lap"], row["boss"]), []).append(row)
         for (lap, boss), rows in groups.items():
-            if all(type(facts(row).get("history_damage")) is int and type(facts(row).get("killed")) is bool for row in rows):
+            if all(type(facts(row).get("history_damage")) is int and facts(row).get("killed") is False for row in rows):
                 continue
             logs = sorted([[str(row["pcrid"]), row["battle_log_id"]] for row in rows])
             if any(isinstance(facts(row).get("report"), dict) and facts(row)["report"].get("covered_logs") == logs for row in rows):

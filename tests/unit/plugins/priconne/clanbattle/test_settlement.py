@@ -12,6 +12,8 @@ def settlement(app):
 
 def row(log, *, uid=1, boss=None, seconds=90, used=90, raw=500, actual=100, killed=True, moment=None, manual=None):
     meta = {"event_id": 42, "history_damage": actual, "killed": killed, "history_id": log}
+    if killed:
+        meta["report"] = dict(max_hp=actual, totals={str(uid): actual}, covered_logs=[[str(uid), log]])
     if manual is not None:
         meta["manual_flag"] = manual
     return dict(pcrid=uid, name="成员", time=moment or 1790823600 + log * 120,
@@ -110,6 +112,8 @@ def test_kill_notice_uses_exact_requested_text_and_never_confuses_unknown_with_z
     record = settlement.analyse_records([row(1)])[0]
     history = dict(name="成员", lap_num=42, order_num=1, kill=1, damage=100)
     assert settlement.battle_notice(history, record) == "成员对42周目1王造成100点伤害并击破（原始伤害500）。获得延长战斗时间90s。"
+    assert settlement.battle_notice(history) == (
+        "成员对42周目1王造成伤害待核验并击破（原始伤害待核验）。延长战斗时间待核验。")
     record["extended_seconds"] = None
     assert settlement.battle_notice(history, record).endswith("延长战斗时间待核验。")
     record["extended_seconds"] = 0
@@ -132,3 +136,41 @@ async def test_current_report_uses_deducted_damage_while_personal_report_preserv
     players, damage, score = base.clanbattle_report([unknown], 15)
     await base.get_cbreport(players, damage, score)
     assert captured[-1][0][0][-2:] == ["—", "—"]
+
+@pytest.mark.parametrize('evidence', ['verified', 'missing', 'mismatch'])
+def test_real_overflow_requires_hp_verification_despite_raw_damage_in_history(settlement, evidence):
+    raw = [161419057, 300435529, 289500524, 329475376, 305902692]
+    maximum, remaining = 1360000000, 279169514
+    records = [row(i, uid=i, boss=2, raw=damage, actual=damage, killed=i == 5)
+               for i, damage in enumerate(raw, 1)]
+    for item in records:
+        item['lap'] = 39
+        item['settlement'].pop('report', None)
+        item['settlement']['max_hp'] = maximum
+    records[-1]['name'] = '妮妮szbwdz'
+    if evidence != 'missing':
+        totals = {str(i): amount for i, amount in enumerate(raw[:-1] + [remaining], 1)}
+        if evidence == 'mismatch':
+            totals['5'] += 1
+        records[0]['settlement']['report'] = dict(max_hp=maximum, totals=totals,
+                                                 covered_logs=[[str(i), i] for i in range(1, 6)])
+    original = deepcopy(records)
+    result = settlement.analyse_records(records)
+    kill = result[-1]
+    assert records == original and [r['damage'] for r in result] == raw
+    if evidence == 'verified':
+        assert sum(r['effective_damage'] for r in result) == maximum
+        assert kill['effective_damage'] == kill['hp_before'] == remaining
+        assert kill['extended_seconds'] == 28
+        history = dict(name='妮妮szbwdz', lap_num=39, order_num=2, kill=1, damage=raw[-1])
+        assert settlement.battle_notice(history, kill) == (
+            '妮妮szbwdz对39周目2王造成279169514点伤害并击破（原始伤害305902692）。获得延长战斗时间28s。')
+    else:
+        assert kill['effective_damage'] is None and kill['hp_before'] is None
+        assert kill['extended_seconds'] is None and settlement.uncertain(kill)
+
+
+def test_verified_kill_without_overflow_can_legitimately_return_twenty_seconds(settlement):
+    result = settlement.analyse_records([row(1, raw=100, actual=100, used=90)])[0]
+    assert result['effective_damage'] == result['damage'] == 100
+    assert result['hp_before'] == 100 and result['extended_seconds'] == 20
