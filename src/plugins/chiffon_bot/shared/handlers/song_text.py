@@ -15,10 +15,14 @@ from ...infra.http import http_client
 
 def format_song_text_detail(game_code: str, result: SongQueryResult) -> list[str]:
     song = result.song_data
+    song_id = f"catalog:{result.song_id}" if getattr(song, "catalog_only", False) else result.song_id
     lines = [
         f"[{game_code}] 曲目详情",
-        f"曲名: {result.title} ({result.song_id})",
+        f"曲名: {result.title} ({song_id})",
     ]
+
+    if getattr(song, "catalog_only", False):
+        lines.append("上游曲库收录，暂无原生 ID，成绩与收藏查询暂不可用。")
 
     _append_field(lines, "艺术家", _get_text(song, "artist"))
     _append_field(lines, "分类", _get_text(song, "category"))

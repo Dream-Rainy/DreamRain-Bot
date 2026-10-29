@@ -685,6 +685,31 @@ async def test_bot_catalog_search_defers_uncertain_bm25_to_embedding(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("query", "expected_id"), [("semantic nickname", 1005), ("[奏] semantic nickname", 1007),
+    ("奏semantic nickname", 1007), ("宴 semantic nickname", 1006), ("[宴] semantic nickname", 1006)])
+async def test_semantic_fallback_keeps_normal_and_special_chart_namespaces(loaded_chiffon_bot, monkeypatch, query, expected_id):
+    from arcade_helper.search import MatchType, SongQueryResult
+    from src.plugins.chiffon_bot.integrations.lxns import catalog as module
+
+    normal = SongData(id=1005, title="Normal Song", game_code="popn", chart_variant=())
+    special = SongData(id=1006, title="[奏] Special Song", game_code="popn", chart_variant=("奏",), marker_aliases=("宴",))
+    same_marker = SongData(id=1007, title="[奏] Other Special Song", game_code="popn", chart_variant=("奏",))
+    text = [SongQueryResult(s.id, s.title, MatchType.BM25, score, "nickname", s)
+            for s, score in [(normal, 95), (special, 94), (same_marker, 93)]]
+    async def embeddings(*args, **kwargs):
+        return [SongQueryResult(s.id, s.title, MatchType.EMBEDDING, score, "nickname", s)
+                for s, score in [(normal, 90), (special, 99), (same_marker, 105)]]
+    async def no_reranker(*args, **kwargs):
+        return None
+    monkeypatch.setattr(module, "rerank_song_results", no_reranker)
+    monkeypatch.setattr(module, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(module, "reranker_enabled", lambda: False)
+    monkeypatch.setattr(module, "search_song_by_embedding", embeddings)
+    result = await _catalog(loaded_chiffon_bot)._validate_results(query, text, ["popn"])
+    assert [r.song_id for r in result] == [expected_id]
+
+
+@pytest.mark.asyncio
 async def test_bot_catalog_search_defers_uncertain_bm25_to_reranker(
     loaded_chiffon_bot,
     monkeypatch: pytest.MonkeyPatch,

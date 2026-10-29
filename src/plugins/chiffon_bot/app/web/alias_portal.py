@@ -46,6 +46,10 @@ class Decision(Version):
     confirmed_target_versions: dict[str, StrictInt] | None = None
 
 
+class CandidateDecision(Decision):
+    marker_aliases: dict[int, list[str]] = Field(default_factory=dict)
+
+
 class AliasPortal:
     def __init__(self, client, sessions: EditorSessions):
         self.client, self.sessions = client, sessions
@@ -81,7 +85,9 @@ class AliasPortal:
             "id", "work_id", "game_code", "title", "artist", "active", "chart_variant", "version", "edition_key")
         native = await SongReference.filter(game_song_id__in=set(ids), provider="catalog", namespace="native").order_by("present", "id").values("game_song_id", "external_key")
         public = {r["game_song_id"]: r["external_key"] for r in native}
+        markers = await self.client.data.aliases.get_marker_aliases(list(set(ids)))
         for row in rows:
+            row["marker_aliases"] = markers.get(row["id"], [])
             row["public_id"] = public.get(row["id"], row["id"])
         return {row["id"]: row for row in rows}
 
@@ -215,17 +221,17 @@ class AliasPortal:
         async def candidates(request: Request, after: Cursor = 0):
             member = self.admin(request)
             rows = await self.service(request).list_candidates(actor_id=member.user_id, after_id=after, limit=30)
-            metadata = await self.songs([r[k] for r in rows for k in ("left_id", "right_id")])
+            metadata = await self.songs([sid for row in rows for sid in row["song_ids"]])
             for row in rows:
-                row["songs"] = [metadata.get(row["left_id"]), metadata.get(row["right_id"])]
+                row["songs"] = [metadata.get(sid) for sid in row["song_ids"]]
                 row["stale"] = {str(s["id"]): s["version"] for s in row["songs"] if s} != row["target_versions"]
             return {"items": rows, "next_cursor": rows[-1]["id"] if rows else after, "has_more": len(rows) == 30}
 
         @router.post("/api/candidates/{candidate_id}/decide")
-        async def decide(request: Request, candidate_id: int, body: Decision):
+        async def decide(request: Request, candidate_id: int, body: CandidateDecision):
             member = self.admin(request)
             await self.service(request).decide_candidate(candidate_id, actor_id=member.user_id,
-                accept=body.approve, expected_version=body.version, reason=body.reason)
+                accept=body.approve, expected_version=body.version, reason=body.reason, marker_aliases=body.marker_aliases)
             self.client.data.catalog.invalidate_search_cache()
             return {"ok": True}
 

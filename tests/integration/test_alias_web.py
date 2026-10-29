@@ -185,6 +185,41 @@ async def test_matching_candidate_requires_current_version_and_merges_real_works
         assert any(e["action"]=="decide_candidate" and e["after"]["id"]==row["id"] for e in events)
 
 
+async def test_chart_candidate_group_exposes_all_members_and_validates_last_version(portal):
+    p, app = portal
+    titles = ["Portal Family Song", *[f"[marker{i}] Portal Family Song" for i in range(6)]]
+    await p.client.identities.import_arcade_catalog("gitadora", {"songs": [
+        {"title": title, "artist": "Group Author"} for title in titles
+    ]})
+    async with browser(app) as admin:
+        await authenticate(portal, admin, 456)
+        assert (await admin.post(BASE+"/api/associate", json={})).status_code == 200
+        rows = (await admin.get(BASE+"/api/candidates")).json()["items"]
+        row, = [r for r in rows if any(s and s["title"] in titles for s in r["songs"])]
+        assert len(row["songs"]) == 7 and not row["stale"]
+        assert {s["title"] for s in row["songs"]} == set(titles)
+        last = await GameSong.get(id=row["song_ids"][-1])
+        last.version += 1
+        await last.save(update_fields=["version"])
+        rows = (await admin.get(BASE+"/api/candidates")).json()["items"]
+        assert next(r for r in rows if r["id"] == row["id"])["stale"]
+        decision = {"approve": True, "version": row["version"], "reason": "Confirmed same recording for every chart"}
+        assert (await admin.post(BASE+f"/api/candidates/{row['id']}/decide", json=decision)).status_code == 409
+        assert (await admin.post(BASE+"/api/associate", json={})).status_code == 200
+        rows = (await admin.get(BASE+"/api/candidates")).json()["items"]
+        row = next(r for r in rows if r["id"] == row["id"])
+        decision["version"] = row["version"]
+        decision["marker_aliases"] = {str(last.id): ["宴"]}
+        response = await admin.post(BASE+f"/api/candidates/{row['id']}/decide", json=decision)
+        assert response.status_code == 200, response.text
+        assert len(set(await GameSong.filter(id__in=row["song_ids"]).values_list("work_id", flat=True))) == 1
+
+        detail = (await admin.get(BASE+f"/api/songs/{last.id}")).json()
+        assert detail["song"]["marker_aliases"] == ["宴"]
+        assert detail["song"]["chart_variant"] == ["marker5"]
+        assert not (await admin.get(BASE+"/api/candidates")).json()["items"]
+
+
 async def test_editor_private_command_uses_real_actor_and_refuses_group_links(app,portal,monkeypatch):
     from types import SimpleNamespace
     from nonebot.adapters.onebot.v11 import Adapter,Bot,PrivateMessageEvent

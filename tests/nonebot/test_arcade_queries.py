@@ -276,3 +276,50 @@ async def test_natural_language_artist_query_returns_matching_songs(
 
     assert len(responses) == 1
     assert responses[0].text == "[sdvx] 曲师名包含“xi”的歌曲（1 首）：\n[1001] FLOWER"
+
+
+async def test_native_source_only_queries_keep_catalog_and_native_ids_separate(app, seeded_song_db, monkeypatch):
+    from arcade_helper.games.chunithm.schemas import ChuniSongData
+    from src.plugins.chiffon_bot.integrations.lxns.client import lxns_client
+    from src.plugins.chiffon_bot.app.commands import arcade, natural_language
+    from src.plugins.chiffon_bot.shared.handlers import generic_song_info as info
+
+    await lxns_client.data.catalog.sync_songs("chunithm", {
+        7: ChuniSongData(id=7, title="Known CH", artist="Artist"),
+    }, supplemental_provider="arcade_songs", supplemental_payload={"songs": [
+        {"songId": "known", "title": "Known CH", "artist": "Artist", "sheets": []},
+        {"songId": "Melodiniq", "title": "Melodiniq", "artist": "onoken", "version": "X-VERSE-X",
+         "sheets": [{"type": "std", "difficulty": "master", "level": "15+", "internalLevelValue": 15.6}]},
+    ]})
+    candidate, = (await lxns_client.catalog.search_all("Melodiniq")).candidates
+    internal = candidate.game_song_id
+    assert await lxns_client.catalog.public_song_id("chunithm", internal) == f"catalog:{internal}"
+    await lxns_client.data.catalog.sync_songs("chunithm", {
+        internal: ChuniSongData(id=internal, title="Native ID collision", artist="Other"),
+    })
+    numeric, = await lxns_client.catalog.search_song("chunithm", str(internal))
+    assert numeric.title == "Native ID collision"
+    explicit, = await lxns_client.catalog.search_song("chunithm", f"catalog:{internal}")
+    assert explicit.title == "Melodiniq" and explicit.song_data.catalog_only
+    assert (await lxns_client.catalog.alias_candidate_result(candidate)).song_data.catalog_only
+
+    async def no_jacket(*args, **kwargs):
+        return None
+    monkeypatch.setattr(info, "load_song_jacket_bytes", no_jacket)
+    monkeypatch.setattr(arcade, "load_song_jacket_bytes", no_jacket)
+    # The ordinary native renderer and score/collection APIs must not see an internal ID.
+    class Adapter:
+        game_code = "chunithm"
+        display_name = "中二"
+        async def fetch_collections(self, *args):
+            raise AssertionError("catalog ID must not be used as a native ID")
+        async def render_song_image(self, *args):
+            raise AssertionError("source-only metadata requires the generic display")
+    adapter = Adapter()
+    monkeypatch.setattr(natural_language, "iter_searchable_adapters", lambda: [adapter])
+    response = await natural_language._query_alias_song("Melodiniq", _group_event("Melodiniq是什么歌", 99))
+    assert "Melodiniq" in response.text and f"catalog:{internal}" in response.text and "15.6" in response.text
+    scoped = await arcade.query_arcade_song("chunithm", "Melodiniq", 100)
+    assert "Melodiniq" in scoped.text and f"catalog:{internal}" in scoped.text
+    result = await info.generic_song_info("Melodiniq", "user", 101, adapter)
+    assert "暂无原生 ID" in result.text

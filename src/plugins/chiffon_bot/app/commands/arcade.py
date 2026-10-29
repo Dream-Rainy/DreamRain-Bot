@@ -129,7 +129,8 @@ async def build_arcade_song_response(
         for result in results[:5]:
             artist = _get_text(result.song_data, "artist")
             suffix = f"  {artist}" if artist else ""
-            lines.append(f"[{result.song_id}] {result.title}{suffix} ({result.match_score:.0f}%)")
+            song_id = f"catalog:{result.song_id}" if getattr(result.song_data, "catalog_only", False) else result.song_id
+            lines.append(f"[{song_id}] {result.title}{suffix} ({result.match_score:.0f}%)")
         if len(results) > 5:
             lines.append(f"...还有 {len(results) - 5} 个结果")
         return BotResponse(text="\n".join(lines), reply_to=message_id)

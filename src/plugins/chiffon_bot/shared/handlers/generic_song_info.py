@@ -39,6 +39,16 @@ async def generic_song_info(
 
     logger.info(f"[{gc}] 命中乐曲: [{song_id}] {result.title}")
 
+    if getattr(song_data, "catalog_only", False):
+        from ...integrations.lxns.client import lxns_client
+        try:
+            sites = await lxns_client.data.catalog.arcade_songs.sites()
+        except Exception:
+            sites = []
+        image = await load_song_jacket_bytes(gc, result, arcade_sites=sites)
+        return BotResponse(text="\n".join(format_song_text_detail(gc, result)), image=image,
+                           reply_to=message_id, suffix=build_match_hint_text(perfect, fuzzy))
+
     # 可选：拉取收藏信息
     collections = await adapter.fetch_collections(song_id)
     if collections:

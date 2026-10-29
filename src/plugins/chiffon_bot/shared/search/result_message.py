@@ -20,7 +20,8 @@ def _get_artist(song_data: SongData) -> str:
 
 def _result_label(r: SongQueryResult, *, show_artist: bool = True) -> str:
     """生成结果条目的显示标签；show_artist=True 时附加曲师。"""
-    base = f"[{r.song_id}] {r.title}"
+    song_id = f"catalog:{r.song_id}" if getattr(r.song_data, "catalog_only", False) else r.song_id
+    base = f"[{song_id}] {r.title}"
     if show_artist:
         artist = _get_artist(r.song_data)
         if artist:

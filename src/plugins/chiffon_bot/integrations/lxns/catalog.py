@@ -11,7 +11,7 @@ from typing import Any
 from arcade_helper import ArcadeHelperClient
 from arcade_helper.aliases.models import alias_key, AliasCandidate, AliasResolution
 from arcade_helper.core.song import SongData
-from arcade_helper.core.song_identity import parse_chart_title
+from arcade_helper.core.song_identity import parse_chart_title, expand_chart_query
 from arcade_helper.search import MatchType, SongQueryResult, SongSearchService, is_short_song_query
 from arcade_helper.storage.tortoise import TortoiseSongStore
 from arcade_helper.storage.tortoise.catalog_models import SongReference, GameSong
@@ -135,11 +135,11 @@ class BotCatalogClient:
             candidates = resolution.candidates
             if not candidates:
                 return []
-            ids = await self.public_song_ids([(game_code, c.game_song_id) for c in candidates])
-            songs = await self.get_songs_by_ids(game_code, [ids[(game_code, c.game_song_id)] for c in candidates])
-            return [SongQueryResult(ids[(game_code, c.game_song_id)], c.title, MatchType(c.match_type), c.score,
-                                    c.matched_text, songs[ids[(game_code, c.game_song_id)]])
-                    for c in candidates if ids[(game_code, c.game_song_id)] in songs]
+            if game_code in _DB_GAME_CODES:
+                return await self.service.hydrate_candidates(candidates)
+            songs = await self.get_songs_by_ids(game_code, [c.game_song_id for c in candidates])
+            return [SongQueryResult(c.game_song_id, c.title, MatchType(c.match_type), c.score, c.matched_text,
+                                    songs[c.game_song_id]) for c in candidates if c.game_song_id in songs]
         results = await self.search.search_candidates(query, game_code=game_code)
         results = await self._validate_results(query, results, [game_code])
         songs = await self.get_songs_by_ids(game_code, [r.song_id for r in results])
@@ -173,15 +173,30 @@ class BotCatalogClient:
             async with semaphore:
                 try:
                     rows = await search_song_by_embedding(self, game, str(query), hydrate=False, internal_ids=self.aliases_enabled)
-                    markers = parse_chart_title(str(query))[1]
-                    if rows is not None and markers:
-                        rows = [r for r in rows if tuple(r.song_data.chart_variant or ()) == markers]
                     return game, rows
                 except Exception as e:
                     self.logger.warning(f"[{game}] embedding 搜索失败，已跳过: {e}")
                     return game, None
         by_game = dict(await asyncio.gather(*(find(game) for game in games)))
-        unverified = [r for r in results if by_game.get(getattr(r.song_data, "game_code", None) or game_code) is None]
+        if self.aliases_enabled:
+            queries = await self.service.aliases.expand_query(str(query), game_code=game_code)
+        else:
+            queries = expand_chart_query(str(query), ((r.song_data.chart_variant
+                if r.song_data.chart_variant is not None else parse_chart_title(r.title)[1],
+                getattr(r.song_data, "marker_aliases", ())) for rows in by_game.values() for r in rows or ()))
+        markers = {parse_chart_title(text)[1] for text in queries if parse_chart_title(text)[1]} or {()}
+        explicit = parse_chart_title(str(query))[1]
+        def matches_chart(row):
+            variant = row.song_data.chart_variant
+            variant = tuple(variant if variant is not None else parse_chart_title(row.title)[1])
+            if variant not in markers:
+                return False
+            if len(queries) == 1 or (explicit and variant == explicit):
+                return True
+            local = expand_chart_query(str(query), [(variant, getattr(row.song_data, "marker_aliases", ()))])
+            return bool(set(local) & set(queries[1:]))
+        by_game = {game: None if rows is None else [r for r in rows if matches_chart(r)] for game, rows in by_game.items()}
+        unverified = [r for r in results if matches_chart(r) and by_game.get(getattr(r.song_data, "game_code", None) or game_code) is None]
         embedding_results = sorted([r for rows in by_game.values() if rows is not None for r in rows],
                                    key=lambda r: r.match_score, reverse=True)
         if not embedding_results:
@@ -340,8 +355,10 @@ class BotCatalogClient:
                 candidates = tuple(c for c in candidates if c.match_type != "bm25")
             if not validate or exact:
                 return replace(result, candidates=candidates)
+            marker_aliases = await self.service.aliases.get_marker_aliases([c.game_song_id for c in candidates]) if self.aliases_enabled else {}
             rows = [SongQueryResult(c.game_song_id, c.title, MatchType(c.match_type), c.score, c.matched_text,
-                    SongData(id=c.game_song_id, title=c.title, work_id=c.work_id, game_code=c.game_code)) for c in candidates]
+                    SongData(id=c.game_song_id, title=c.title, work_id=c.work_id, game_code=c.game_code,
+                             chart_variant=c.chart_variant, marker_aliases=marker_aliases.get(c.game_song_id, ()))) for c in candidates]
             if rows and not _is_uncertain_bm25(rows, game_code):
                 return replace(result, candidates=candidates)
             if not rows and not (embedding_enabled() and reranker_enabled() and reranker_threshold() > 0):
@@ -384,10 +401,10 @@ class BotCatalogClient:
             raise ValueError("歌曲尚未导入或 ID 无效，请先同步曲库")
         return internal_id
 
-    async def public_song_id(self, game_code: str, internal_id: int) -> int:
+    async def public_song_id(self, game_code: str, internal_id: int) -> int | str:
         return (await self.public_song_ids([(game_code, internal_id)]))[(game_code, internal_id)]
 
-    async def public_song_ids(self, songs: list[tuple[str, int]]) -> dict[tuple[str, int], int]:
+    async def public_song_ids(self, songs: list[tuple[str, int]]) -> dict[tuple[str, int], int | str]:
         result = {pair: pair[1] for pair in songs if pair[0] not in _DB_GAME_CODES}
         native = {pair for pair in songs if pair[0] in _DB_GAME_CODES}
         if not native:
@@ -400,18 +417,24 @@ class BotCatalogClient:
             pair = reference["game_code"], reference["game_song_id"]
             if pair in native and reference["external_key"].isdecimal():
                 result.setdefault(pair, int(reference["external_key"]))
+        missing = native - result.keys()
+        if missing:
+            extras = await SongReference.filter(
+                game_song_id__in={sid for _, sid in missing}, provider__in=["arcade_songs", "dxrating"],
+                present=True, game_song__active=True,
+            ).values_list("game_code", "game_song_id")
+            for pair in extras:
+                if pair in missing:
+                    result[pair] = f"catalog:{pair[1]}"
         if native - result.keys():
             raise ValueError("内部收录没有可用的游戏原生 ID")
         return result
 
     async def alias_candidate_result(self, candidate) -> SongQueryResult:
-        song_id = await self.public_song_id(candidate.game_code, candidate.game_song_id)
-        return SongQueryResult(
-            song_id=song_id, title=candidate.title,
-            match_type=MatchType(candidate.match_type), match_score=candidate.score,
-            matched_text=candidate.matched_text,
-            song_data=await self.get_song_by_id(candidate.game_code, song_id),
-        )
+        rows = await self.service.hydrate_candidates([candidate])
+        if not rows:
+            raise ValueError("歌曲已下架或曲库发生变化，请重新查询")
+        return rows[0]
 
     async def get_song_with_difficulty(
         self,
