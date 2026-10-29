@@ -23,6 +23,7 @@ CORE_LOCAL_PLUGINS = {
 
 KNOWN_ORM_REVISIONS = {
     "e828532300c4",
+    "c5e8b2d4a901",
 }
 
 

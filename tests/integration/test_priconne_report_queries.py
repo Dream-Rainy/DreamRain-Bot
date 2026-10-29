@@ -116,7 +116,7 @@ def test_settlement_migration_preserves_old_rows_and_roundtrips_json(app):
     from alembic.operations import Operations
 
     def migration(filename):
-        path = Path(__file__).resolve().parents[2] / "migrations" / "versions" / filename
+        path = Path(__file__).resolve().parents[2] / "src" / "plugins" / "priconne" / "migrations" / filename
         spec = importlib.util.spec_from_file_location(filename, path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

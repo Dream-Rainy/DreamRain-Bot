@@ -675,6 +675,10 @@ async def test_bot_catalog_search_defers_uncertain_bm25_to_embedding(
         assert kwargs == {"hydrate": False, "internal_ids": False}
         return embedding_results
 
+    async def skip_reranker(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(catalog_module, "rerank_song_results", skip_reranker)
     monkeypatch.setattr(catalog_module, "search_song_by_embedding", fake_embedding)
     monkeypatch.setattr(catalog_module, "embedding_enabled", lambda: True)
     monkeypatch.setattr(catalog_module, "reranker_enabled", lambda: False)
