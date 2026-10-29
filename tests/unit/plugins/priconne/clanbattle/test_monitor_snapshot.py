@@ -168,9 +168,9 @@ async def test_roster_snapshot_preserves_same_name_game_ids(clanbattle, monkeypa
 
 
 @pytest.fixture()
-def clanbattle(app):
+def clanbattle(app, monkeypatch, tmp_path):
     from src.plugins.priconne import clanbattle as module
-
+    monkeypatch.setattr(module.model, "clan_path", str(tmp_path))
     return module
 
 
@@ -998,7 +998,7 @@ async def test_matched_kill_history_still_fetches_damage_report_and_reuses_verif
     clan = ClanBattle(10001)
     clan.event, clan.clan_battle_id, clan.clan_id, clan.loop_num = BattlePeriod(42, 1000, 2000), 42, 8, 1
     rows = [dict(id=i, pcrid=i, name='成员', time=1000+i, lap=42, boss='1', damage=raw,
-                 flag=0, battle_log_id=i, remain_time=90, battle_time=90, settlement=None)
+                 flag=0, battle_log_id=i, remain_time=90, battle_time=90, settlement=None, day_complete=True)
             for i, raw in ((1, 900), (2, 500))]
     calls = []
 
@@ -1024,3 +1024,73 @@ async def test_matched_kill_history_still_fetches_damage_report_and_reuses_verif
         assert kill['damage'] == 500 and kill['effective_damage'] == 100
         assert kill['hp_before'] == 100 and kill['extended_seconds'] == 90
     assert len(calls) == 1
+
+async def test_collection_persists_ownership_and_proves_overlap_without_duplicate_inserts(clanbattle, monkeypatch):
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+    from src.plugins.priconne.clanbattle import model
+
+    clan = model.ClanBattle(10001)
+    start = 1790197200
+    clan.event, clan.clan_battle_id, clan.loop_num = BattlePeriod(42, start, start + 86400), 42, 1
+    saved, timeline_calls, page_calls = [], [], []
+
+    def battle(log, owner):
+        unit = dict(unit_id=100+log, viewer_id=owner, unit_level=100, damage=100,
+                    unit_rarity=5, promotion_level=30, unique_equip_slot=[])
+        return dict(battle_end_time=start+log*10, battle_type=1, target_viewer_id=123, user_name='成员',
+                    order_num=1, lap_num=30, total_damage=100, battle_log_id=log, units=[unit])
+
+    pages = {1: [battle(1, 123)], 2: [battle(2, None)]}
+
+    async def latest():
+        return max((row[2] for row in saved), default=0)
+
+    async def existing(first, last):
+        return [dict(pcrid=r[0], time=r[2], lap=r[3], boss=str(r[4]), battle_log_id=r[7])
+                for r in saved if first <= r[2] < last]
+
+    async def insert(rows):
+        saved.extend(rows)
+
+    async def logs(page):
+        page_calls.append(page)
+        return dict(max_page=2, battle_list=pages[page])
+
+    async def api(path, params, **kwargs):
+        timeline_calls.append(params['battle_log_id'])
+        if params['battle_log_id'] == 4:
+            raise RuntimeError('partial page batch')
+        return dict(start_remain_time=90, battle_time=90)
+
+    clan.record = SimpleNamespace(get_latest_time=latest, get_report_records=existing, add_record=insert)
+    clan.client, clan.get_battle_log = SimpleNamespace(callapi=api), logs
+    monkeypatch.setattr(model, 'timestamp', lambda: start+500)
+    assert await clan._add_record([], 1) is True
+    assert clan.record_coverage['complete'] is True and len(saved) == 2
+    assert saved[0][40]['unit_owners'] == [dict(unit_id=101, viewer_id=123)]
+    assert saved[0][40]['owners_complete'] is True
+    assert saved[1][40]['unit_owners'][0]['viewer_id'] is None
+    assert saved[1][40]['owners_complete'] is False
+    pages[2].append(battle(3, 999))
+    monkeypatch.setattr(model, 'timestamp', lambda: start+600)
+    assert await clan._add_record([], 1) is True
+    assert [row[7] for row in saved] == [1, 2, 3] and timeline_calls == [1, 2, 3]
+    assert clan.record_coverage['through'] == start+600
+    before = deepcopy(clan.record_coverage)
+    pages[2].append(battle(4, 123))
+    monkeypatch.setattr(model, 'timestamp', lambda: start+700)
+    assert await clan._add_record([], 1) is False
+    assert clan.record_coverage == before and [row[7] for row in saved] == [1, 2, 3]
+
+    async def cancelled_insert(rows):
+        saved.extend(rows)
+        clan.loop_num += 1
+
+    async def recovered_api(*args, **kwargs):
+        return dict(start_remain_time=90, battle_time=90)
+
+    clan.record.add_record = cancelled_insert
+    clan.client.callapi = recovered_api
+    with pytest.raises(clanbattle.CancleError):
+        await clan._add_record([], 1)
+    assert clan.record_coverage == before

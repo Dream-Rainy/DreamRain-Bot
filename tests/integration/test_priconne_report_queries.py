@@ -80,6 +80,9 @@ async def test_settlement_query_uses_earlier_tail_context_and_preserves_later_ma
     from src.plugins.priconne.orm.models import Record
 
     period = BattlePeriod(42, 1790197200, 1790611200)
+    async def coverage(path):
+        return {"record_coverage": dict(event_id=42, start=period.start, through=period.end - 1, complete=True)}
+    monkeypatch.setattr(sql, "load_config", coverage)
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     monkeypatch.setattr(sql, "get_session", async_sessionmaker(engine))
     try:
@@ -92,6 +95,7 @@ async def test_settlement_query_uses_earlier_tail_context_and_preserves_later_ma
                               time=period.start + log * 120, damage=damage, battle_log_id=log,
                               remain_time=90, battle_time=90, settlement=dict(
                                   event_id=42, history_damage=actual, killed=killed, history_id=log,
+                                  unit_owners=[dict(unit_id=101, viewer_id=123)], owners_complete=True,
                                   report=dict(max_hp=actual, totals={"123": actual}, covered_logs=[["123", log]])
                                   if killed else None))
                 session.add(Record(**fields))
@@ -170,5 +174,40 @@ async def test_damage_declaration_update_and_cancel_preserve_other_groups(app, m
         await dao.delete_apply(123)
         assert await dao.get_apply(3) == []
         assert await sql.ApplyDao(22).get_apply(3) == [(123, 1, "另一群")]
+    finally:
+        await engine.dispose()
+
+async def test_collection_metadata_roundtrips_without_overwriting_manual_correction(app, monkeypatch):
+    from src.plugins.priconne.clanbattle import sql
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+    from src.plugins.priconne.orm.models import Record
+
+    start = 1790197200
+    period = BattlePeriod(42, start, start+5*86400-5*3600)
+    engine = create_async_engine('sqlite+aiosqlite:///:memory:')
+    monkeypatch.setattr(sql, 'get_session', async_sessionmaker(engine))
+
+    async def config(path):
+        return dict(record_coverage=dict(event_id=42, start=start, through=start+100, complete=True))
+
+    monkeypatch.setattr(sql, 'load_config', config)
+    owners = dict(event_id=42, unit_owners=[dict(unit_id=101, viewer_id=123), dict(unit_id=102, viewer_id=None)], owners_complete=False)
+    old = (123,'成员',start+1,30,'1',500,0,1,90,90,*([0]*30))
+    new = (123,'成员',start+2,30,'2',600,0,2,90,90,*([0]*30),owners)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(lambda conn: Record.__table__.create(conn))
+        dao = sql.RecordDao(11, period)
+        await dao.add_record([old,new])
+        rows = await dao.get_settlement_records(start, start+100)
+        assert rows[0]['settlement'] is None and rows[1]['settlement'] == owners
+        assert all(row['day_complete'] for row in rows)
+        stale = [dict(rows[1], settlement=dict(owners, history_id=9))]
+        assert await dao.correct_dao(2, .5) == 1
+        await dao.save_settlement_facts(stale)
+        reread = await dao.get_settlement_records(start, start+100)
+        assert reread[1]['settlement']['manual_flag'] == .5
+        assert reread[1]['settlement']['unit_owners'] == owners['unit_owners']
+        assert [row['damage'] for row in reread] == [500,600]
     finally:
         await engine.dispose()

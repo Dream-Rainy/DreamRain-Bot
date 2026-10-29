@@ -413,6 +413,7 @@ async def test_command_center_renders_current_queues_and_keeps_cq_comments_as_te
 
 @pytest.mark.parametrize(("command", "handler"), [
     ("出刀时段", "time_preference"), ("会战指挥台", "command_center"), ("BOSS推进参考", "command_center"),
+    ("剩余补偿", "query_carry_inventory"),
 ])
 async def test_private_report_does_not_read_group_data(app, monkeypatch, command, handler):
     from src.plugins.priconne import clanbattle, compat
@@ -436,7 +437,7 @@ async def test_private_report_does_not_read_group_data(app, monkeypatch, command
                                     message=Message(command), raw_message=command, font=0,
                                     sender={"user_id": 123, "nickname": "tester"})
         ctx.receive_event(bot, event)
-    assert sent == ["请在公会群中查询报表。"]
+    assert len(sent) == 1 and "请在公会群中查询" in sent[0]
 
 
 @pytest.fixture()
@@ -870,3 +871,132 @@ async def test_member_registration_write_failure_preserves_existing_links(app, m
         ctx.receive_event(bot, _group_event('登记会战成员 1', 303))
     assert not replacements and original == {'789': '2'}
     assert len(sent) == 1 and '原登记已保留' in sent[0]
+
+@pytest.mark.parametrize(('command', 'mention', 'target'), [
+    ('剩余补偿', None, None), ('查补偿', None, None),
+    ('我的补偿', None, '1'), ('查补偿', 789, '2'),
+])
+async def test_carry_queries_send_real_images_or_scoped_personal_text(
+    current_battle, battle_schedule, app, monkeypatch, command, mention, target
+):
+    clanbattle, compat, now = current_battle
+    from src.plugins.priconne.clanbattle import reports
+    period = battle_schedule
+    config = dict(clan_battle_id=42, member_by_id={'1': '自己', '2': '另一人'},
+                  record_coverage=dict(event_id=42, start=period.start, through=now, complete=True))
+    records = [dict(pcrid=i, name='记录名', time=now-1, flag=1, carry_inventory=dict(
+                   status='ok', reason='', seconds={seconds: (1,1)}, total=(1,1))) for i, seconds in ((1,90),(2,28))]
+    sent, ranges = [], []
+
+    async def read(path):
+        return {'123': '1', '789': '2'} if path.endswith('member_links.json') else config
+
+    async def send(self, event, message, **kwargs):
+        sent.append(str(message))
+
+    class Records:
+        def __init__(self, group_id, event):
+            assert group_id == 456 and event.id == 42
+
+        async def get_report_records(self, start, end):
+            ranges.append((start,end))
+            return records
+
+    monkeypatch.setattr(clanbattle, 'load_config', read)
+    monkeypatch.setattr(clanbattle, 'RecordDao', Records)
+    monkeypatch.setattr(compat.LegacyBot, 'send', send)
+    event = _group_event(command, 911)
+    if mention is not None:
+        event.message += MessageSegment.at(mention)
+    async with app.test_matcher(_legacy_matcher(clanbattle.query_carry_inventory)) as ctx:
+        bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id='10000')
+        ctx.receive_event(bot, event)
+    assert len(sent) == 1 and ranges == [(int(clanbattle.pcr_date(now).timestamp()), now+1)]
+    if target is None:
+        assert sent[0].startswith('[CQ:image')
+    else:
+        assert '[CQ:image' not in sent[0]
+        assert ('自己：90s×1' if target == '1' else '另一人：28s×1') in sent[0]
+        assert ('另一人' if target == '1' else '自己') not in sent[0]
+
+
+@pytest.mark.parametrize('condition', ['unlinked', 'foreign', 'ended', 'at_all'])
+async def test_carry_queries_reject_unready_identity_and_period_before_reading_records(
+    current_battle, battle_schedule, app, monkeypatch, condition
+):
+    clanbattle, compat, now = current_battle
+    sent = []
+
+    async def read(path):
+        if path.endswith('member_links.json'):
+            return {}
+        return dict(clan_battle_id=41 if condition == 'foreign' else 42, member_by_id={'1':'成员'})
+
+    async def send(self, event, message, **kwargs):
+        sent.append(str(message))
+
+    def no_records(*args):
+        pytest.fail('invalid identity/period must not query records')
+
+    monkeypatch.setattr(clanbattle, 'load_config', read)
+    monkeypatch.setattr(clanbattle, 'RecordDao', no_records)
+    monkeypatch.setattr(compat.LegacyBot, 'send', send)
+    if condition == 'ended':
+        monkeypatch.setattr(clanbattle.time, 'time', lambda: battle_schedule.end)
+    event = _group_event('我的补偿' if condition == 'unlinked' else '查补偿', 912)
+    if condition == 'at_all':
+        event.message += MessageSegment.at('all')
+    async with app.test_matcher(_legacy_matcher(clanbattle.query_carry_inventory)) as ctx:
+        bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id='10000')
+        ctx.receive_event(bot, event)
+    expected = dict(unlinked='登记会战成员', foreign='尚未绑定本期', ended='当前没有本期可用补偿', at_all='不能@全体')
+    assert len(sent) == 1 and expected[condition] in sent[0]
+
+
+@pytest.mark.parametrize("command,role,expected", [
+    ("关闭播报", "member", None), ("关闭播报", "admin", {"broadcast": False}),
+    ("订阅档线", "admin", {"rankline": True}), ("取消档线订阅", "owner", {"rankline": False}),
+])
+async def test_broadcast_commands_enforce_permissions_and_persist_settings(app, monkeypatch, tmp_path, command, role, expected):
+    import json
+    from src.plugins.priconne import clanbattle, compat
+    monkeypatch.setattr(clanbattle, "clan_path", str(tmp_path))
+    monkeypatch.setattr(clanbattle, "_push_settings", None)
+    sent = []
+    async def send(self, event, message, **kwargs):
+        sent.append(str(message))
+    monkeypatch.setattr(compat.LegacyBot, "send", send)
+    event = _group_event(command, 600)
+    event.sender.role = role
+    async with app.test_matcher(_legacy_matcher(clanbattle.manage_broadcast)) as ctx:
+        bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id="10000")
+        ctx.receive_event(bot, event)
+    path = tmp_path / "push_settings.json"
+    if expected is None:
+        assert not path.exists() and "仅群管理员" in sent[0]
+    else:
+        value = json.loads(path.read_text(encoding="utf-8"))["456"]
+        assert value == {**expected, "self_id": "10000"}
+
+
+@pytest.mark.parametrize("command,valid", [("查档线 50 200", True), ("分数线", True), ("查档线 0", False)])
+async def test_rankline_query_matcher_sends_real_image_and_rejects_bad_input(app, battle_schedule, monkeypatch, command, valid):
+    from src.plugins.priconne import clanbattle, compat
+    sent, calls = [], []
+    async def data(path, period, ranks, monitors, gid):
+        calls.append((period.id, ranks, gid))
+        return {"period_id": 42, "updated_at": period.start, "stale": False, "my": None,
+                "lines": [{"rank": 50, "damage": 123450000000, "clan_name": "测试公会"}]}
+    async def send(self, event, message, **kwargs):
+        sent.append(str(message))
+    monkeypatch.setattr(clanbattle, "get_rank_lines", data)
+    monkeypatch.setattr(compat.LegacyBot, "send", send)
+    async with app.test_matcher(_legacy_matcher(clanbattle.query_rankline)) as ctx:
+        bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id="10000")
+        ctx.receive_event(bot, _group_event(command, 601))
+    assert len(sent) == 1
+    if valid:
+        assert calls[0][0] == 42 and calls[0][2] == 456
+        assert sent[0].startswith("[CQ:image,file=base64://")
+    else:
+        assert not calls and "名次范围" in sent[0]

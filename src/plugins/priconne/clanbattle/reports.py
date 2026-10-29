@@ -12,6 +12,7 @@ from .base import float2int, format_bignum, format_time
 from .render import _report_image
 from .sql import pcr_date
 from .settlement import uncertain
+from .carryover import analyse_day, coverage_complete, game_day_start
 
 GAME_TZ = timezone(timedelta(hours=8))
 DECLARATION_PREFIX = "[出刀申报]"
@@ -459,6 +460,78 @@ def daily_report(records, config, now, period=None, status_hint=""):
         ("", ["刀数", "成员", "人数"], rows or [["—", "暂无名册与战绩", 0]], [180, 1060, 120])], note)
 
 
+def carry_inventory_members(records, config, now, period):
+    roster = member_roster(config)
+    start = max(period.start, game_day_start(now))
+    groups = defaultdict(list)
+    for row in records:
+        if start <= row["time"] <= now and row["time"] < period.end:
+            groups[str(row["pcrid"])].append(row)
+    coverage = config.get("record_coverage") if isinstance(config, dict) else None
+    members = []
+    for uid, name in roster.items():
+        rows = groups.get(uid, [])
+        complete = (coverage_complete(coverage, period.id, start, max((r["time"] for r in rows), default=start))
+                    and coverage["through"] <= now)
+        inventory = max(rows, key=lambda r: r["time"]).get("carry_inventory") if rows and complete else None
+        if not isinstance(inventory, dict):
+            inventory = analyse_day([], complete=complete and not rows)["inventory"]
+            if not rows and not complete:
+                inventory = dict(inventory, reason="无今日记录，库存未知")
+        members.append(dict(pcrid=uid, name=name, inventory=inventory))
+    return members
+
+
+def carry_inventory_text(inventory):
+    if inventory.get("status") != "ok":
+        return "—", inventory.get("reason") or "库存待核验"
+    certain, possible = [], []
+    for seconds, (low, high) in sorted(inventory["seconds"].items(), key=lambda item: item[0] or 0, reverse=True):
+        label = f"{seconds}s" if seconds is not None else "秒数未知"
+        if seconds is None:
+            possible.append(f"{label}×{low}" if low == high else f"{label}×{low}～{high}")
+        else:
+            if low:
+                certain.append(f"{label}×{low}")
+            if high > low:
+                possible.append(f"{label}{'另有' if low else '×'}0～{high - low}")
+    low, high = inventory["total"]
+    if possible:
+        total = str(low) if low == high else f"{low}～{high}"
+        pending = possible[0] if len(possible) == 1 and not certain else f"总库存{total}份；" + "、".join(possible)
+        return "、".join(certain) or "—", pending
+    return "、".join(certain) or "暂无未配对补偿", "—"
+
+
+def carryover_report(records, config, now, period, *, player_id=None, status_hint=""):
+    if not period.active(now):
+        return period.label(now) + "\n当前没有本期可用补偿。"
+    members = carry_inventory_members(records, config, now, period)
+    coverage = config.get("record_coverage", {}) if isinstance(config, dict) else {}
+    synced = coverage.get("through") if isinstance(coverage, dict) else None
+    sync_text = format_timestamp(synced) if type(synced) is int and period.start <= synced <= now else "未知"
+    note = "按已结算战绩推断，未结算使用可能尚未扣除。"
+    if status_hint:
+        note = status_hint + " " + note
+    if player_id is not None:
+        player = next((row for row in members if row["pcrid"] == str(player_id)), None)
+        if player is None:
+            return "该成员不在本期名册中，请先刷新监控名册。"
+        certain, pending = carry_inventory_text(player["inventory"])
+        detail = certain if pending == "—" else f"{certain}；待确认：{pending}" if certain != "—" else pending
+        return f"{player['name']}：{detail}\n同步{sync_text}；{note}"
+    names = Counter(row["name"] for row in members)
+    rows = []
+    for member in members:
+        name = member["name"] or "未命名"
+        if names[member["name"]] > 1:
+            name += f" ({member['pcrid']})"
+        rows.append([name, *carry_inventory_text(member["inventory"])])
+    day = datetime.fromtimestamp(game_day_start(now), GAME_TZ)
+    return _report_image("今日补偿库存", f"第{period.id}期 · 游戏日{day:%Y-%m-%d} · 同步{sync_text}", [], [
+        ("", ["成员", "确定未配对", "待确认"], rows or [["—", "暂无本期名册", "—"]], [300, 400, 660])], note)
+
+
 def preference_members(records, roster):
     names = dict(roster)
     active = defaultdict(set)
@@ -695,3 +768,30 @@ def full_damage_reference(records, boss):
     return {"count": len(samples), "players": len({r["pcrid"] for r in samples}),
             "median": median(damages) if enough else None,
             "lower": damages[(len(damages) - 1) // 4] if enough else None}
+
+
+def rankline_report(data, now):
+    updated = datetime.fromtimestamp(data["updated_at"], GAME_TZ)
+    my, last = data.get("my"), data.get("last")
+    lines = {line["rank"]: line for line in data["lines"]}
+    if last:
+        lines[last["rank"]] = last
+    if my:
+        lines[my["rank"]] = my
+    rows = []
+    for rank, line in sorted(lines.items()):
+        position = str(rank)
+        if my and rank == my["rank"]:
+            position = {"type": "tags", "items": [str(rank)], "color": "#245BBA", "filled": True}
+        elif last and rank == last["rank"]:
+            position = {"type": "tags", "items": [str(rank)], "color": "#718096", "filled": False}
+        damage = line.get("damage")
+        gap = "—" if my is None or damage is None else f"{(my['damage'] - damage) / 1e8:+.2f}"
+        rows.append([position, "—" if damage is None else f"{damage / 1e8:.2f}", line["clan_name"], gap])
+    if my is None:
+        rows.append(["本会待核验", "—", "—", "—"])
+    if "last" in data and last is None:
+        rows.append(["末位待核验", "—", "—", "—"])
+    return _report_image("会战档线", f"第{data['period_id']}期 · 采集{updated:%m-%d %H:%M:%S}", [], [
+        ("", ["名次", "分数（亿）", "公会", "本会差线（亿）"], rows, [160, 260, 650, 290])
+    ], "旧缓存，尚未刷新；不代表最终排名。" if data.get("stale") else "本会差线：正数领先，负数落后。" if my else "— 表示暂无数据。")

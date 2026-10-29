@@ -1,4 +1,4 @@
-"""实际扣血与每日刀型默认配对；推断结果不覆盖原始战绩。"""
+"""实际扣血与每日刀型保守推断；推断结果不覆盖原始战绩。"""
 
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
@@ -6,6 +6,7 @@ from functools import lru_cache
 
 from .period import GAME_TZ
 from .pcr_calculator import solve_equation
+from .carryover import analyse_day
 
 
 @lru_cache(maxsize=4096)
@@ -83,60 +84,23 @@ def analyse_records(records):
                       hp_before=None, killed=None, extended_seconds=None,
                       carry_source=None, kind_status="pending", kind_issue="")
         result.append(record)
-        event = facts(record).get("event_id")
+        event = facts(record).get("event_id") or record.get("event_id")
         bosses[event, record["lap"], str(record["boss"])].append(record)
         day = (datetime.fromtimestamp(record["time"], GAME_TZ) - timedelta(hours=5)).date()
         days[event, str(record["pcrid"]), day].append(record)
     for rows in bosses.values():
         _effective_damage(rows)
     for rows in days.values():
-        stock, ordinary, uncertain = [], 0, not _ordered(rows)
-        for record in sorted(rows, key=_order):
-            manual = facts(record).get("manual_flag")
-            seconds, used = record.get("remain_time"), record.get("battle_time")
-            killed = record["killed"]
-            if type(manual) in (int, float) and manual in (0, .5, 1):
-                flag, status = manual, "manual"
-            elif type(seconds) is not int or not 1 <= seconds <= 90:
-                flag, status = None, "pending"
-            elif seconds < 90:
-                flag, status = .5, "observed"
-            elif killed is True:
-                # shortcut: 默认90秒击杀均来自普通挑战，取得明确补偿来源后再替换此假设。
-                flag, status = 1, "assumed"
-            elif killed is False and not uncertain:
-                flag, status = (.5 if any(item[0] == 90 for item in stock) else 0), "assumed"
-            else:
-                flag, status = None, "pending"
-            record.update(flag=flag, kind_status=status)
-            if flag is None:
-                record["kind_issue"] = "刀型待核验"
-                uncertain = True
-            elif flag == .5:
-                match = next((item for item in stock if item[0] == seconds), None)
-                if match is not None and not uncertain:
-                    stock.remove(match)
-                    record["carry_source"] = match[1]
-                else:
-                    record["kind_issue"] = "补偿来源待核验"
-                    uncertain = True
-                record["extended_seconds"] = 0
-            else:
-                ordinary += 1
-                if flag == 0:
-                    record["extended_seconds"] = 0
-                elif record["hp_before"] and type(used) is int and 0 <= used <= 90 and record["damage"] > 0:
-                    extension = _extension(record["hp_before"], record["damage"], used)
-                    record["extended_seconds"] = extension
-                    stock.append((extension, record.get("battle_log_id")))
-                else:
-                    record["kind_issue"] = "延长时间待核验"
-                    uncertain = True
-        if ordinary > 3 or sum(row["flag"] == .5 for row in rows) > 3:
-            for record in rows:
-                record["kind_issue"] = "每日挑战额度冲突，待核验"
-                if record["kind_status"] == "assumed":
-                    record.update(flag=None, kind_status="pending", extended_seconds=None, carry_source=None)
+        rows.sort(key=_order)
+        for record in rows:
+            used = record.get("battle_time")
+            record["tail_seconds"] = (
+                _extension(record["hp_before"], record["damage"], used)
+                if record["killed"] is True and record["hp_before"] and type(used) is int and 0 <= used <= 90 and record["damage"] > 0 else None
+            )
+        day = analyse_day(rows, complete=all(row.get("day_complete") is True for row in rows), ordered=_ordered(rows))
+        for record, verdict in zip(rows, day["records"]):
+            record.update(verdict, carry_inventory=day["inventory"])
     return result
 
 

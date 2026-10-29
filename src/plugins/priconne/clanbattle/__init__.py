@@ -26,7 +26,7 @@ from .pcr_calculator import calculator
 from .reports import (
     boss_snapshot, snapshot_bosses, daily_report, preference_report, report_status,
     control_report, parse_declaration_input, encode_declaration, declaration_text, member_roster, status_report,
-    registration_report,
+    registration_report, carryover_report, rankline_report,
 )
 from .sql import pcr_date
 from .period import get_period
@@ -34,6 +34,10 @@ from .dispatch import build_dispatch, activity_report, coordination_reports, reg
 from .review import build_review, render_review, REVIEW_PAGES
 from .summary import send_summary, summary_due
 from .settlement import battle_notice
+from .rankline import get_rank_lines, parse_ranks, valid_rank, final_rankline_due, save_json
+
+_push_settings = None
+_push_lock = asyncio.Lock()
 
 _member_link_lock = asyncio.Lock()
 
@@ -44,8 +48,10 @@ help_text = '''
 【状态】监控人、五王血条、现场人数与当前提示
 【boss状态】状态图及申请、挂树明细
 【今日刀表 / 今日出刀】按刀数分组查看成员与人数
+【剩余补偿 / 查补偿】查看今日补偿库存；【我的补偿】【查补偿 @成员】查看个人
 【会战指挥台 / BOSS推进参考】排刀、合刀候选与时段规划
 【出刀时段】习惯时段与本期可能活跃成员
+【查档线 [名次...] / 档线 / 分数线】本期档线与采集时间
 【催刀】按已保存记录提醒，需核验实际可用刀
 
 出刀登记（示例中的空格需保留）
@@ -68,6 +74,8 @@ help_text = '''
 监控与管理
 【出刀监控】使用已绑定账号开启监控
 【取消出刀监控】监控人或管理员关闭监控
+【开启播报 / 关闭播报】管理员控制普通监控消息，采集继续
+【订阅档线 / 取消档线订阅】管理员订阅当期最后一天23:55档线；监控群默认收到
 【清空预约 王号】管理员清理预约
 【修正出刀 编号 完整刀/尾刀/补偿】修正刀型
 【启用肃正协议】危险操作：清空群会战数据
@@ -87,6 +95,106 @@ sv = Service(
 @sv.on_fullmatch('自动报刀帮助')
 async def query_help(bot, ev):
     await bot.send(ev, help_text)
+
+
+async def _load_push_settings():
+    global _push_settings
+    if _push_settings is None:
+        saved = await load_config(os.path.join(clan_path, "push_settings.json"))
+        _push_settings = saved if isinstance(saved, dict) else {}
+    return _push_settings
+
+
+async def _monitor_broadcast(bot, ev, group_id, msg):
+    if msg and (await _load_push_settings()).get(str(group_id), {}).get("broadcast", True):
+        await _loop_send(bot, ev, group_id, msg)
+
+
+@sv.on_fullmatch('开启播报', '关闭播报', '订阅档线', '取消档线订阅')
+async def manage_broadcast(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在群内设置。")
+        return
+    if not priv.check_priv(ev, priv.ADMIN) and not await _is_superuser(bot, ev):
+        await bot.send(ev, "仅群管理员可设置。")
+        return
+    command = ev.message.extract_plain_text().strip()
+    async with _push_lock:
+        settings = await _load_push_settings()
+        key = str(ev.group_id)
+        profile = dict(settings.get(key, {}))
+        if command in ("开启播报", "关闭播报"):
+            profile["broadcast"] = command == "开启播报"
+        else:
+            profile["rankline"] = command == "订阅档线"
+        profile["self_id"] = str(ev.self_id)
+        updated = {**settings, key: profile}
+        try:
+            await save_json(os.path.join(clan_path, "push_settings.json"), updated)
+        except Exception:
+            await bot.send(ev, "保存失败，设置未改变。")
+            return
+        settings.clear()
+        settings.update(updated)
+    await bot.send(ev, {"开启播报": "普通监控播报已开启。", "关闭播报": "普通监控播报已关闭，继续采集。",
+                        "订阅档线": "已订阅期末23:55档线。", "取消档线订阅": "已取消订阅；开启出刀监控的群仍会收到。"}[command])
+
+
+@sv.on_prefix('查档线', '档线', '分数线')
+async def query_rankline(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在群内查询档线。")
+        return
+    try:
+        ranks = parse_ranks(ev.message.extract_plain_text().strip())
+        period = await get_period(now=int(time.time()))
+        data = await get_rank_lines(os.path.join(clan_path, "rankline_cache.json"), period,
+                                    ranks, clanbattle_info, ev.group_id)
+        image = await asyncio.to_thread(rankline_report, data, int(time.time()))
+    except ValueError as error:
+        await bot.send(ev, str(error))
+        return
+    await bot.send(ev, image)
+
+
+@sv.scheduled_job("cron", hour="23", minute="55-59", timezone=ZoneInfo("Asia/Shanghai"), max_instances=1, coalesce=True)
+async def final_rankline_broadcast():
+    now = int(time.time())
+    try:
+        period = await get_period(now=now)
+    except ValueError:
+        return
+    if not final_rankline_due(period, now):
+        return
+    from src.plugins.permission_admin.core import get_permission_manager
+
+    blocked = (get_permission_manager().get_snapshot("priconne") or {}).get("blocked_groups", [])
+    settings = await _load_push_settings()
+    targets = {int(gid): profile.get("self_id") for gid, profile in settings.items() if profile.get("rankline")}
+    targets.update({gid: info.get("self_id") for gid, info in run_group.items() if info.get("qq_id")})
+    for group_id, self_id in targets.items():
+        if group_id in blocked or not final_rankline_due(period, time.time()):
+            continue
+        profile = settings.get(str(group_id), {})
+        if profile.get("rankline_sent") == period.id:
+            continue
+        try:
+            data = await get_rank_lines(os.path.join(clan_path, "rankline_cache.json"), period,
+                                        parse_ranks(""), clanbattle_info, group_id)
+            image = await asyncio.to_thread(rankline_report, data, int(time.time()))
+            if not final_rankline_due(period, time.time()):
+                continue
+            bot = get_bot(str(self_id)) if self_id is not None else get_bot()
+            await send_group(bot, group_id, f"第{period.id}期 · 23:55档线（非最终排名）\n" + image)
+            async with _push_lock:
+                latest = await _load_push_settings()
+                updated = {**latest, str(group_id): {**latest.get(str(group_id), {}), "rankline_sent": period.id}}
+                # shortcut: 发送确认后落盘前崩溃可能重复一次；平台提供幂等键时再消除窗口。
+                await save_json(os.path.join(clan_path, "push_settings.json"), updated)
+                latest.clear()
+                latest.update(updated)
+        except Exception as error:
+            logger.warning(f"期末档线发送失败，结束前重试，group={group_id}: {error}")
 
 
 @sv.on_fullmatch('出刀监控')
@@ -252,6 +360,22 @@ def _set_monitor_snapshot(group_id, snapshot):
     info = run_group.get(group_id)
     if not isinstance(info, dict):
         return False
+    snapshot = dict(snapshot)
+    previous = info.get("snapshot", {})
+    previous_at = previous.get("rank_at", previous.get("time", 0))
+    start, end = snapshot.get("battle_start"), snapshot.get("battle_end")
+    if type(start) is int and type(end) is int:
+        observed = snapshot.get("rank_at", snapshot.get("time"))
+        accepted = (valid_rank(snapshot.get("rank")) and type(observed) in (int, float)
+                    and start <= observed < end + 1 and time.time() < end + 1)
+        if not accepted:
+            if (previous.get("clan_battle_id") == snapshot.get("clan_battle_id")
+                    and valid_rank(previous.get("rank"))
+                    and type(previous_at) in (int, float) and start <= previous_at < end + 1):
+                snapshot["rank"] = previous["rank"]
+                snapshot["rank_at"] = previous_at
+            else:
+                snapshot["rank"], snapshot["rank_at"] = None, 0
     run_group[group_id] = {**info, "snapshot": snapshot}
     return True
 
@@ -288,7 +412,7 @@ def _restore_run_group(saved):
                 not isinstance(snapshot, dict)
                 or not required_snapshot_fields.issubset(snapshot)
                 or not isinstance(snapshot["time"], (int, float))
-                or not isinstance(snapshot["rank"], int)
+                or (snapshot["rank"] is not None and type(snapshot["rank"]) is not int)
                 or not isinstance(snapshot["boss"], str)
             ):
                 logger.warning(
@@ -400,11 +524,14 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                     await asyncio.sleep(30)
                     continue
                 clan_info.lap_num = clan_battle_top["lap_num"]
-                clan_info.rank = clan_battle_top["period_rank"]
+                previous_rank = run_group.get(group_id, {}).get("snapshot", {})
+                if not clan_info.rank and previous_rank.get("clan_battle_id") == clan_info.event.id:
+                    clan_info.update_rank(previous_rank.get("rank"), previous_rank.get("rank_at", previous_rank.get("time", 0)))
+                clan_info.update_rank(clan_battle_top.get("period_rank"), time.time())
 
                 #换面提醒
                 if clan_info.period != stage_dict[lap2stage(clan_battle_top["lap_num"])]:
-                    await _loop_send(bot, ev, group_id, f"阶段从{stage_dict[clan_info.period]}面到了{lap2stage(clan_battle_top['lap_num'])}面，请注意轴的切换喵")
+                    await _monitor_broadcast(bot, ev, group_id, f"阶段从{stage_dict[clan_info.period]}面到了{lap2stage(clan_battle_top['lap_num'])}面，请注意轴的切换喵")
                     clan_info.period = stage_dict[lap2stage(clan_info.lap_num)]
 
                 change = False
@@ -444,8 +571,8 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                         boss.refresh(current_hp, lap_num, order, max_hp)
 
                 await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_subscribe))
-                await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_fighter))
-                await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_coop))
+                await _monitor_broadcast(bot, ev, group_id, "\n".join(clan_info.notice_fighter))
+                await _monitor_broadcast(bot, ev, group_id, "\n".join(clan_info.notice_coop))
                 clan_info.notice_subscribe.clear()
                 clan_info.notice_fighter.clear()
                 clan_info.notice_coop.clear()
@@ -482,10 +609,10 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                                     )
 
                     clan_info.refresh_latest_time(clan_battle_top)
-                    await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_dao[::-1]))
+                    await _monitor_broadcast(bot, ev, group_id, "\n".join(clan_info.notice_dao[::-1]))
                     clan_info.notice_dao.clear()
-                    await _loop_send(bot, ev, group_id, "\n".join(notice_progress))
-                    await _loop_send(bot, ev, group_id, "\n".join(clan_info.notice_tree))
+                    await _monitor_broadcast(bot, ev, group_id, "\n".join(notice_progress))
+                    await _monitor_broadcast(bot, ev, group_id, "\n".join(clan_info.notice_tree))
                     clan_info.notice_tree.clear()
 
                 bosses = boss_snapshot(clan_info, time.time())
@@ -506,6 +633,7 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                     {
                         "time": state_updated_at,
                         "rank": clan_info.rank,
+                        "rank_at": clan_info.rank_at,
                         "boss": clan_info.general_boss(),
                         "bosses": bosses,
                         "clan_battle_id": clan_battle_top.get("clan_battle_id", getattr(clan_info, "clan_battle_id", 0)),
@@ -1022,6 +1150,45 @@ def _dispatch_ready(snapshot, online, now, period):
                 and 0 <= now - synced <= 120)
 
 
+@sv.on_prefix('剩余补偿', '查补偿', '我的补偿')
+async def query_carry_inventory(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群中查询补偿库存。")
+        return
+    mentions = [segment.data.get("qq") for segment in ev.message if segment.type == "at"]
+    argument = "".join(segment.data.get("text", "") for segment in ev.message if segment.type == "text").strip()
+    if argument or len(mentions) > 1 or any(not re.fullmatch(r'[1-9][0-9]{0,19}', str(qq)) for qq in mentions):
+        await bot.send(ev, "格式：【剩余补偿】【我的补偿】或【查补偿 @成员】，不能@全体。")
+        return
+    if mentions and ev.prefix == '我的补偿':
+        await bot.send(ev, "查询他人请用【查补偿 @成员】。")
+        return
+    period = await _event_period(bot, ev)
+    if period is None:
+        return
+    now, group_id = int(time.time()), ev.group_id
+    if not period.active(now):
+        await bot.send(ev, period.label(now) + "\n当前没有本期可用补偿。")
+        return
+    config = await load_config(os.path.join(clan_path, str(group_id), "clanbattle.json"))
+    if not isinstance(config, dict) or config.get("clan_battle_id") != period.id:
+        await bot.send(ev, "名册尚未绑定本期会战，请让监控人发送【出刀监控】刷新。")
+        return
+    player_id = None
+    if mentions or ev.prefix == '我的补偿':
+        qq = str(mentions[0]) if mentions else str(ev.user_id)
+        links = await load_config(os.path.join(clan_path, str(group_id), "member_links.json"))
+        player_id = links.get(qq) if isinstance(links, dict) else None
+        if str(player_id) not in member_roster(config):
+            await bot.send(ev, "该成员尚未关联本期游戏ID，请使用【登记会战成员 游戏ID】；管理员可@成员代登记。")
+            return
+    records = await RecordDao(group_id, period).get_report_records(max(period.start, int(pcr_date(now).timestamp())), min(now + 1, period.end))
+    snapshot, online = await _report_context(group_id, now, period)
+    hint = "" if _dispatch_ready(snapshot, online, now, period) else "监控离线，记录待核验。" if not online else "战绩同步待核验。"
+    message = carryover_report(records, config, now, period, player_id=player_id, status_hint=hint)
+    await bot.send(ev, MessageSegment.text(message) if player_id is not None else message)
+
+
 @sv.on_fullmatch('今日出刀', '今日刀表')
 async def today_state(bot, ev):
     if not getattr(ev, "group_id", None):
@@ -1498,7 +1665,12 @@ async def daily_rank_broadcast():
             continue  # 监控已掉线，不播报
         info = run_group.get(group_id)
         self_id = info.get("self_id") if isinstance(info, dict) else None
-        msg = f"当前排名：{clan_info.rank}\n" + clan_info.general_boss()
+        if clan_info.event is None or not clan_info.event.active(now):
+            continue
+        if not (await _load_push_settings()).get(str(group_id), {}).get("broadcast", True):
+            continue
+        rank = f"{clan_info.rank}（最近有效排名）" if valid_rank(clan_info.rank) else "未知"
+        msg = f"当前排名：{rank}\n" + clan_info.general_boss()
         try:
             await bot.send_group_msg(self_id=self_id, group_id=group_id, message=msg)
         except Exception as e:

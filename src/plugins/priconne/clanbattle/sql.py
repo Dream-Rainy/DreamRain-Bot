@@ -13,6 +13,7 @@ from ..util.tools import load_config, lap2stage
 from .base import clan_path
 from .period import get_period
 from .settlement import analyse_records, facts
+from .carryover import coverage_complete, game_day_start
 
 
 async def clear_period_registrations(group_id: int) -> None:
@@ -333,7 +334,12 @@ class ApplyDao:
 
 
 def _row_to_record(d: tuple) -> Record:
-    """从 40 元素元组构造 Record，需外部设置 group_id"""
+    """兼容40元素旧记录及末尾附采集依据的新记录。"""
+    if len(d) not in (40, 41):
+        raise ValueError("无效的战绩字段数")
+    metadata = d[40] if len(d) == 41 else None
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError("无效的采集依据")
     (
         pcrid,
         name,
@@ -351,8 +357,9 @@ def _row_to_record(d: tuple) -> Record:
         u1r, u2r, u3r, u4r, u5r,
         u1rank, u2rank, u3rank, u4rank, u5rank,
         u1ue, u2ue, u3ue, u4ue, u5ue,
-    ) = d
+    ) = d[:40]
     return Record(
+        settlement=metadata,
         pcrid=pcrid,
         name=str(name),
         time=time_v,
@@ -411,7 +418,14 @@ class RecordDao:
                     Record.time < end_ts,
                 ).order_by(Record.time, Record.id)
             )
-            return [dict(row) for row in result.mappings()]
+            rows = [dict(row) for row in result.mappings()]
+        config = await load_config(os.path.join(clan_path, str(self.group_id), "clanbattle.json")) or {}
+        coverage = config.get("record_coverage") if isinstance(config, dict) else None
+        for row in rows:
+            event_id = facts(row).get("event_id") or (self.period.id if self.period is not None else None)
+            row["event_id"] = event_id
+            row["day_complete"] = coverage_complete(coverage, event_id, max(self.period.start, game_day_start(row["time"])) if self.period is not None else game_day_start(row["time"]), row["time"])
+        return rows
 
     async def save_settlement_facts(self, records):
         async with get_session() as sess:

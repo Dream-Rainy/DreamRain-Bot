@@ -14,6 +14,7 @@ from ..pcrclient import ApiException, _is_retryable_error
 class ClanBattle:
     def __init__(self, group_id) -> None:
         self.rank = 0  # 会战排名
+        self.rank_at = 0
         self.user_name = ""  # 游戏内昵称
         self.period = 0  # 阶段
         self.lap_num = 0  # 周目（会战周目，boss可能多一周目）
@@ -29,6 +30,8 @@ class ClanBattle:
         self.notice_subscribe = []
         self.notice_coop = []
         self.settlements = {}
+        self.collection_facts = {}
+        self.record_coverage = {}
         self.boss = [Boss(), Boss(), Boss(), Boss(), Boss()]
 
     def init_database(self):
@@ -70,11 +73,22 @@ class ClanBattle:
                             self.notice_subscribe, self.notice_coop):
                 notices.clear()
             self.latest_time = event.start - 1
+            config.pop("record_coverage", None)
             config.update(clan_battle_id=event.id, battle_start=event.start, battle_end=event.end - 1)
             await write_config(path, config)
+        self.rank, self.rank_at = 0, 0
+        self.collection_facts = {}
+        self.record_coverage = config.get("record_coverage", {})
         self.event = event
         self.clan_battle_id = event.id
         self.record = RecordDao(self.group_id, event)
+
+    def update_rank(self, rank, now):
+        if (self.event is not None and type(now) in (int, float) and self.event.active(now)
+                and type(rank) is int and rank > 0):
+            self.rank, self.rank_at = rank, int(now)
+            return True
+        return False
 
     async def rebind_client(self, client):
         self.client = client
@@ -130,6 +144,8 @@ class ClanBattle:
     async def save_member(self, config_file):
         member_dict = {}
         members = await self.client.callapi('/clan/info', {'clan_id': self.clan_id, 'get_user_equip': 0}, noerr=False)
+        detail = members["clan"].get("detail") or {}
+        self.clan_leader_id = detail.get("leader_viewer_id")
         for member in members["clan"]["members"]:
             member_dict[member["name"]] = member["viewer_id"]
         config = dict(await load_config(config_file))
@@ -199,6 +215,9 @@ class ClanBattle:
         for row in records:
             previous = facts(row)
             meta = dict(previous, event_id=self.event.id)
+            captured = self.collection_facts.get((str(row["pcrid"]), row["battle_log_id"]))
+            if captured and (captured.get("owners_complete") or not previous.get("owners_complete")):
+                meta.update(captured)
             key = (str(row["pcrid"]), row["lap"], str(row["boss"]), row["time"])
             found = matches.get(key, [])
             if len(found) == 1 and counts[key] == 1:
@@ -269,84 +288,95 @@ class ClanBattle:
         return await self.add_record(top.get("damage_history", []), loop_num, top.get("boss_info", []))
 
     async def _add_record(self, damage_history, loop_num):
-        log_list = []
-        dao_list = []
+        dao_list, captured, known = [], {}, []
+        observed_at = int(timestamp())
         try:
             if loop_num != self.loop_num:
                 raise CancleError
-            log_temp = await self.get_battle_log(1)  # 获取最大页数
-            if not log_temp["battle_list"]:
-                if loop_num != self.loop_num:
-                    raise CancleError
-                return True
-
-            max_page = log_temp["max_page"]
+            coverage = self.record_coverage if isinstance(self.record_coverage, dict) else {}
+            full_scan = not (self.event and coverage.get("event_id") == self.event.id and coverage.get("complete") is True)
             latest_time = await self.record.get_latest_time()
-            seen = set()
-            if latest_time and self.event is not None:
-                recent = await self.record.get_report_records(latest_time, self.event.end)
-                seen = {(str(row["pcrid"]), row["battle_log_id"]) for row in recent}
+            if self.event is not None and latest_time:
+                known = await self.record.get_report_records(self.event.start if full_scan else latest_time, self.event.end)
+            seen = {(str(row["pcrid"]), row["battle_log_id"]) for row in known}
+            existing_keys = set(seen)
+            first = await self.get_battle_log(1)
+            max_page = max(1, int(first["max_page"])) if first["battle_list"] else 1
+            log_list, visited, overlap, stable = [], set(), False, True
             for page in range(max_page, 0, -1):
-                log = await self.get_battle_log(page)
-                if log["battle_list"][-1]["battle_end_time"] >= latest_time:
-                    log_list += log["battle_list"][::-1]
-                else:
-                    break
-
-            for record in log_list[::-1]:
+                log = first if page == 1 else await self.get_battle_log(page)
                 if loop_num != self.loop_num:
                     raise CancleError
-
-                if self.event is not None and not self.event.start <= record["battle_end_time"] < self.event.end:
+                entries = log["battle_list"]
+                stable = stable and int(log.get("max_page", max_page) or 1) == max_page
+                visited.add(page)
+                overlap = overlap or any((str(item["target_viewer_id"]), item["battle_log_id"]) in seen for item in entries)
+                log_list.extend(entries)
+                if not full_scan and entries and max(item["battle_end_time"] for item in entries) < latest_time:
+                    break
+            visible = [(str(r["target_viewer_id"]), r["battle_log_id"]) for r in log_list if r["battle_type"] == 1]
+            stable = stable and len(visible) == len(set(visible))
+            complete = stable and ((full_scan and len(visited) == max_page) or (not full_scan and overlap))
+            keys = {(str(r["pcrid"]), r["lap"], str(r["boss"]), r["time"]) for r in known if all(k in r for k in ("lap", "boss", "time"))}
+            for record in sorted(log_list, key=lambda item: (item["battle_end_time"], item["battle_log_id"])):
+                if loop_num != self.loop_num:
+                    raise CancleError
+                time = record["battle_end_time"]
+                if record["battle_type"] != 1 or (not full_scan and time < latest_time) or (self.event is not None and not self.event.start <= time < self.event.end):
                     continue
-
-                key = (str(record["target_viewer_id"]), record["battle_log_id"])
-                if ((time := record["battle_end_time"]) >= int(latest_time)
-                        and record["battle_type"] == 1 and key not in seen):
-                    pcrid = record["target_viewer_id"]
-                    name = record["user_name"]
-                    boss = record["order_num"]
-                    lap = record["lap_num"]
-                    damage = record['total_damage']
-                    battle_log_id = record['battle_log_id']
-                    units_list = [0 for i in range(30)]
-                    for i, unit in enumerate(record["units"]):
-                        units_list[i] = unit["unit_id"]
-                        units_list[i + 5] = unit["unit_level"]
-                        units_list[i + 10] = unit["damage"]
-                        units_list[i + 15] = unit["unit_rarity"]
-                        units_list[i + 20] = unit["promotion_level"]
-                        units_list[i + 25] = unit["unique_equip_slot"][0]["enhancement_level"] if unit["unique_equip_slot"] else 0
-                    # 单次查询由客户端有限重试，批次失败交给监控退避后重取。
-                    time_line = await self.client.callapi('/clan_battle/timeline_report', {"target_viewer_id": pcrid, "clan_battle_id": self.clan_battle_id, "battle_log_id": battle_log_id}, noerr=False)
-                    remain_time, battle_time = time_line["start_remain_time"], time_line["battle_time"]
-                    # flag 保留旧格式兼容值；查询时只使用带依据的结算推断。
-                    flag = 0 if remain_time == 90 else 0.5
-                    # FIXME:开销有点大
-                    """
-                    # 伤害修正开始
-                    if flag == 1:
-                        damage_report = await self.client.callapi('/clan_battle/damage_report', {'clan_id': int(self.clan_id), 'clan_battle_id': int(self.clan_battle_id), 'lap_num': int(lap), 'order_num': int(boss)})
-                        for it in damage_report['damage_report']:
-                            if pcrid in it:
-                                damage_fix = it['damage']
-                                damage = damage_fix - self.record.get_past_damage(lap, boss, pcrid)
-                                break
-                    # 伤害修正结束
-                    """
-
-                    dao_list.append((pcrid, name, time, lap, boss, damage, flag,
-                                    battle_log_id, remain_time, battle_time, *units_list))
-                    seen.add(key)
+                pcrid, battle_log_id = record["target_viewer_id"], record["battle_log_id"]
+                key = str(pcrid), battle_log_id
+                units = record["units"]
+                owners = [{"unit_id": u.get("unit_id"), "viewer_id": u.get("viewer_id") if type(u.get("viewer_id")) is int and u["viewer_id"] > 0 else None} for u in units]
+                owners_complete = bool(owners) and len(owners) <= 5 and all(type(u["unit_id"]) is int and u["unit_id"] > 0 and u["viewer_id"] is not None for u in owners)
+                owners_complete = owners_complete and len({u["unit_id"] for u in owners}) == len(owners)
+                meta = dict(unit_owners=owners, owners_complete=owners_complete)
+                if self.event is not None:
+                    meta["event_id"] = self.event.id
+                captured[key] = meta
+                keys.add((str(pcrid), record["lap_num"], str(record["order_num"]), time))
+                if key in seen:
+                    continue
+                units_list = [0] * 30
+                for i, unit in enumerate(units):
+                    units_list[i] = unit["unit_id"]
+                    units_list[i + 5] = unit["unit_level"]
+                    units_list[i + 10] = unit["damage"]
+                    units_list[i + 15] = unit["unit_rarity"]
+                    units_list[i + 20] = unit["promotion_level"]
+                    units_list[i + 25] = unit["unique_equip_slot"][0]["enhancement_level"] if unit["unique_equip_slot"] else 0
+                timeline = await self.client.callapi('/clan_battle/timeline_report', {"target_viewer_id": pcrid, "clan_battle_id": self.clan_battle_id, "battle_log_id": battle_log_id}, noerr=False)
+                remain_time, battle_time = timeline["start_remain_time"], timeline["battle_time"]
+                flag = 0 if remain_time == 90 else .5
+                dao_list.append((pcrid, record["user_name"], time, record["lap_num"], record["order_num"], record["total_damage"], flag,
+                                 battle_log_id, remain_time, battle_time, *units_list, meta))
+                seen.add(key)
+            if full_scan:
+                complete = complete and existing_keys <= set(captured)
+            for item in damage_history:
+                if (self.event is None or self.event.start <= item["create_time"] < self.event.end) and (full_scan or item["create_time"] >= latest_time):
+                    complete = complete and (str(item.get("viewer_id")), item["lap_num"], str(item["order_num"]), item["create_time"]) in keys
             if loop_num != self.loop_num:
                 raise CancleError
             await self.record.add_record(dao_list)
+            if loop_num != self.loop_num:
+                raise CancleError
+            self.collection_facts = captured
+            if self.event is not None:
+                config_path = os.path.join(clan_path, str(self.group_id), "clanbattle.json")
+                config = await load_config(config_path) or {}
+                if loop_num != self.loop_num:
+                    raise CancleError
+                new_coverage = dict(event_id=self.event.id, start=self.event.start,
+                                    through=min(observed_at, self.event.end - 1) if complete else coverage.get("through", 0), complete=complete)
+                config.update(clan_battle_id=self.event.id, record_coverage=new_coverage)
+                await write_config(config_path, config)
+                self.record_coverage = new_coverage
         except CancleError:
             raise
-        except Exception as e:
-            # 批次不完整时不推进最新记录时间，下轮可重取失败记录。
-            logger.opt(exception=e).warning(f"公会战战绩同步失败，group={self.group_id}")
-            if isinstance(e, ApiException) or _is_retryable_error(e):
+        except Exception as error:
+            logger.opt(exception=error).warning(f"公会战战绩同步失败，group={self.group_id}")
+            if isinstance(error, ApiException) or _is_retryable_error(error):
                 raise
             return False
         return True

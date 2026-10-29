@@ -11,26 +11,29 @@ def settlement(app):
 
 
 def row(log, *, uid=1, boss=None, seconds=90, used=90, raw=500, actual=100, killed=True, moment=None, manual=None):
+    # 本夹具描述已完整收集的游戏日前缀；缺覆盖场景单独验证。
     meta = {"event_id": 42, "history_damage": actual, "killed": killed, "history_id": log}
     if killed:
         meta["report"] = dict(max_hp=actual, totals={str(uid): actual}, covered_logs=[[str(uid), log]])
     if manual is not None:
         meta["manual_flag"] = manual
-    return dict(pcrid=uid, name="成员", time=moment or 1790823600 + log * 120,
+    return dict(day_complete=True, pcrid=uid, name="成员", time=moment or 1790823600 + log * 120,
                 lap=42, boss=str(boss or log), battle_log_id=log, flag=0,
                 remain_time=seconds, battle_time=used, damage=raw, settlement=meta)
 
 
-def test_daily_pairing_caps_effective_damage_without_changing_raw_records(settlement):
+def test_daily_pairing_leaves_equally_legal_positions_pending_without_changing_damage(settlement):
     records = [row(1), row(2, raw=400, actual=400, killed=False),
                row(3, raw=200, actual=200, killed=False), row(4, raw=1000),
                row(5, raw=300, actual=300, killed=False)]
     original = deepcopy(records)
     result = settlement.analyse_records(records)
-    assert [r["flag"] for r in result] == [1, .5, 0, 1, .5]
-    assert [result[i]["carry_source"] for i in (1, 4)] == [1, 4]
+    assert [r["flag"] for r in result] == [1, None, None, 1, .5]
+    assert result[4]["carry_source"] == 4
+    assert result[1]["carry_source"] is None and result[2]["carry_source"] is None
     assert result[0]["extended_seconds"] == result[3]["extended_seconds"] == 90
-    assert sum(map(settlement.knife_weight, result)) == 3
+    assert sum(map(settlement.knife_weight, result)) == 1.5
+    assert all(settlement.uncertain(result[i]) for i in (1, 2))
     assert sum(r["effective_damage"] for r in result) == 1100
     assert sum(r["damage"] for r in result) == 2400 and records == original
 
@@ -39,7 +42,10 @@ def test_daily_pairing_caps_effective_damage_without_changing_raw_records(settle
 def test_full_duration_kill_uses_existing_compensation_rounding(settlement, raw, expected):
     result = settlement.analyse_records([row(1, raw=raw), row(2, seconds=expected, killed=False, actual=500)])
     assert result[0]["flag"] == 1 and result[0]["extended_seconds"] == expected
-    assert result[1]["flag"] == .5 and result[1]["carry_source"] == 1
+    if expected == 90:
+        assert result[1]["flag"] is None and result[1]["carry_inventory"]["total"] == (0, 1)
+    else:
+        assert result[1]["flag"] == .5 and result[1]["carry_source"] == 1
 
 
 def test_confirmed_compensation_kill_never_generates_another_carry(settlement):
@@ -57,10 +63,11 @@ def test_known_short_carry_can_kill_and_does_not_chain(settlement):
     assert result[2]["flag"] == 0
 
 
-def test_default_model_treats_another_kill_as_a_new_tail_before_consuming_full_carry(settlement):
+def test_another_ninety_second_kill_can_be_a_tail_or_a_full_carry(settlement):
     result = settlement.analyse_records([row(1), row(2), row(3, killed=False, actual=500)])
-    assert [r["flag"] for r in result] == [1, 1, .5]
-    assert result[2]["carry_source"] == 1
+    assert [r["flag"] for r in result] == [1, None, None]
+    assert result[1]["extended_seconds"] is None
+    assert result[2]["carry_inventory"]["total"] == (0, 2)
 
 
 def test_carry_pairing_never_crosses_member_or_five_am_boundary(settlement):
@@ -125,7 +132,8 @@ async def test_current_report_uses_deducted_damage_while_personal_report_preserv
 
     records = settlement.analyse_records([row(1), row(2, actual=500, killed=False)])
     players, damage, score = base.clanbattle_report(records, 15)
-    assert damage == 600 and score == 2700 and players[0][2] == 1
+    assert damage == 600 and score == 2700 and players[0][2] == .5
+    assert players[0][5] == 1
     captured = []
     monkeypatch.setattr(base, "grid2imgb64", lambda rows, columns: captured.append((rows, columns)) or "图片")
     await base.get_cbreport(players, damage, score)
@@ -174,3 +182,12 @@ def test_verified_kill_without_overflow_can_legitimately_return_twenty_seconds(s
     result = settlement.analyse_records([row(1, raw=100, actual=100, used=90)])[0]
     assert result['effective_damage'] == result['damage'] == 100
     assert result['hp_before'] == 100 and result['extended_seconds'] == 20
+
+def test_legacy_metadata_uses_query_event_context_for_same_day_carry_sources(settlement):
+    first = row(1, raw=100, actual=100, used=82)
+    first['settlement'].pop('event_id')
+    first['event_id'] = 42
+    second = row(2, seconds=28, raw=500, actual=500, killed=False)
+    result = settlement.analyse_records([first,second])
+    assert result[0]['extended_seconds'] == 28
+    assert result[1]['flag'] == .5 and result[1]['carry_source'] == 1

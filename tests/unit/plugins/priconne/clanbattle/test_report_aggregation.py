@@ -408,3 +408,65 @@ def test_control_report_combines_history_with_only_valid_declarations(reports, m
     tables.clear()
     reports.control_report(bosses, samples, queues, {}, now, False, 42)
     assert tables[0][0][3:7] == ["中1000万/低800万", "—", "待确认", "—"]
+
+def test_inventory_display_preserves_correlated_total_and_distinguishes_no_data(reports, monkeypatch):
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    now, period = ts(3, 19), BattlePeriod(42, ts(1, 5), ts(6, 0))
+    config = dict(member_by_id={'1': '成员', '2': '成员'}, record_coverage=dict(
+        event_id=42, start=period.start, through=now, complete=True))
+    inventory = dict(status='ok', reason='', seconds={90: (0, 1), 28: (0, 1)}, total=(1, 1))
+    records = [dict(record(1, now, None), carry_inventory=inventory)]
+    captured = []
+    monkeypatch.setattr(reports, '_report_image', lambda *args: captured.append(args) or '图片')
+    reports.carryover_report(records, config, now, period)
+    rows = captured[0][3][0][2]
+    assert rows[0][0] == '成员 (1)' and rows[0][1] == '—'
+    assert rows[0][2].startswith('总库存1份；') and '90s×0～1' in rows[0][2] and '28s×0～1' in rows[0][2]
+    assert rows[1][1:] == ['暂无未配对补偿', '—']
+    config['record_coverage']['complete'] = False
+    no_data = reports.carryover_report([], config, now, period, player_id='2')
+    assert '无今日记录，库存未知' in no_data and '暂无未配对' not in no_data
+
+
+def test_inventory_ignores_future_records_and_foreign_coverage(reports):
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    now, period = ts(3, 19), BattlePeriod(42, ts(1, 5), ts(6, 0))
+    config = dict(member_by_id={'1': '成员'}, record_coverage=dict(event_id=41, start=period.start, through=now, complete=True))
+    records = [dict(record(1, now+1), carry_inventory=dict(status='ok', seconds={90:(1,1)}, total=(1,1)))]
+    text = reports.carryover_report(records, config, now, period, player_id='1')
+    assert '库存未知' in text and '90s×1' not in text
+    assert '当前没有本期可用补偿' in reports.carryover_report(records, config, period.end, period)
+
+
+@pytest.mark.parametrize("own_rank,last_rank", [(220, 7777), (200, 5000), (5000, 5000)])
+def test_rankline_inserts_own_position_and_merges_shared_nodes(reports, monkeypatch, own_rank, last_rank):
+    nodes = (1, 2, 3, 10, 20, 50, 200, 600, 1200, 2800, 5000)
+    captured = []
+    monkeypatch.setattr(reports, "_report_image", lambda *args: captured.append(args) or "图片")
+    def item(rank):
+        return dict(rank=rank, damage=100000000000 - rank, clan_name=f"公会{rank}")
+    reports.rankline_report({"period_id": 42, "updated_at": ts(5, 23, 55), "stale": False,
+                            "lines": [item(rank) for rank in nodes], "my": item(own_rank),
+                            "last": item(last_rank)}, ts(5, 23, 55))
+    rows = captured[0][3][0][2]
+    positions = [row[0]["items"][0] if isinstance(row[0], dict) else row[0] for row in rows]
+    ranks = list(map(int, positions))
+    assert ranks == sorted({*nodes, own_rank, last_rank})
+    own = rows[ranks.index(own_rank)]
+    last = rows[ranks.index(last_rank)]
+    assert own[3] == "+0.00" and own[0]["color"] == "#245BBA" and own[0]["filled"] is True
+    if own_rank != last_rank:
+        assert last[0]["color"] == "#718096" and last[0]["filled"] is False
+    assert "本会" not in str([row[0] for row in rows]) and "末位" not in str([row[0] for row in rows])
+
+
+def test_rankline_unknown_positions_are_explicit_without_guessing(reports, monkeypatch):
+    captured = []
+    monkeypatch.setattr(reports, "_report_image", lambda *args: captured.append(args) or "图片")
+    reports.rankline_report({"period_id": 42, "updated_at": ts(5, 23, 55), "stale": False,
+                            "lines": [{"rank": 5000, "damage": None, "clan_name": "—"}],
+                            "my": None, "last": None}, ts(5, 23, 55))
+    rows = captured[0][3][0][2]
+    assert rows == [["5000", "—", "—", "—"], ["本会待核验", "—", "—", "—"], ["末位待核验", "—", "—", "—"]]

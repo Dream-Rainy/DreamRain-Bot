@@ -29,7 +29,7 @@ TERMINAL_SERVER_ERROR_STATUS = frozenset({0, 1, 2, 3, 403, 999999})
 _QUERY_PATHS = frozenset({
     "/load/index", "/home/index", "/clan/info", "/clan_battle/top",
     "/clan_battle/reload_detail_info", "/clan_battle/battle_log_list",
-    "/clan_battle/timeline_report", "/clan_battle/damage_report",
+    "/clan_battle/timeline_report", "/clan_battle/damage_report", "/clan_battle/period_ranking",
     "/source_ini/index", "/source_ini/get_maintenance_status",
 })
 
