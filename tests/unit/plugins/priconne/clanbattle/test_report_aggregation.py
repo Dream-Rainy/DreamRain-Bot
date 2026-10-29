@@ -209,20 +209,44 @@ def test_health_uses_only_current_valid_samples_and_has_distinct_blue_shades(rep
     assert len(set(shades)) == 5
 
 
-def test_daily_grouping_keeps_unknown_and_non_roster_separate_and_disambiguates_names(reports, monkeypatch):
+def test_daily_grouping_marks_pending_in_existing_tiers_without_changing_source_counts(reports, monkeypatch):
+    from copy import deepcopy
     from src.plugins.priconne.clanbattle.period import BattlePeriod
 
     event, now = BattlePeriod(42, ts(1, 5), ts(6, 0)), ts(3, 19)
     rows = [record(1, now - i) for i in range(3)] + [record(2, now), record(2, now, 1),
-            record(3, now, 9), record(99, now), record(4, now + 1), record(4, ts(2, 19))]
+            dict(record(3, now, None), raw_flag=0),
+            dict(record(3, now, None), raw_flag=1),
+            dict(record(3, now, None), raw_flag=.5),
+            dict(record(5, now, .5), raw_flag=0, kind_issue="补偿来源待核验"),
+            record(99, now), record(4, now + 1), record(4, ts(2, 19))]
+    before = deepcopy(rows)
     captured = []
     monkeypatch.setattr(reports, "_report_image", lambda *args: captured.append(args) or "图片")
-    reports.daily_report(rows, {"member_by_id": {str(i): "同名" for i in range(1, 5)}, "member_updated_at": now}, now, event)
+    reports.daily_report(rows, {"member_by_id": {str(i): "同名" for i in range(1, 6)}, "member_updated_at": now}, now, event)
     rendered = {row[0]["items"][0]: row for row in captured[0][3][0][2]}
-    assert captured[0][2] == [] and set(rendered) == {"3刀", "1.5刀", "暂无记录", "待核验", "名册外"}
+    assert captured[0][2] == [] and set(rendered) == {"3刀", "2刀", "1.5刀", "0.5刀", "暂无记录", "名册外"}
     assert rendered["暂无记录"][1]["items"] == ["同名 (4)"]
-    assert rendered["待核验"][1]["items"] == ["同名 (3)"]
-    assert sum(row[2] for row in rendered.values()) == 5
+    assert rendered["2刀"][1]["items"] == ["同名 (3) *"]
+    assert rendered["0.5刀"][1]["items"] == ["同名 (5) *"]
+    assert rendered["1.5刀"][1]["items"] == ["同名 (2)"]
+    assert sum(row[2] for row in rendered.values()) == 6
+    assert "* 刀型待核验" in captured[0][4]
+    assert rows == before
+    source = {p["pcrid"]: p for p in reports.daily_members(rows, {"3": "同名"})}
+    assert source["3"]["knife"] == 0 and source["3"]["pending"] == 3
+
+
+def test_daily_unknown_without_raw_type_stays_in_zero_tier_and_keeps_status_hint(reports, monkeypatch):
+    captured = []
+    monkeypatch.setattr(reports, "_report_image", lambda *args: captured.append(args) or "图片")
+    now = ts(3, 19)
+    reports.daily_report([record(1, now, None)], {"member_by_id": {"1": "成员", "2": "无记录"},
+                                               "member_updated_at": now}, now, status_hint="同步已过期")
+    rows = captured[0][3][0][2]
+    assert len(rows) == 1 and rows[0][0]["items"] == ["0刀"]
+    assert rows[0][1]["items"] == ["成员 *", "无记录"] and rows[0][2] == 2
+    assert captured[0][4] == "同步已过期 * 刀型待核验"
 
 
 def test_status_separates_fighters_from_applicants_and_limits_action_hints(reports, monkeypatch):

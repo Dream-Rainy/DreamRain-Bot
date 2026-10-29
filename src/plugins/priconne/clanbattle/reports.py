@@ -409,14 +409,17 @@ def daily_report(records, config, now, period=None, status_hint=""):
     start = pcr_date(now)
     records = [row for row in records if max(int(start.timestamp()), period.start if period else 0)
                <= row["time"] < min(now + 1, period.end if period else now + 1)]
-    players = daily_members(records, roster)
+    display_records = [
+        dict(row, flag=row["raw_flag"], kind_issue=row.get("kind_issue") or "刀型待核验")
+        if row["flag"] not in (0, .5, 1) and row.get("raw_flag") in (0, .5, 1) else row
+        for row in records
+    ]
+    players = daily_members(display_records, roster)
     names = Counter(player["name"] for player in players)
     groups = defaultdict(list)
     for player in players:
         if player["pcrid"] not in roster:
             group = "名册外"
-        elif player["pending"]:
-            group = "待核验"
         elif player["knife"] not in (0, .5, 1, 1.5, 2, 2.5, 3):
             group = "异常"
         else:
@@ -424,12 +427,15 @@ def daily_report(records, config, now, period=None, status_hint=""):
         name = player["name"] or "未命名"
         if names[player["name"]] > 1:
             name += f" ({player['pcrid']})"
+        if player["pending"]:
+            name += " *"
         groups[group].append(name)
     rows = []
+    zero_label = "0刀" if any(p["knife"] == 0 and p["latest"] is not None for p in players) else "暂无记录"
     for value, label, color in [(3, "3刀", "#10A976"), (2.5, "2.5刀", "#0DACA5"),
                                 (2, "2刀", "#D88A04"), (1.5, "1.5刀", "#EA7428"),
                                 (1, "1刀", "#E74C6F"), (.5, "0.5刀", "#C75C86"),
-                                (0, "暂无记录", "#8291A8"), ("待核验", "待核验", "#687C99"),
+                                (0, zero_label, "#8291A8"),
                                 ("异常", "异常", "#CA4358"), ("名册外", "名册外", "#687C99")]:
         members = groups.get(value)
         if members:
@@ -441,12 +447,14 @@ def daily_report(records, config, now, period=None, status_hint=""):
     if period:
         metadata += f" · 第{period.id}期 第{period.days(now)}/5天"
     metadata += f" · 更新{datetime.fromtimestamp(now, GAME_TZ):%H:%M}"
-    note = status_hint or "按已保存记录推断；待核验单列。"
+    note = status_hint
     updated = config.get("member_updated_at", 0) if isinstance(config, dict) else 0
     if not roster:
         note = "名册缺失，让监控人发送【出刀监控】刷新。"
     elif format_timestamp(updated) == "未知" or now - updated >= 86400:
         note += " 名册待刷新。"
+    if any(player["pending"] for player in players):
+        note = (note + " * 刀型待核验").strip()
     return _report_image("今日出刀分布", metadata, [], [
         ("", ["刀数", "成员", "人数"], rows or [["—", "暂无名册与战绩", 0]], [180, 1060, 120])], note)
 
