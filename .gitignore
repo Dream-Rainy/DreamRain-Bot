@@ -40,7 +40,7 @@ Dockerfile.dev
 
 .cursor
 alembic.ini
-migrations/
+/migrations/
 
 notebooks/
 docs/ai/
