@@ -53,7 +53,7 @@ async def test_period_queries_and_correction_exclude_other_events_but_keep_habit
                                           (22, event.start + 86400 * 2, 700)):
                 fields = {c.name: 0 for c in Record.__table__.columns if c.name != "id"}
                 fields.update(group_id=group, time=moment, pcrid=123, name="成员", boss="1", lap=30,
-                              battle_log_id=7, damage=damage)
+                              battle_log_id=7, damage=damage, settlement={"manual_flag": 0})
                 session.add(Record(**fields))
             await session.commit()
         dao = sql.RecordDao(11, event)
@@ -72,6 +72,78 @@ async def test_period_queries_and_correction_exclude_other_events_but_keep_habit
         assert [(r["damage"], r["flag"]) for r in history] == [(900, 0), (100, 0.5), (200, 0.5), (800, 0)]
     finally:
         await engine.dispose()
+
+
+async def test_settlement_query_uses_earlier_tail_context_and_preserves_later_manual_correction(app, monkeypatch):
+    from src.plugins.priconne.clanbattle import sql
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+    from src.plugins.priconne.orm.models import Record
+
+    period = BattlePeriod(42, 1790197200, 1790611200)
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    monkeypatch.setattr(sql, "get_session", async_sessionmaker(engine))
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(lambda conn: Record.__table__.create(conn))
+        async with sql.get_session() as session:
+            for log, damage, actual, killed in [(1, 500, 100, True), (2, 400, 400, False)]:
+                fields = {column.name: 0 for column in Record.__table__.columns if column.name != "id"}
+                fields.update(group_id=11, pcrid=123, name="成员", lap=42, boss=str(log),
+                              time=period.start + log * 120, damage=damage, battle_log_id=log,
+                              remain_time=90, battle_time=90, settlement=dict(
+                                  event_id=42, history_damage=actual, killed=killed, history_id=log))
+                session.add(Record(**fields))
+            await session.commit()
+        dao = sql.RecordDao(11, period)
+        later = await dao.get_report_records(period.start + 240, period.start + 241)
+        assert len(later) == 1 and later[0]["flag"] == .5 and later[0]["carry_source"] == 1
+        stale = await dao.get_settlement_records(period.start, period.end)
+        assert await dao.correct_dao(2, 0) == 1
+        await dao.save_settlement_facts(stale)
+        await dao.bigfun_check([[{"damage_list": [{"datetime": period.start + 240, "damage": 390, "reimburse": 1, "kill": 0}]}]])
+        current = await dao.get_report_records(period.start + 240, period.start + 241)
+        assert current[0]["flag"] == 0 and current[0]["kind_status"] == "manual"
+        assert current[0]["damage"] == 400 and current[0]["effective_damage"] == 390
+    finally:
+        await engine.dispose()
+
+
+def test_settlement_migration_preserves_old_rows_and_roundtrips_json(app):
+    import importlib.util
+    from pathlib import Path
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    def migration(filename):
+        path = Path(__file__).resolve().parents[2] / "migrations" / "versions" / filename
+        spec = importlib.util.spec_from_file_location(filename, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    initial = migration("e828532300c4_init_priconne_orm.py")
+    added = migration("c5e8b2d4a901_add_priconne_settlement.py")
+    engine = sa.create_engine("sqlite:///:memory:")
+    try:
+        with engine.begin() as connection:
+            with Operations.context(MigrationContext.configure(connection)):
+                initial.upgrade()
+                old = sa.Table("priconne_record", sa.MetaData(), autoload_with=connection)
+                values = {column.name: 0 for column in old.columns if column.name != "id"}
+                values.update(name="旧记录", boss="1", damage=500, flag=1)
+                connection.execute(old.insert().values(**values))
+                added.upgrade()
+                table = sa.Table("priconne_record", sa.MetaData(), autoload_with=connection)
+                row = connection.execute(table.select()).mappings().one()
+                assert row["damage"] == 500 and row["flag"] == 1 and row["settlement"] is None
+                connection.execute(table.update().values(settlement={"manual_flag": .5}))
+                assert connection.execute(sa.select(table.c.settlement)).scalar_one() == {"manual_flag": .5}
+                added.downgrade()
+                assert "settlement" not in {column["name"] for column in sa.inspect(connection).get_columns("priconne_record")}
+                assert connection.execute(sa.text("SELECT damage, flag FROM priconne_record")).one() == (500, 1)
+    finally:
+        engine.dispose()
 
 
 async def test_damage_declaration_update_and_cancel_preserve_other_groups(app, monkeypatch):

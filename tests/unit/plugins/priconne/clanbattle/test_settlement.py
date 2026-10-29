@@ -1,0 +1,134 @@
+from copy import deepcopy
+from datetime import datetime, timezone, timedelta
+
+import pytest
+
+
+@pytest.fixture
+def settlement(app):
+    from src.plugins.priconne.clanbattle import settlement
+    return settlement
+
+
+def row(log, *, uid=1, boss=None, seconds=90, used=90, raw=500, actual=100, killed=True, moment=None, manual=None):
+    meta = {"event_id": 42, "history_damage": actual, "killed": killed, "history_id": log}
+    if manual is not None:
+        meta["manual_flag"] = manual
+    return dict(pcrid=uid, name="成员", time=moment or 1790823600 + log * 120,
+                lap=42, boss=str(boss or log), battle_log_id=log, flag=0,
+                remain_time=seconds, battle_time=used, damage=raw, settlement=meta)
+
+
+def test_daily_pairing_caps_effective_damage_without_changing_raw_records(settlement):
+    records = [row(1), row(2, raw=400, actual=400, killed=False),
+               row(3, raw=200, actual=200, killed=False), row(4, raw=1000),
+               row(5, raw=300, actual=300, killed=False)]
+    original = deepcopy(records)
+    result = settlement.analyse_records(records)
+    assert [r["flag"] for r in result] == [1, .5, 0, 1, .5]
+    assert [result[i]["carry_source"] for i in (1, 4)] == [1, 4]
+    assert result[0]["extended_seconds"] == result[3]["extended_seconds"] == 90
+    assert sum(map(settlement.knife_weight, result)) == 3
+    assert sum(r["effective_damage"] for r in result) == 1100
+    assert sum(r["damage"] for r in result) == 2400 and records == original
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(500, 90), (430, 90), (400, 88)])
+def test_full_duration_kill_uses_existing_compensation_rounding(settlement, raw, expected):
+    result = settlement.analyse_records([row(1, raw=raw), row(2, seconds=expected, killed=False, actual=500)])
+    assert result[0]["flag"] == 1 and result[0]["extended_seconds"] == expected
+    assert result[1]["flag"] == .5 and result[1]["carry_source"] == 1
+
+
+def test_confirmed_compensation_kill_never_generates_another_carry(settlement):
+    result = settlement.analyse_records([row(1), row(2, manual=.5, used=30), row(3, actual=500, killed=False)])
+    assert result[1]["flag"] == .5 and result[1]["extended_seconds"] == 0
+    assert result[1]["carry_source"] == 1
+    assert result[2]["flag"] == 0 and result[2]["carry_source"] is None
+
+
+def test_known_short_carry_can_kill_and_does_not_chain(settlement):
+    result = settlement.analyse_records([row(1, raw=100, used=50), row(2, seconds=60, used=30),
+                                         row(3, actual=500, killed=False)])
+    assert result[0]["extended_seconds"] == 60
+    assert result[1]["flag"] == .5 and result[1]["extended_seconds"] == 0
+    assert result[2]["flag"] == 0
+
+
+def test_default_model_treats_another_kill_as_a_new_tail_before_consuming_full_carry(settlement):
+    result = settlement.analyse_records([row(1), row(2), row(3, killed=False, actual=500)])
+    assert [r["flag"] for r in result] == [1, 1, .5]
+    assert result[2]["carry_source"] == 1
+
+
+def test_carry_pairing_never_crosses_member_or_five_am_boundary(settlement):
+    before = int(datetime(2026, 10, 2, 4, 59, tzinfo=timezone(timedelta(hours=8))).timestamp())
+    result = settlement.analyse_records([
+        row(1, moment=before), row(2, uid=2, moment=before + 20, actual=500, killed=False),
+        row(3, moment=before + 60, actual=500, killed=False)])
+    assert [r["flag"] for r in result] == [1, 0, 0]
+
+
+def test_four_ordinary_attacks_are_a_conflict_instead_of_silently_clipped(settlement):
+    result = settlement.analyse_records([row(i, killed=False, actual=500) for i in range(1, 5)])
+    assert all(r["flag"] is None and "冲突" in r["kind_issue"] for r in result)
+    assert all(r["effective_damage"] == 500 for r in result)
+
+
+@pytest.mark.parametrize("valid_totals", [True, False])
+def test_reconstruction_requires_official_per_member_damage_match(settlement, valid_totals):
+    records = [row(1, uid=1, boss=1, raw=900), row(2, uid=2, boss=1, raw=500)]
+    for r in records:
+        r["settlement"] = {"event_id": 42}
+    records[0]["settlement"]["report"] = dict(max_hp=1000, totals={"1": 900, "2": 100 if valid_totals else 200})
+    result = settlement.analyse_records(records)
+    assert [r["effective_damage"] for r in result] == ([900, 100] if valid_totals else [None, None])
+    assert [r["damage"] for r in result] == [900, 500]
+
+
+def test_same_second_has_no_fabricated_global_order(settlement):
+    records = [row(1, uid=1, boss=1, raw=900), row(2, uid=2, boss=1, raw=500)]
+    records[1]["time"] = records[0]["time"]
+    for r in records:
+        r["settlement"] = {"event_id": 42}
+    records[0]["settlement"]["report"] = dict(max_hp=1000, totals={"1": 900, "2": 100})
+    assert all(r["effective_damage"] is None for r in settlement.analyse_records(records))
+    for i, r in enumerate(records, 1):
+        r["settlement"]["history_id"] = i
+    assert [r["effective_damage"] for r in settlement.analyse_records(records)] == [900, 100]
+
+
+def test_old_time_heuristic_is_not_reused_as_evidence(settlement):
+    record = row(1, used=30)
+    record.update(flag=1, settlement=None)
+    inferred = settlement.analyse_records([record])[0]
+    assert inferred["raw_flag"] == 1 and inferred["flag"] is None
+    assert inferred["effective_damage"] is None and inferred["extended_seconds"] is None
+
+
+def test_kill_notice_uses_exact_requested_text_and_never_confuses_unknown_with_zero(settlement):
+    record = settlement.analyse_records([row(1)])[0]
+    history = dict(name="成员", lap_num=42, order_num=1, kill=1, damage=100)
+    assert settlement.battle_notice(history, record) == "成员对42周目1王造成100点伤害并击破（原始伤害500）。获得延长战斗时间90s。"
+    record["extended_seconds"] = None
+    assert settlement.battle_notice(history, record).endswith("延长战斗时间待核验。")
+    record["extended_seconds"] = 0
+    assert settlement.battle_notice(history, record) == "成员对42周目1王造成100点伤害并击破（原始伤害500）。"
+
+
+async def test_current_report_uses_deducted_damage_while_personal_report_preserves_raw(settlement, monkeypatch):
+    from src.plugins.priconne.clanbattle import base
+
+    records = settlement.analyse_records([row(1), row(2, actual=500, killed=False)])
+    players, damage, score = base.clanbattle_report(records, 15)
+    assert damage == 600 and score == 2700 and players[0][2] == 1
+    captured = []
+    monkeypatch.setattr(base, "grid2imgb64", lambda rows, columns: captured.append((rows, columns)) or "图片")
+    await base.get_cbreport(players, damage, score)
+    assert captured[-1][0][0][3:5] == ["600", "2700"]
+    await base.get_plyerreport([dict(record, history_id=str(record["battle_log_id"])) for record in records])
+    assert sum(int(row[2]) for row in captured[-1][0]) == 1000
+    unknown = dict(records[0], flag=None, effective_damage=None, kind_issue="待核验")
+    players, damage, score = base.clanbattle_report([unknown], 15)
+    await base.get_cbreport(players, damage, score)
+    assert captured[-1][0][0][-2:] == ["—", "—"]

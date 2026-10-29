@@ -26,6 +26,12 @@ DEFAULT_API_ROOTS = (
 )
 RETRYABLE_SERVER_ERROR_STATUS = frozenset({4, 5, 6, 7, 8})
 TERMINAL_SERVER_ERROR_STATUS = frozenset({0, 1, 2, 3, 403, 999999})
+_QUERY_PATHS = frozenset({
+    "/load/index", "/home/index", "/clan/info", "/clan_battle/top",
+    "/clan_battle/reload_detail_info", "/clan_battle/battle_log_list",
+    "/clan_battle/timeline_report", "/clan_battle/damage_report",
+    "/source_ini/index", "/source_ini/get_maintenance_status",
+})
 
 
 def get_api_root(qudao):
@@ -110,6 +116,24 @@ class ApiException(Exception):
         self.result_code = result_code
 
 
+def _is_network_error(error):
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)):
+            return True
+        cause = error.__cause__ or error.__context__
+        if isinstance(error, ApiException) and error.code == 501 and cause is None:
+            if any(word in str(error).lower() for word in ("connect", "timeout", "network", "dns", "unreachable", "refused")):
+                return True
+        error = cause
+    return False
+
+
+def _is_retryable_error(error):
+    return _is_network_error(error) or isinstance(error, ApiException) and error.code in RETRYABLE_SERVER_ERROR_STATUS
+
+
 class pcrclient:
 
     def __init__(self, bsclient: bsdkclient):
@@ -117,10 +141,24 @@ class pcrclient:
         self.bsdk = bsclient
         self.headers = defaultHeaders.copy()
         self.headers['PLATFORM-ID'] = self.bsdk.platform
-        self.client = httpx.AsyncClient(trust_env=False)
+        self.client = self._make_http_client()
         self.call_lock = asyncio.Lock()
         self.servers = list(DEFAULT_API_ROOTS)
         self.active_server = 0
+
+    @staticmethod
+    def _make_http_client(cookies=None):
+        return httpx.AsyncClient(trust_env=False, cookies=cookies)
+
+    async def _reset_transport(self):
+        previous = self.client
+        cookies = httpx.Cookies(previous.cookies)
+        try:
+            await previous.aclose()
+        except Exception as error:
+            logger.warning(f"pcrclient connection close failed: type={type(error).__name__}")
+        finally:
+            self.client = self._make_http_client(cookies)
 
     @staticmethod
     def _normalize_server(server: str) -> str:
@@ -187,53 +225,57 @@ class pcrclient:
         async with self.call_lock:
             key = pcrclient.createkey()
             request = request.copy()
-
-            try:
-                if self.viewer_id is not None:
-                    request['viewer_id'] = b64encode(pcrclient.encrypt(
-                        str(self.viewer_id), key)) if crypted else str(self.viewer_id)
-                payload = pcrclient.pack(request, key) if crypted else json.dumps(request).encode('utf8')
-                http_response = await self.client.post(
-                    self.current_api_root + apiurl,
-                    data=payload,
-                    headers=self.headers,
-                    timeout=20,
-                )
-                http_response.raise_for_status()
-                response = http_response.content
-
-                response = pcrclient.unpack(
-                    response)[0] if crypted else loads(response)
-
-                data_headers = response['data_headers']
-
-                if 'sid' in data_headers and data_headers["sid"] != '':
-                    t = md5()
-                    t.update((data_headers['sid'] + 'c!SID!n').encode('utf8'))
-                    self.headers['SID'] = t.hexdigest()
-
-                if 'request_id' in data_headers:
-                    self.headers['REQUEST-ID'] = data_headers['request_id']
-                data = response['data']
-                if not noerr and 'server_error' in data:
-                    error = data['server_error'] or {}
-                    result_code = data_headers.get('result_code')
+            path = apiurl.split("?", 1)[0]
+            attempts = 3 if path in _QUERY_PATHS else 1
+            server = self.current_api_root
+            host = httpx.URL(server).host
+            for attempt in range(1, attempts + 1):
+                started = time.monotonic()
+                try:
+                    if self.viewer_id is not None:
+                        request['viewer_id'] = b64encode(pcrclient.encrypt(
+                            str(self.viewer_id), key)) if crypted else str(self.viewer_id)
+                    payload = pcrclient.pack(request, key) if crypted else json.dumps(request).encode('utf8')
+                    http_response = await self.client.post(
+                        server + apiurl, content=payload, headers=self.headers, timeout=20,
+                    )
+                    http_response.raise_for_status()
+                    response = pcrclient.unpack(http_response.content)[0] if crypted else loads(http_response.content)
+                    data_headers = response['data_headers']
+                    if data_headers.get('sid'):
+                        self.headers['SID'] = md5((data_headers['sid'] + 'c!SID!n').encode('utf8')).hexdigest()
+                    if 'request_id' in data_headers:
+                        self.headers['REQUEST-ID'] = data_headers['request_id']
+                    data = response['data']
+                    if isinstance(data, dict) and 'server_error' in data:
+                        error = data['server_error'] or {}
+                        status = error.get('status')
+                        if not noerr or (status in RETRYABLE_SERVER_ERROR_STATUS and attempt < attempts):
+                            raise ApiException(error.get('message') or error.get('title') or "游戏服务器返回未知错误",
+                                               status, data_headers.get('result_code'))
+                    return data if not header else (data, data_headers)
+                except ApiException as error:
+                    retry = error.code in RETRYABLE_SERVER_ERROR_STATUS and attempt < attempts
                     logger.warning(
-                        f"pcrclient: {apiurl} api failed: server={self.current_api_root}, "
-                        f"status={error.get('status')}, result_code={result_code}, "
-                        f"title={error.get('title', '')!r}, message={error.get('message', '')!r}"
+                        f"pcrclient game error: api={path}, server={host}, status={error.code}, "
+                        f"result_code={error.result_code}, attempt={attempt}/{attempts}, "
+                        f"elapsed={time.monotonic() - started:.3f}s, retry={retry}"
                     )
-                    raise ApiException(
-                        error.get('message') or error.get('title') or "游戏服务器返回未知错误",
-                        error.get('status'),
-                        result_code,
+                    if not retry:
+                        raise
+                    await asyncio.sleep(.5 * 2 ** (attempt - 1))
+                except Exception as error:
+                    network = _is_network_error(error)
+                    retry = network and attempt < attempts
+                    kind = "network" if network else "http" if isinstance(error, httpx.HTTPStatusError) else "response"
+                    logger.warning(
+                        f"pcrclient {kind} error: api={path}, server={host}, type={type(error).__name__}, "
+                        f"attempt={attempt}/{attempts}, elapsed={time.monotonic() - started:.3f}s, retry={retry}"
                     )
-
-                return data if not header else (data, data_headers)
-            except ApiException:
-                raise
-            except Exception as e:
-                raise ApiException(f"网络或响应解析错误：{e}", 501) from e
+                    if not retry:
+                        raise ApiException(f"{kind}请求失败 [{type(error).__name__}] api={path}, server={host}", 501) from error
+                    await self._reset_transport()
+                    await asyncio.sleep(.5 * 2 ** (attempt - 1))
 
     async def refresh_servers(self):
         source_ini = await self.callapi(

@@ -1,6 +1,7 @@
 """clanbattle 数据访问 - 基于 nonebot-plugin-orm"""
 
 import os
+import asyncio
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select, delete, update, func
@@ -11,6 +12,7 @@ from ..orm.models import SL, Subscribe, Tree, Apply, Record
 from ..util.tools import load_config, lap2stage
 from .base import clan_path
 from .period import get_period
+from .settlement import analyse_records, facts
 
 
 async def clear_period_registrations(group_id: int) -> None:
@@ -382,11 +384,27 @@ class RecordDao:
         return Record.time >= self.period.start, Record.time < self.period.end
 
     async def get_report_records(self, start_ts: int, end_ts: int):
+        # 配对需要查询区间之前的同日尾刀；返回值仍严格限定请求区间。
+        context_start = int(pcr_date(start_ts).timestamp())
+        if start_ts > 0:
+            if self.period is None:
+                try:
+                    self.period = await get_period()
+                except ValueError:
+                    pass
+            if self.period is not None and self.period.start <= start_ts < self.period.end:
+                context_start = self.period.start
+        rows = await self.get_settlement_records(context_start, end_ts)
+        analysed = await asyncio.to_thread(analyse_records, rows)
+        return [row for row in analysed if start_ts <= row["time"] < end_ts]
+
+    async def get_settlement_records(self, start_ts, end_ts):
         async with get_session() as sess:
             result = await sess.execute(
                 select(
-                    Record.pcrid, Record.name, Record.time, Record.lap,
+                    Record.id, Record.pcrid, Record.name, Record.time, Record.lap,
                     Record.boss, Record.flag, Record.battle_log_id, Record.damage,
+                    Record.remain_time, Record.battle_time, Record.settlement,
                 ).where(
                     Record.group_id == self.group_id,
                     Record.time >= start_ts,
@@ -394,6 +412,22 @@ class RecordDao:
                 ).order_by(Record.time, Record.id)
             )
             return [dict(row) for row in result.mappings()]
+
+    async def save_settlement_facts(self, records):
+        async with get_session() as sess:
+            for row in records:
+                result = await sess.execute(select(Record).where(
+                    Record.id == row["id"], Record.group_id == self.group_id,
+                    *(await self._bounds()),
+                ).with_for_update())
+                stored = result.scalar_one_or_none()
+                if stored is not None:
+                    meta = dict(row["settlement"])
+                    if isinstance(stored.settlement, dict) and "manual_flag" in stored.settlement:
+                        meta["manual_flag"] = stored.settlement["manual_flag"]
+                    stored.settlement = meta
+                    row["settlement"] = meta
+            await sess.commit()
 
     async def add_record(self, dao_list: list[tuple]):
         if not dao_list:
@@ -453,93 +487,28 @@ class RecordDao:
     async def get_player_records(self, name: str, day: int):
         date = pcr_date(datetime.now().timestamp()) - timedelta(days=day)
         await self._bounds()
-        start_ts = self.period.start if day >= 5 else date.timestamp()
-        end_ts = self.period.end if day >= 5 else (date + timedelta(days=1)).timestamp()
-        async with get_session() as sess:
-            r = await sess.execute(
-                select(
-                    Record.time,
-                    Record.lap,
-                    Record.boss,
-                    Record.damage,
-                    Record.flag,
-                    Record.battle_log_id,
-                )
-                .where(
-                    Record.group_id == self.group_id,
-                    *(await self._bounds()),
-                    Record.time >= start_ts,
-                    Record.time < end_ts,
-                    Record.name == name,
-                )
-                .order_by(Record.time.asc())
-            )
-            rows = r.fetchall()
-            if not rows:
-                return None
-            return [
-                {
-                    "time": row[0],
-                    "lap": row[1],
-                    "boss": row[2],
-                    "damage": row[3],
-                    "flag": row[4],
-                    "history_id": str(row[5]),
-                }
-                for row in rows
-            ]
+        start = self.period.start if day >= 5 else max(self.period.start, date.timestamp())
+        end = self.period.end if day >= 5 else min(self.period.end, (date + timedelta(days=1)).timestamp())
+        rows = await self.get_report_records(self.period.start, end)
+        return [dict(row, history_id=str(row["battle_log_id"])) for row in rows
+                if start <= row["time"] < end and row["name"] == name] or None
 
     async def get_max_dao(self, now=None) -> int:
         await self._bounds()
         return self.period.quota(datetime.now().timestamp() if now is None else now)
 
     async def get_all_records(self):
-        async with get_session() as sess:
-            r = await sess.execute(
-                select(
-                    Record.pcrid,
-                    Record.name,
-                    Record.lap,
-                    Record.boss,
-                    Record.damage,
-                    Record.flag,
-                )
-                .where(
-                    Record.group_id == self.group_id,
-                    *(await self._bounds()),
-                )
-            )
-            rows = r.fetchall()
-            if not rows:
-                return None
-            return [
-                {"pcrid": row[0], "name": row[1], "lap": row[2], "boss": row[3], "damage": row[4], "flag": row[5]}
-                for row in rows
-            ]
+        await self._bounds()
+        return await self.get_report_records(self.period.start, self.period.end) or None
 
     async def get_full_knife_median_damage(self, start_ts: int) -> float | None:
-        """从 start_ts 到最新记录为止的完整刀伤害中位数（flag==0），无记录返回 None。"""
-        latest_time = await self.get_latest_time()
-        async with get_session() as sess:
-            r = await sess.execute(
-                select(Record.damage)
-                .where(
-                    Record.group_id == self.group_id,
-                    *(await self._bounds()),
-                    Record.time >= start_ts,
-                    Record.time <= latest_time,
-                    Record.flag == 0,
-                )
-                .order_by(Record.damage.asc())
-            )
-            damages = [row[0] for row in r.fetchall()]
-            if not damages:
-                return None
-            n = len(damages)
-            mid = n // 2
-            if n % 2:
-                return float(damages[mid])
-            return (damages[mid - 1] + damages[mid]) / 2.0
+        await self._bounds()
+        rows = await self.get_report_records(self.period.start, self.period.end)
+        damages = sorted(row["damage"] for row in rows if row["time"] >= start_ts and row["flag"] == 0)
+        if not damages:
+            return None
+        mid = len(damages) // 2
+        return float(damages[mid]) if len(damages) % 2 else (damages[mid - 1] + damages[mid]) / 2
 
     async def get_historical_boss_progress(self):
         latest_time = await self.get_latest_time()
@@ -585,31 +554,9 @@ class RecordDao:
 
     async def get_day_rcords(self, date_ts: int):
         date = pcr_date(date_ts)
-        tomorrow = date + timedelta(days=1)
-        async with get_session() as sess:
-            r = await sess.execute(
-                select(
-                    Record.pcrid,
-                    Record.name,
-                    Record.lap,
-                    Record.boss,
-                    Record.damage,
-                    Record.flag,
-                )
-                .where(
-                    Record.group_id == self.group_id,
-                    *(await self._bounds()),
-                    Record.time >= date.timestamp(),
-                    Record.time < tomorrow.timestamp(),
-                )
-            )
-            rows = r.fetchall()
-            if not rows:
-                return None
-            return [
-                {"pcrid": row[0], "name": row[1], "lap": row[2], "boss": row[3], "damage": row[4], "flag": row[5]}
-                for row in rows
-            ]
+        await self._bounds()
+        return await self.get_report_records(max(self.period.start, int(date.timestamp())),
+                                             min(self.period.end, int((date + timedelta(days=1)).timestamp()))) or None
 
     async def get_past_damage(self, lap: int, boss: int | str, pcrid: int) -> int:
         boss_str = str(boss)
@@ -643,52 +590,36 @@ class RecordDao:
 
     async def correct_dao(self, battle_log_id: int, item: float) -> int:
         async with get_session() as sess:
-            r = await sess.execute(
-                select(Record.id).where(
-                    Record.group_id == self.group_id,
-                    *(await self._bounds()),
-                    Record.battle_log_id == battle_log_id,
-                )
-            )
-            if r.fetchone():
-                await sess.execute(
-                    update(Record)
-                    .where(
-                        Record.group_id == self.group_id,
-                        *(await self._bounds()),
-                        Record.battle_log_id == battle_log_id,
-                    )
-                    .values(flag=item)
-                )
-                await sess.commit()
-                return 1
-            return 0
+            result = await sess.execute(select(Record).where(
+                Record.group_id == self.group_id, *(await self._bounds()),
+                Record.battle_log_id == battle_log_id,
+            ).with_for_update())
+            rows = result.scalars().all()
+            for row in rows:
+                meta = dict(row.settlement) if isinstance(row.settlement, dict) else {}
+                row.settlement = dict(meta, manual_flag=item)
+            await sess.commit()
+            return int(bool(rows))
 
     async def bigfun_check(self, records: list) -> None:
         async with get_session() as sess:
             for record in records:
                 for member in record:
-                    for d in member["damage_list"]:
-                        time_v = d["datetime"]
-                        flag = 0.5 if d.get("reimburse") == 1 else d.get("kill", 0)
-                        damage = d["damage"]
-                        r = await sess.execute(
-                            select(Record.id).where(
-                                Record.group_id == self.group_id,
-                                *(await self._bounds()),
-                                Record.time == time_v,
-                            )
-                        )
-                        if r.fetchone():
-                            await sess.execute(
-                                update(Record)
-                                .where(
-                                    Record.group_id == self.group_id,
-                                    *(await self._bounds()),
-                                    Record.time == time_v,
-                                )
-                                .values(flag=flag, damage=damage)
-                            )
+                    for damage in member["damage_list"]:
+                        result = await sess.execute(select(Record).where(
+                            Record.group_id == self.group_id, *(await self._bounds()),
+                            Record.time == damage["datetime"],
+                        ).with_for_update())
+                        matches = result.scalars().all()
+                        if len(matches) != 1:
+                            continue
+                        row = matches[0]
+                        meta = dict(row.settlement) if isinstance(row.settlement, dict) else {}
+                        if "manual_flag" not in meta:
+                            meta["manual_flag"] = .5 if damage.get("reimburse") == 1 else damage.get("kill", 0)
+                        # 旧工具的扣血只作为结算依据，保留原始 total_damage。
+                        meta.update(history_damage=damage["damage"], killed=bool(damage.get("kill")))
+                        row.settlement = meta
             await sess.commit()
 
     async def member_check(self) -> None:

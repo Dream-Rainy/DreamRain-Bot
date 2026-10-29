@@ -81,7 +81,9 @@ def build_dispatch(records, config, now, period, links=None, bosses=None, queues
                       declared=valid.get(qq), has_apply=bool(applied.get(qq)))
         player["recent"] = bool(player["latest"] and 0 <= now - player["latest"]["time"] <= 1800)
         player["hits"] = player["slots"][slot]
-        if qq in hanging:
+        if player["pending"]:
+            player["blocked"] = "刀型待核验"
+        elif qq in hanging:
             player["blocked"] = "挂树，待结算"
         elif len(applied[qq]) > 1 or len({order for order, _ in subscribed[qq]}) > 1:
             player["blocked"] = "多王登记"
@@ -100,7 +102,7 @@ def build_dispatch(records, config, now, period, links=None, bosses=None, queues
     data["members"] = sorted(members.values(), key=rank)
     data["active_members"] = [p for p in data["members"] if p["declared"] or p["recent"]
                               or (p["remaining"] > 0 and p["hits"] >= 2)]
-    data["pending"] = [p for p in data["members"] if p["remaining"] > 0 or p["declared"]]
+    data["pending"] = [p for p in data["members"] if p["remaining"] > 0 or p["declared"] or p["pending"]]
     for index in range(slot, 12):
         left, right = max(now, day + index * 7200), min(cutoff, day + (index + 1) * 7200)
         if left >= right:
@@ -277,7 +279,7 @@ def coordination_reports(data, group_id):
                          [[_identity(p), p["blocked"] or "剩余时段无样本", float2int(p["remaining"]), "待联系"]
                           for p in data["unplanned"]], [300, 380, 260, 420]))
     plan = _report_image("出刀规划", metadata, [
-        (len(data["pending"]), "待核验成员"), (float2int(sum(p["remaining"] for p in data["pending"])), "参考未完成量"),
+        (len(data["pending"]), "待核验成员"), (float2int(sum(p["remaining"] for p in data["pending"] if not p["pending"])), "参考未完成量"),
         (len(data["windows"]), "剩余时段"),
         (datetime.fromtimestamp(data["cutoff"] - 1, GAME_TZ).strftime("%H:%M:%S"), "本游戏日截止")], sections,
         ("数据待核验；" if not data["ready"] else "") + "未完成量仅供参考，出刀后刷新。")

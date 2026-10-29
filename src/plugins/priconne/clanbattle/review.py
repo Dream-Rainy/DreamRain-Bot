@@ -18,6 +18,7 @@ from ..util.tools import lap2stage
 from .period import GAME_TZ
 from .render import _report_image, _chart_report_image
 from .reports import member_roster
+from .settlement import uncertain
 
 REVIEW_PAGES = ("overview", "members", "bosses", "distribution", "ranges")
 DAMAGE_BOUNDS = (300_000_000, 320_000_000, 350_000_000)
@@ -68,7 +69,8 @@ def build_review(records, config, now, period, group_id):
 
 def _counts(rows):
     values = Counter(r["flag"] for r in rows)
-    return f"{values[0]}/{values[1]}/{values[.5]}" if rows else "—"
+    pending = sum(uncertain(row) for row in rows)
+    return (f"{values[0]}/{values[1]}/{values[.5]}" + (f"\n待核验{pending}" if pending else "")) if rows else "—"
 
 
 def _damage(rows):
@@ -100,7 +102,7 @@ def _overview(data):
         (flags[1], "尾刀次数"), (flags[.5], "补偿刀次数")], [
         ("五日节奏", ["活动日", "完整/尾/补", "伤害（亿）", "伤害占比", "人数", "结算高峰", "21–05结算"],
          rows, [190, 210, 170, 110, 110, 260, 310])],
-        "05:00换日，末日23:59:59结束；按已保存战绩统计。")
+        "05:00换日，末日23:59:59结束；刀型按默认配对推断，伤害保留原始值。")
 
 
 def _members(data):
@@ -116,7 +118,7 @@ def _members(data):
         (len(data["names"]), "成员"), ("5天", "活动天数"), ("15刀/人", "整期额度"),
         (len(data["records"]), "已保存战绩")], [
         ("", columns, rows or [["暂无名册与战绩", *["—"] * 7]], [290, 140, 140, 140, 140, 140, 160, 210])],
-        "单元格按原标签计完整/尾/补次数；—为无记录，不据此判定漏刀。")
+        "单元格按默认配对计完整/尾/补；待核验单列，—为无记录。")
 
 
 def _bosses(data):
@@ -135,7 +137,7 @@ def _bosses(data):
     laps = f"{min(r['lap'] for r in records)}–{max(r['lap'] for r in records)}" if records else "—"
     return _report_image("本期复盘 · 分王表现", data["metadata"], [
         (3, "阶段"), (15, "王×阶段分组"), (sum(r["flag"] == 0 for r in records), "完整刀样本"),
-        (laps, "覆盖周目")], sections, "中位数仅取本期同王同阶段的完整刀；类型按原战绩标签统计。")
+        (laps, "覆盖周目")], sections, "中位数取本期同王同阶段推断完整刀的原始伤害；待核验不混入样本。")
 
 
 def damage_ranges(data):
@@ -164,7 +166,7 @@ def _ranges(data):
         (len(data["samples"]), "成员×BOSS"), (sum(map(len, data["samples"].values())), "完整刀样本"),
         (4, "伤害档位")], [(f"{data['stage']}阶段｜完整刀中位数分档" if data["stage"] else "暂无完整刀样本",
                              columns, rows, [160, 240, 240, 240, 240, 240])],
-        "按原标签的完整刀中位数分档；括号为样本数；单次仅供参考；区间含下限、不含上限。")
+        "按推断完整刀的原始伤害中位数分档；括号为样本数；区间含下限、不含上限。")
 
 
 def _distribution(data):
@@ -216,7 +218,7 @@ def _distribution(data):
     chart = Image.open(buffer).convert("RGB")
     return _chart_report_image("五王完整刀伤分布", data["metadata"], cards,
                                f"{data['stage']}阶段｜五王伤害分布", chart,
-                               "点＝每条战绩；横线＝中位数；箱体＝中间50%；仅取原标签的完整刀样本。")
+                               "点＝原始刀伤；横线＝中位数；箱体＝中间50%；仅取推断完整刀样本。")
 
 
 def render_review(data, page):

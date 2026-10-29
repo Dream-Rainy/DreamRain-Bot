@@ -6,8 +6,9 @@ from nonebot import logger
 from .base import CancleError, find_item, format_bignum, format_precent, clan_path
 from .sql import RecordDao, SubscribeDao, TreeDao, ApplyDao, clear_period_registrations
 from .period import get_period
+from .settlement import analyse_records, facts
 from ..util.tools import load_config, write_config, lap2stage, stage_dict
-from ..pcrclient import ApiException
+from ..pcrclient import ApiException, _is_retryable_error
 
 
 class ClanBattle:
@@ -27,6 +28,7 @@ class ClanBattle:
         self.notice_fighter = []
         self.notice_subscribe = []
         self.notice_coop = []
+        self.settlements = {}
         self.boss = [Boss(), Boss(), Boss(), Boss(), Boss()]
 
     def init_database(self):
@@ -41,7 +43,7 @@ class ClanBattle:
             self.client = client  # api client
             self.qq_id = qq_id
             await self.refresh_user_name()
-            home_index = await self.client.callapi('/home/index', {'message_id': 1, 'tips_id_list': [], 'is_first': 1, 'gold_history': 0})
+            home_index = await self.client.callapi('/home/index', {'message_id': 1, 'tips_id_list': [], 'is_first': 1, 'gold_history': 0}, noerr=False)
             self.clan_id = home_index['user_clan']['clan_id']
             clan_battle_top = await self.get_clanbattle_top()
             self.init_database()
@@ -81,7 +83,7 @@ class ClanBattle:
     async def refresh_user_name(self):
         """从 /load/index 读取游戏内昵称，失败时保留旧值。"""
         try:
-            load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'})
+            load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'}, noerr=False)
             if isinstance(load_index, dict) and load_index.get("user_info"):
                 name = load_index["user_info"].get("user_name")
                 if name:
@@ -99,10 +101,10 @@ class ClanBattle:
                              供上层判断是否为「已在其他设备登录」而决定是否重连。
         """
         try:
-            load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'})
+            load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'}, noerr=False)
         except ApiException as e:
             logger.warning(f"priconne probe_session ApiException: code={getattr(e, 'code', None)}, msg={e}")
-            return False, getattr(e, "code", None), str(e)
+            return False, None if e.code == 501 else e.code, str(e)
         except Exception as e:
             logger.warning(f"priconne probe_session unexpected error: {e!r}")
             return False, None, str(e)
@@ -119,15 +121,15 @@ class ClanBattle:
         return True, None, ""
 
     async def get_coin(self):
-        load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'})
+        load_index = await self.client.callapi('/load/index', {'carrier': 'OPPO'}, noerr=False)
         return find_item(load_index["item_list"], 90006)
 
     async def get_clanbattle_top(self):
-        return await self.client.callapi('/clan_battle/top', {"clan_id": self.clan_id, "is_first": 0, "current_clan_battle_coin": await self.get_coin()})
+        return await self.client.callapi('/clan_battle/top', {"clan_id": self.clan_id, "is_first": 0, "current_clan_battle_coin": await self.get_coin()}, noerr=False)
 
     async def save_member(self, config_file):
         member_dict = {}
-        members = await self.client.callapi('/clan/info', {'clan_id': self.clan_id, 'get_user_equip': 0})
+        members = await self.client.callapi('/clan/info', {'clan_id': self.clan_id, 'get_user_equip': 0}, noerr=False)
         for member in members["clan"]["members"]:
             member_dict[member["name"]] = member["viewer_id"]
         config = dict(await load_config(config_file))
@@ -144,14 +146,16 @@ class ClanBattle:
         try:
             if boss.check_available(lap_num, self.period):  # 不能超过两个周目，不能跨阶段
                 reload_detail_info = await self.client.callapi('/clan_battle/reload_detail_info',
-                                                               {"clan_id": self.clan_id, "clan_battle_id": self.clan_battle_id, "lap_num": lap_num, "order_num": order})
+                                                               {"clan_id": self.clan_id, "clan_battle_id": self.clan_battle_id, "lap_num": lap_num, "order_num": order}, noerr=False)
                 reload_detail_info["fighter_num"]
                 boss.fighter_updated_at = timestamp()
                 boss.fighter_lap = lap_num
                 if reload_detail_info["fighter_num"] != boss.fighter_num:
                     boss.fighter_num = reload_detail_info["fighter_num"]
                     return reload_detail_info["fighter_num"]
-        except Exception:
+        except Exception as error:
+            if isinstance(error, ApiException) or _is_retryable_error(error):
+                raise
             return 0
         return 0  # 0不播报，没改变不报，改变了是0也不报
 
@@ -165,12 +169,92 @@ class ClanBattle:
             "favorite_ids": [],
             "sort_type": 4,
             "page": page,
-        }
-        )
+        }, noerr=False)
 
-    async def add_record(self, damage_history, loop_num):
+    async def add_record(self, damage_history, loop_num, boss_info=None):
         async with self.record_sync_lock:
-            return await self._add_record(damage_history, loop_num)
+            success = await self._add_record(damage_history, loop_num)
+            if success and self.event is not None:
+                try:
+                    await self._enrich_records(damage_history, boss_info or [], loop_num)
+                except CancleError:
+                    raise
+                except Exception as error:
+                    if isinstance(error, ApiException) or _is_retryable_error(error):
+                        raise
+                    logger.opt(exception=error).warning(f"结算依据补采失败，group={self.group_id}")
+            return success
+
+    async def _enrich_records(self, history, boss_info, loop_num):
+        records = await self.record.get_settlement_records(self.event.start, self.event.end)
+        groups, changed = {}, []
+        matches = {}
+        counts = {}
+        for row in records:
+            key = (str(row["pcrid"]), row["lap"], str(row["boss"]), row["time"])
+            counts[key] = counts.get(key, 0) + 1
+        for item in history:
+            key = (str(item.get("viewer_id")), item.get("lap_num"), str(item.get("order_num")), item.get("create_time"))
+            matches.setdefault(key, []).append(item)
+        for row in records:
+            previous = facts(row)
+            meta = dict(previous, event_id=self.event.id)
+            key = (str(row["pcrid"]), row["lap"], str(row["boss"]), row["time"])
+            found = matches.get(key, [])
+            if len(found) == 1 and counts[key] == 1:
+                item = found[0]
+                if type(item.get("damage")) is int and 0 <= item["damage"] <= row["damage"] and item.get("kill") in (0, 1):
+                    meta.update(history_damage=item["damage"], killed=bool(item["kill"]))
+                    if type(item.get("history_id")) is int and item["history_id"] > 0:
+                        meta["history_id"] = item["history_id"]
+            elif counts[key] > 1:
+                for field in ("history_damage", "killed", "history_id"):
+                    meta.pop(field, None)
+            for boss in boss_info:
+                if boss.get("lap_num") == row["lap"] and str(boss.get("order_num")) == str(row["boss"]):
+                    meta["max_hp"] = boss.get("max_hp")
+            row["settlement"] = meta
+            if meta != previous:
+                changed.append(row)
+            groups.setdefault((row["lap"], row["boss"]), []).append(row)
+        for (lap, boss), rows in groups.items():
+            if all(type(facts(row).get("history_damage")) is int and type(facts(row).get("killed")) is bool for row in rows):
+                continue
+            logs = sorted([[str(row["pcrid"]), row["battle_log_id"]] for row in rows])
+            if any(isinstance(facts(row).get("report"), dict) and facts(row)["report"].get("covered_logs") == logs for row in rows):
+                continue
+            if not getattr(self, "clan_id", None):
+                continue
+            if loop_num != self.loop_num:
+                raise CancleError
+            try:
+                report = await self.client.callapi('/clan_battle/damage_report', {
+                    "clan_id": int(self.clan_id), "clan_battle_id": self.event.id,
+                    "lap_num": lap, "order_num": int(boss),
+                }, noerr=False)
+                maximum, items = report.get("max_hp"), report.get("damage_report")
+                if type(maximum) is not int or maximum <= 0 or not isinstance(items, list):
+                    continue
+                totals = {}
+                for item in items:
+                    uid, amount = item.get("viewer_id"), item.get("damage")
+                    if not uid or type(amount) is not int or amount < 0 or str(uid) in totals:
+                        raise ValueError("成员累计扣血无效")
+                    totals[str(uid)] = amount
+                rows[0]["settlement"] = dict(facts(rows[0]), report=dict(
+                    max_hp=maximum, totals=totals, covered_logs=logs, observed_at=int(timestamp())))
+                if rows[0] not in changed:
+                    changed.append(rows[0])
+            except Exception as error:
+                if isinstance(error, ApiException) or _is_retryable_error(error):
+                    raise
+                logger.opt(exception=error).warning(f"王伤害核验失败，group={self.group_id}, lap={lap}, boss={boss}")
+        if loop_num != self.loop_num:
+            raise CancleError
+        if changed:
+            await self.record.save_settlement_facts(changed)
+        analysed = await asyncio.to_thread(analyse_records, records)
+        self.settlements = {(str(row["pcrid"]), row["lap"], str(row["boss"]), row["time"]): row for row in analysed}
 
     async def sync_final_records(self, period):
         if self.event is None or self.event.id != period.id:
@@ -182,7 +266,7 @@ class ClanBattle:
             top = {}
         if top.get("clan_battle_id") not in (None, 0, period.id) or loop_num != self.loop_num:
             return False
-        return await self.add_record(top.get("damage_history", []), loop_num)
+        return await self.add_record(top.get("damage_history", []), loop_num, top.get("boss_info", []))
 
     async def _add_record(self, damage_history, loop_num):
         log_list = []
@@ -233,17 +317,11 @@ class ClanBattle:
                         units_list[i + 15] = unit["unit_rarity"]
                         units_list[i + 20] = unit["promotion_level"]
                         units_list[i + 25] = unit["unique_equip_slot"][0]["enhancement_level"] if unit["unique_equip_slot"] else 0
-                    # 故意不重试，这循环极端情况下运行10分钟也正常，不如报错趁早退出，下次再来
-                    time_line = await self.client.callapi('/clan_battle/timeline_report', {"target_viewer_id": pcrid, "clan_battle_id": self.clan_battle_id, "battle_log_id": battle_log_id})
+                    # 单次查询由客户端有限重试，批次失败交给监控退避后重取。
+                    time_line = await self.client.callapi('/clan_battle/timeline_report', {"target_viewer_id": pcrid, "clan_battle_id": self.clan_battle_id, "battle_log_id": battle_log_id}, noerr=False)
                     remain_time, battle_time = time_line["start_remain_time"], time_line["battle_time"]
+                    # flag 保留旧格式兼容值；查询时只使用带依据的结算推断。
                     flag = 0 if remain_time == 90 else 0.5
-                    if battle_time < 90 and flag == 0:
-                        flag = 1
-                        if damage_history and damage_history[-1]["create_time"] <= time <= damage_history[0]["create_time"]:
-                            for history in damage_history:
-                                if history["create_time"] == time and not history["kill"]:
-                                    flag = 0
-                                    break
                     # FIXME:开销有点大
                     """
                     # 伤害修正开始
@@ -268,6 +346,8 @@ class ClanBattle:
         except Exception as e:
             # 批次不完整时不推进最新记录时间，下轮可重取失败记录。
             logger.opt(exception=e).warning(f"公会战战绩同步失败，group={self.group_id}")
+            if isinstance(e, ApiException) or _is_retryable_error(e):
+                raise
             return False
         return True
 

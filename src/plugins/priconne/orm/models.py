@@ -1,6 +1,6 @@
 """priconne 数据库模型 - 基于 nonebot-plugin-orm"""
 
-from sqlalchemy import Integer, BigInteger, Float, String, Text
+from sqlalchemy import Integer, BigInteger, Float, String, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nonebot_plugin_orm import Model
@@ -71,6 +71,7 @@ class Record(Model):
     battle_log_id: Mapped[int] = mapped_column(Integer, nullable=False)
     remain_time: Mapped[int] = mapped_column(Integer, nullable=False)
     battle_time: Mapped[int] = mapped_column(Integer, nullable=False)
+    settlement: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     unit1: Mapped[int] = mapped_column(Integer, nullable=False)
     unit2: Mapped[int] = mapped_column(Integer, nullable=False)
     unit3: Mapped[int] = mapped_column(Integer, nullable=False)

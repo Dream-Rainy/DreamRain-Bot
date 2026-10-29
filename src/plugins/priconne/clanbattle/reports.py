@@ -11,6 +11,7 @@ from ..util.tools import lap2stage
 from .base import float2int, format_bignum, format_time
 from .render import _report_image
 from .sql import pcr_date
+from .settlement import uncertain
 
 GAME_TZ = timezone(timedelta(hours=8))
 DECLARATION_PREFIX = "[出刀申报]"
@@ -141,7 +142,39 @@ def snapshot_bosses(snapshot):
     return sorted(bosses, key=lambda boss: boss["order"])
 
 
-def status_report(snapshot, online, now, period, group_id, queues=None, names=None, details=False):
+def _mix_color(first, second, amount):
+    channels = [round(int(first[index:index + 2], 16) * (1 - amount) + int(second[index:index + 2], 16) * amount)
+                for index in (1, 3, 5)]
+    return "#" + "".join(f"{channel:02x}" for channel in channels)
+
+
+def boss_hp_cell(boss, typical, ready, fallback="待核验"):
+    hp, maximum = boss["current_hp"], boss["max_hp"]
+    color, zone = "#8793A6", fallback
+    if not hp:
+        zone = "已击破"
+    elif not maximum:
+        zone = "总血量未知"
+    elif ready and typical:
+        ratio = hp / typical
+        if ratio > 3:
+            color, zone = "#22C55E", "健康"
+        elif ratio > 2:
+            color, zone = _mix_color("#14B8A6", "#06B6D4", 3 - ratio), "准备合刀"
+        elif ratio > 1:
+            color, zone = _mix_color("#3B82F6", "#8B5CF6", 2 - ratio), "建议合刀"
+        elif ratio == 1:
+            color, zone = "#8B5CF6", "收尾参考"
+        else:
+            color, zone = "#EF4444", "烂尾"
+    label = f"{format_bignum(hp)} / {format_bignum(maximum)} · {hp/maximum:.1%}" if maximum else "血量未知"
+    caption = zone + (f" · 中位{format_bignum(int(typical))}" if typical else "")
+    return dict(type="hp", label=label, caption=caption, color=color, zone=zone,
+                ratio=hp / maximum if maximum else 0)
+
+
+def status_report(snapshot, online, now, period, group_id, queues=None, names=None, details=False,
+                  records=None, monitor_name=None):
     updated = snapshot.get("time", 0)
     if (type(updated) not in (int, float) or not period.start <= updated < period.end
             or snapshot.get("clan_battle_id") not in (None, period.id)):
@@ -157,11 +190,15 @@ def status_report(snapshot, online, now, period, group_id, queues=None, names=No
     if type(synced) not in (int, float) or not period.start <= synced <= now:
         synced = 0
     sync_issue = ("采集异常" if snapshot.get("record_sync_ok") is False else
-                  "待核验" if not synced or not live else
+                  "待核验" if not synced or not live or snapshot.get("record_sync_ok") is not True else
                   "同步过期" if now - synced > 120 else "正常")
     activity = "未开始" if now < period.start else "已结束" if now >= period.end else f"第{period.days(now)}/5天"
-    sections = [("", ["游戏状态刷新", "战绩成功同步"],
-                 [[format_timestamp(updated), f"{format_timestamp(synced)} · {sync_issue}"]], [680, 680])]
+    monitor_qq = snapshot.get("monitor_qq_id")
+    if not monitor_name:
+        monitor_name = f"QQ {monitor_qq}" if type(monitor_qq) is int and monitor_qq > 0 else "未知"
+    records = [row for row in records or [] if period.start <= row["time"] < min(period.end, now + 1)]
+    sections = [("", ["监控人" if live else "上次监控人", "游戏状态刷新", "战绩成功同步"],
+                 [[monitor_name, format_timestamp(updated), f"{format_timestamp(synced)} · {sync_issue}"]], [480, 440, 440])]
     if bosses:
         rows = []
         for boss in bosses:
@@ -188,12 +225,16 @@ def status_report(snapshot, online, now, period, group_id, queues=None, names=No
                 hint = "挑战人数待刷新"
             else:
                 hint = "登记待确认" if queue is None else "—"
+            typical = full_damage_reference(records, boss)["median"]
+            ready = live and sync_issue == "正常" and available and typical is not None
+            fallback = ("历史血量" if not live else "同步待核验" if sync_issue != "正常" else
+                        "暂不可挑战" if not available else "样本不足")
             rows.append([f"{order}王\n{boss['lap_num']}周目 · {boss['stage']}",
-                         f"{format_bignum(hp)}/{format_bignum(maximum)}\n{hp/maximum:.1%}" if maximum else "未知",
+                         boss_hp_cell(boss, typical, ready, fallback),
                          state, fighters if fighters is not None else "未知",
                          len(applies) if queue is not None else "未知", len(trees) if queue is not None else "未知", hint])
-        sections.append(("五王进度", ["目标", "剩余HP / 总HP", "状态", "挑战人数", "申请登记", "挂树登记", "待处理"],
-                         rows, [200, 300, 160, 110, 110, 110, 370]))
+        sections.append(("五王进度", ["目标", "剩余HP / 总HP", "状态", "挑战\n人数", "申请\n登记", "挂树\n登记", "待处理"],
+                         rows, [180, 390, 155, 100, 100, 100, 335]))
     else:
         sections.append(("已保存进度" if snapshot else "本期进度", ["进度记录"],
                          [[snapshot.get("boss") or "暂无本期状态"]], [1360]))
@@ -326,7 +367,7 @@ def registration_report(kind, entries, names, now, period, group_id, snapshot=No
 def daily_members(records, roster):
     players = {
         uid: {"pcrid": uid, "name": name, "full": 0, "tail": 0, "comp": 0,
-              "knife": 0, "latest": None, "notes": []}
+              "knife": 0, "latest": None, "notes": [], "pending": 0}
         for uid, name in roster.items()
     }
     for record in records:
@@ -334,8 +375,12 @@ def daily_members(records, roster):
         if uid not in players:
             players[uid] = {"pcrid": uid, "name": record["name"], "full": 0,
                             "tail": 0, "comp": 0, "knife": 0, "latest": None,
-                            "notes": ["名册外成员"]}
+                            "notes": ["名册外成员"], "pending": 0}
         player = players[uid]
+        player["pending"] += uncertain(record)
+        issue = record.get("kind_issue")
+        if issue and issue not in player["notes"]:
+            player["notes"].append(issue)
         latest = player["latest"]
         if latest is None or record["time"] >= latest["time"]:
             player["latest"] = record
@@ -357,64 +402,53 @@ def daily_members(records, roster):
     return sorted(players.values(), key=lambda p: (-p["remaining"], p["pcrid"]))
 
 
-def daily_report(records, config, now, period=None):
+def daily_report(records, config, now, period=None, status_hint=""):
     if period is not None and not period.active(now):
-        return (period.label(now) + "\n今日刀表｜当前不在出刀活动时间内，今日不产生出刀额度。"
-                "\n请查询【当前战报】查看本期累计。")
+        return period.label(now) + "\n当前不在出刀活动时间内，发送【当前战报】查看本期累计。"
     roster = member_roster(config)
-    players = daily_members(records, roster)
     start = pcr_date(now)
-    end_text = f"{start + timedelta(days=1):%m-%d 05:00}"
-    if period is not None and period.end < (start + timedelta(days=1)).timestamp():
-        end_text = datetime.fromtimestamp(period.end - 1, GAME_TZ).strftime("%m-%d %H:%M:%S")
-    rows = []
+    records = [row for row in records if max(int(start.timestamp()), period.start if period else 0)
+               <= row["time"] < min(now + 1, period.end if period else now + 1)]
+    players = daily_members(records, roster)
+    names = Counter(player["name"] for player in players)
+    groups = defaultdict(list)
     for player in players:
-        latest = player["latest"]
-        last_text = "无记录"
-        if latest:
-            last_text = (
-                f"{format_timestamp(latest['time'])}\n"
-                f"{latest['lap']}周目{latest['boss']}王"
-            )
-        rows.append([
-            f"{player['name']}\n{player['pcrid']}",
-            f"{player['full']}/{player['tail']}/{player['comp']}",
-            float2int(player["knife"]), float2int(player["remaining"]),
-            last_text, "；".join(player["notes"]) or "—",
-        ])
-    achieved = sum(p["knife"] >= 3 for p in players if p["pcrid"] in roster)
-    remaining = sum(p["remaining"] for p in players if p["pcrid"] in roster)
-    updated = config.get("member_updated_at", 0) if isinstance(config, dict) else 0
-    if format_timestamp(updated) == "未知":
-        updated = 0
-    summary = (
-        f"今日刀表｜游戏日 {start:%m-%d 05:00} 至 {end_text}\n"
-        f"名册：{len(roster)}人｜已达3等效：{achieved}人｜参考未完成：{float2int(remaining)}\n"
-        f"名册更新：{format_timestamp(updated)}｜最近出刀："
-        f"{format_timestamp(max((r['time'] for r in records), default=0))}\n"
-        "完整刀=1，尾刀/补偿=0.5；参考未完成量不是精确剩刀，无记录需确认。"
-    )
-    if period is not None:
-        summary = period.label(now) + "\n" + summary
-    if not roster:
-        summary += "\n成员名册缺失，无法统计未出刀成员，请开启出刀监控刷新名册。"
-    elif not updated or now - updated >= 86400:
-        summary += "\n名册更新时间未知或已超过24小时，成员变动需确认。"
-    if not rows:
-        return summary + "\n暂无名册和今日战绩。"
-    metadata = f"{datetime.fromtimestamp(now, GAME_TZ):%Y-%m-%d %H:%M}"
-    if period is not None:
+        if player["pcrid"] not in roster:
+            group = "名册外"
+        elif player["pending"]:
+            group = "待核验"
+        elif player["knife"] not in (0, .5, 1, 1.5, 2, 2.5, 3):
+            group = "异常"
+        else:
+            group = player["knife"]
+        name = player["name"] or "未命名"
+        if names[player["name"]] > 1:
+            name += f" ({player['pcrid']})"
+        groups[group].append(name)
+    rows = []
+    for value, label, color in [(3, "3刀", "#10A976"), (2.5, "2.5刀", "#0DACA5"),
+                                (2, "2刀", "#D88A04"), (1.5, "1.5刀", "#EA7428"),
+                                (1, "1刀", "#E74C6F"), (.5, "0.5刀", "#C75C86"),
+                                (0, "暂无记录", "#8291A8"), ("待核验", "待核验", "#687C99"),
+                                ("异常", "异常", "#CA4358"), ("名册外", "名册外", "#687C99")]:
+        members = groups.get(value)
+        if members:
+            rows.append([dict(type="tags", items=[label], color=color, filled=True),
+                         dict(type="tags", items=members, color=color), len(members)])
+    end = min(int((start + timedelta(days=1)).timestamp()), period.end if period else now + 86400)
+    end_display = datetime.fromtimestamp(end - 1 if period and end == period.end else end, GAME_TZ)
+    metadata = f"{start:%Y-%m-%d} · 游戏日 {start:%H:%M} 至 {end_display:%m-%d %H:%M:%S}"
+    if period:
         metadata += f" · 第{period.id}期 第{period.days(now)}/5天"
-    metadata += f" · 游戏日 {start:%m-%d 05:00}–{end_text}"
-    note = "完整=1，尾/补=0.5；未完成量仅供参考。"
-    if not updated or now - updated >= 86400:
-        note = "名册待核验；" + note
-    image = _report_image("今日刀表", metadata, [
-        (len(roster), "名册成员"), (achieved, "已达3等效"),
-        (float2int(remaining), "参考未完成量"), (end_text.split()[-1], "本游戏日截止")], [
-        ("", ["成员 / 游戏ID", "完整 / 尾 / 补", "等效", "参考未完成", "最近出刀", "状态"], rows,
-         [280, 150, 90, 150, 320, 370])], note)
-    return summary + "\n" + image
+    metadata += f" · 更新{datetime.fromtimestamp(now, GAME_TZ):%H:%M}"
+    note = status_hint or "按已保存记录推断；待核验单列。"
+    updated = config.get("member_updated_at", 0) if isinstance(config, dict) else 0
+    if not roster:
+        note = "名册缺失，让监控人发送【出刀监控】刷新。"
+    elif format_timestamp(updated) == "未知" or now - updated >= 86400:
+        note += " 名册待刷新。"
+    return _report_image("今日出刀分布", metadata, [], [
+        ("", ["刀数", "成员", "人数"], rows or [["—", "暂无名册与战绩", 0]], [180, 1060, 120])], note)
 
 
 def preference_members(records, roster):
@@ -635,7 +669,7 @@ def declared_applications(bosses, queues, now, online, event):
 def full_damage_reference(records, boss):
     samples, seen = [], set()
     for record in records:
-        if (str(record["boss"]) != str(boss["order"]) or record["flag"] != 0
+        if (str(record["boss"]) != str(boss["order"]) or record["flag"] != 0 or uncertain(record)
                 or lap2stage(record["lap"]) != boss["stage"]):
             continue
         damage = record.get("damage")

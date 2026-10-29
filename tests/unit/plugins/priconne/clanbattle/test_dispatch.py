@@ -36,6 +36,17 @@ def battle():
     return bosses, queues
 
 
+def test_uncertain_knife_is_never_a_dispatch_capacity_or_complete_knife_sample(dispatch, period):
+    now = ts(28)
+    rows = [record(1, ts(26), log=1), record(1, ts(27), log=2),
+            dict(record(1, now - 60, log=3), flag=None, kind_issue="刀型待核验")]
+    bosses, queues = battle()
+    data = dispatch.build_dispatch(rows, config(1), now, period, {"123": "1"}, bosses, queues, True)
+    player = data["members"][0]
+    assert player["blocked"] == "刀型待核验" and player in data["unplanned"]
+    assert not any(window["members"] for window in data["windows"])
+
+
 def declared(uid, now, damage=10000000, **changes):
     fields = dict(event=42, lap=30, hp=15000000, kind="full", seconds=90, damage=damage, note="")
     fields.update(changes)

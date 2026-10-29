@@ -106,8 +106,10 @@ def test_ended_daily_report_does_not_invent_today_quota_and_habits_span_events(r
     event = BattlePeriod(42, ts(1, 5), ts(6, 0))
     message = reports.daily_report([], {"member_by_id": {"1": "成员"}}, ts(10, 12), event)
     assert "已结束" in message and "整期15刀" in message and "参考未完成" not in message
+    images = []
+    monkeypatch.setattr(reports, "_report_image", lambda *args: images.append(args) or "图片")
     message = reports.daily_report([], {}, ts(5, 23), event)
-    assert "游戏日 10-05 05:00 至 10-05 23:59:59" in message
+    assert message == "图片" and "05:00 至 10-05 23:59:59" in images[0][1]
     records = [record(1, int(datetime(2026, month, 24, 21, tzinfo=reports.GAME_TZ).timestamp()))
                for month in (8, 9, 10)]
     captured = []
@@ -154,11 +156,73 @@ def test_preference_uses_five_am_boundary_and_does_not_invent_low_sample_pattern
 
 
 def test_legacy_roster_and_missing_metadata_are_explicit(reports, monkeypatch):
-    monkeypatch.setattr(reports, "_report_image", lambda *_: "表格")
+    captured = []
+    monkeypatch.setattr(reports, "_report_image", lambda *args: captured.append(args) or "表格")
     message = reports.daily_report([], {"member": {"旧成员": 123}}, ts(10, 12))
-    assert "名册：1人" in message and "参考未完成：3" in message
-    assert "名册更新时间未知" in message and "无记录需确认" in message
+    assert message == "表格" and "名册待刷新" in captured[0][-1]
+    rows = captured[0][3][0][2]
+    assert rows[0][0]["items"] == ["暂无记录"] and rows[0][1]["items"] == ["旧成员"] and rows[0][2] == 1
     assert "同步状态待核验" in reports.report_status({"time": ts(10, 12)}, True, ts(10, 12))
+
+
+@pytest.mark.parametrize(("hp", "zone"), [(301, "健康"), (300, "准备合刀"), (201, "准备合刀"),
+                                        (200, "建议合刀"), (101, "建议合刀"), (100, "收尾参考"), (99, "烂尾"), (0, "已击破")])
+def test_health_boundaries_respect_one_more_median_attack(reports, hp, zone):
+    boss = dict(current_hp=hp, max_hp=500)
+    cell = reports.boss_hp_cell(boss, 100, True)
+    assert cell["zone"] == zone
+    assert cell["ratio"] == hp / 500
+    if zone == "健康":
+        assert hp - 100 > 200 and cell["color"] == "#22C55E"
+    if zone == "烂尾":
+        assert cell["color"] == "#EF4444"
+    if hp:
+        assert reports.boss_hp_cell(boss, 100, False)["color"] == "#8793A6"
+
+
+def test_health_uses_only_current_valid_samples_and_has_distinct_blue_shades(reports, monkeypatch):
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    event, now = BattlePeriod(42, ts(1, 5), ts(6, 0)), ts(3, 19)
+    bosses = [dict(order=order, lap_num=30, stage="D", current_hp=150, max_hp=500,
+                   available=True, fighter_num=0) for order in range(1, 6)]
+    snapshot = dict(time=now, clan_battle_id=42, bosses=bosses, records_synced_at=now, record_sync_ok=True)
+    samples = [dict(record(i % 2, now - 60), boss="1", damage=100, battle_log_id=i + 1) for i in range(4)]
+    samples += [dict(samples[0], time=event.start - 1, battle_log_id=10),
+                dict(samples[0], time=now + 1, battle_log_id=11),
+                dict(samples[0], flag=None, battle_log_id=12)]
+    captured = []
+    monkeypatch.setattr(reports, "_report_image", lambda *args: captured.append(args) or "图片")
+    reports.status_report(snapshot, True, now, event, 456, records=samples)
+    assert captured[-1][3][1][2][0][1]["color"] == "#8793A6"
+    samples.append(dict(samples[0], battle_log_id=13))
+    reports.status_report(snapshot, True, now, event, 456, records=samples)
+    assert captured[-1][3][1][2][0][1]["zone"] == "建议合刀"
+    snapshot["records_synced_at"] = now - 121
+    reports.status_report(snapshot, True, now, event, 456, records=samples)
+    assert captured[-1][3][1][2][0][1]["color"] == "#8793A6"
+    snapshot["records_synced_at"] = now
+    snapshot.pop("record_sync_ok")
+    reports.status_report(snapshot, True, now, event, 456, records=samples)
+    assert captured[-1][3][1][2][0][1]["color"] == "#8793A6"
+    shades = [reports.boss_hp_cell(dict(current_hp=hp, max_hp=400), 100, True)["color"] for hp in (290, 230, 190, 120, 100)]
+    assert len(set(shades)) == 5
+
+
+def test_daily_grouping_keeps_unknown_and_non_roster_separate_and_disambiguates_names(reports, monkeypatch):
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    event, now = BattlePeriod(42, ts(1, 5), ts(6, 0)), ts(3, 19)
+    rows = [record(1, now - i) for i in range(3)] + [record(2, now), record(2, now, 1),
+            record(3, now, 9), record(99, now), record(4, now + 1), record(4, ts(2, 19))]
+    captured = []
+    monkeypatch.setattr(reports, "_report_image", lambda *args: captured.append(args) or "图片")
+    reports.daily_report(rows, {"member_by_id": {str(i): "同名" for i in range(1, 5)}, "member_updated_at": now}, now, event)
+    rendered = {row[0]["items"][0]: row for row in captured[0][3][0][2]}
+    assert captured[0][2] == [] and set(rendered) == {"3刀", "1.5刀", "暂无记录", "待核验", "名册外"}
+    assert rendered["暂无记录"][1]["items"] == ["同名 (4)"]
+    assert rendered["待核验"][1]["items"] == ["同名 (3)"]
+    assert sum(row[2] for row in rendered.values()) == 5
 
 
 def test_status_separates_fighters_from_applicants_and_limits_action_hints(reports, monkeypatch):

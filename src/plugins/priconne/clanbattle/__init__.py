@@ -6,7 +6,6 @@ import time
 import asyncio
 from datetime import timedelta
 
-import httpx
 from zoneinfo import ZoneInfo
 
 from nonebot import get_bot, get_driver, logger
@@ -34,16 +33,17 @@ from .period import get_period
 from .dispatch import build_dispatch, activity_report, coordination_reports, register_member_link
 from .review import build_review, render_review, REVIEW_PAGES
 from .summary import send_summary, summary_due
+from .settlement import battle_notice
 
 _member_link_lock = asyncio.Lock()
 
-from ..pcrclient import init_device_id, ApiException
+from ..pcrclient import init_device_id, ApiException, RETRYABLE_SERVER_ERROR_STATUS, _is_network_error as _client_network_error
 
 help_text = '''
 查看进度
-【状态】五王HP、现场人数、登记数量与当前提示
+【状态】监控人、五王血条、现场人数与当前提示
 【boss状态】状态图及申请、挂树明细
-【今日刀表 / 今日出刀】成员出刀记录与参考未完成量
+【今日刀表 / 今日出刀】按刀数分组查看成员与人数
 【会战指挥台 / BOSS推进参考】排刀、合刀候选与时段规划
 【出刀时段】习惯时段与本期可能活跃成员
 【催刀】按已保存记录提醒，需核验实际可用刀
@@ -158,15 +158,7 @@ def _terminal_status_reason(status, message):
 
 
 def _is_network_error(e):
-    """判断异常是否由本地网络层问题（连接失败/超时/DNS 失败等）导致。"""
-    if isinstance(e, (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError)):
-        return True
-    # 某些网络错误会被 pcrclient 外层 except 包装成 ApiException(501)
-    if isinstance(e, ApiException) and e.code == 501:
-        msg = str(e).lower()
-        if any(k in msg for k in ("connect", "timeout", "network", "dns", "unreachable", "refused")):
-            return True
-    return False
+    return _client_network_error(e)
 
 
 def _is_kicked(status, message):
@@ -458,12 +450,16 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                 clan_info.notice_fighter.clear()
                 clan_info.notice_coop.clear()
 
+                record_sync_ok = await clan_info.add_record(
+                    clan_battle_top["damage_history"], loop_num, clan_battle_top["boss_info"])
+                if loop_num != clan_info.loop_num:
+                    raise CancleError
                 if change:
                     notice_progress = []
                     for history in clan_battle_top["damage_history"]:
                         if history["create_time"] > clan_info.latest_time:
-                            clan_info.notice_dao.append(
-                                f'{history["name"]}对{history["lap_num"]}周目{history["order_num"]}王造成了{history["damage"]}点伤害。')
+                            key = (str(history.get("viewer_id")), history["lap_num"], str(history["order_num"]), history["create_time"])
+                            clan_info.notice_dao.append(battle_notice(history, clan_info.settlements.get(key)))
                             # 通知挂树，清空申请出刀
                             if history["kill"]:
                                 boss_order = int(history["order_num"])
@@ -494,7 +490,6 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
 
                 bosses = boss_snapshot(clan_info, time.time())
                 clan_info.error_count = 0
-                record_sync_ok = await clan_info.add_record(clan_battle_top["damage_history"], loop_num)
                 if loop_num != clan_info.loop_num:
                     raise CancleError
                 previous = run_group.get(group_id, {}).get("snapshot", {})
@@ -518,6 +513,7 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                         "battle_end": clan_info.event.end - 1,
                         "records_synced_at": records_synced_at,
                         "record_sync_ok": record_sync_ok is True,
+                        "monitor_qq_id": qq_id,
                     },
                 ):
                     await _save_run_group()
@@ -539,17 +535,21 @@ async def _monitor_loop(bot, ev, group_id, qq_id, account_file, self_id, loop_nu
                     f"priconne monitor error, group={group_id}, reachable={reachable}, "
                     f"status={status}, message={message!r}, error={e!r}"
                 )
-                if not reachable and (reason := _terminal_status_reason(status, message)):
+                original_status = e.code if isinstance(e, ApiException) else None
+                reason = _terminal_status_reason(original_status, str(e))
+                if reason or (not reachable and (reason := _terminal_status_reason(status, message))):
                     _set_monitor_stopped(group_id)
                     await _save_run_group()
                     await _loop_send(bot, ev, group_id, reason)
                     return
 
-                # 本地网络波动：探测也失败且拿不到 server_error.status，不频繁重连，只退避等待
-                if not reachable and status is None and _is_network_error(e):
+                # 后续探测成功不能抹掉本次临时故障，也无需重新登录。
+                if (_is_network_error(e) or original_status in RETRYABLE_SERVER_ERROR_STATUS
+                        or (not reachable and status in RETRYABLE_SERVER_ERROR_STATUS)):
                     clan_info.error_count += 1
-                    wait = min(2 ** clan_info.error_count, 120)
-                    await _loop_send(bot, ev, group_id, f"网络连接异常，{wait}秒后继续尝试（第{clan_info.error_count}次）")
+                    wait = 2 ** min(clan_info.error_count, 7)
+                    wait = min(wait, 120)
+                    logger.warning(f"priconne monitor backoff: group={group_id}, wait={wait}s, attempt={clan_info.error_count}")
                     if await _stop_if_loop_invalid(bot, ev, group_id, clan_info, loop_num):
                         return
                     await asyncio.sleep(wait)
@@ -623,17 +623,34 @@ async def _send_battle_status(bot, ev, details=False):
     now = int(time.time())
     snapshot, online = await _report_context(ev.group_id, now, period)
     bosses = snapshot_bosses(snapshot)
-    queues, names = {}, {}
+    queues, names, records = {}, {}, []
     clan = clanbattle_info.get(ev.group_id)
     if online and bosses and getattr(getattr(clan, "event", None), "id", None) == period.id:
         config = await load_config(os.path.join(clan_path, str(ev.group_id), "clanbattle.json")) or {}
         if config.get("clan_battle_id") == period.id:
             queues, names = await _report_queues(bot, ev.group_id, bosses, member_names=details)
-            now = int(time.time())
-            snapshot, online = await _report_context(ev.group_id, now, period)
-            if not online or getattr(getattr(clan, "event", None), "id", None) != period.id:
-                queues, names = {}, {}
-    image = await asyncio.to_thread(status_report, snapshot, online, now, period, ev.group_id, queues, names, details)
+            try:
+                records = await RecordDao(ev.group_id).get_report_records(period.start, min(period.end, now + 1))
+            except Exception as error:
+                logger.opt(exception=error).warning(f"状态图伤害样本读取失败，group={ev.group_id}")
+    qq = getattr(clan, "qq_id", None) if getattr(getattr(clan, "event", None), "id", None) == period.id else None
+    qq = qq or snapshot.get("monitor_qq_id")
+    monitor_name = None
+    if type(qq) is int and qq > 0:
+        try:
+            member = await bot.get_group_member_info(group_id=ev.group_id, user_id=qq)
+            name = member.get("card") or member.get("nickname")
+            monitor_name = f"{name} (QQ {qq})" if name else f"QQ {qq}"
+        except Exception:
+            monitor_name = f"QQ {qq}"
+    now = int(time.time())
+    snapshot, online = await _report_context(ev.group_id, now, period)
+    if not online or clan is not clanbattle_info.get(ev.group_id):
+        queues, names = {}, {}
+    if clan is not clanbattle_info.get(ev.group_id):
+        monitor_name = None
+    image = await asyncio.to_thread(status_report, snapshot, online, now, period, ev.group_id,
+                                    queues, names, details, records, monitor_name)
     await bot.send(ev, image)
 
 
@@ -1020,7 +1037,8 @@ async def today_state(bot, ev):
         max(period.start, int(pcr_date(now).timestamp())), min(period.end, now + 1)
     ) if period.active(now) else []
     snapshot, online = await _report_context(group_id, now, period)
-    await bot.send(ev, report_status(snapshot, online, now) + "\n" + daily_report(data, config, now, period))
+    hint = "" if _dispatch_ready(snapshot, online, now, period) else "战绩同步待核验。" if online else "监控离线，记录待核验。"
+    await bot.send(ev, daily_report(data, config, now, period, hint))
 
 
 @sv.on_fullmatch('出刀时段')
@@ -1226,7 +1244,9 @@ async def get_report(bot, ev):
     max_dao = await db.get_max_dao()
     players, all_damage, all_score = clanbattle_report(data, max_dao)
     img = await get_cbreport(players, all_damage, all_score)
-    await bot.send(ev, period.label(time.time()) + "\n" + img)
+    pending = sum(row.get("effective_damage") is None for row in data)
+    coverage = f"{pending}条实际扣血待核验，排名与占比仅按已核验部分计算。" if pending else "按实际扣血计伤害与分数。"
+    await bot.send(ev, period.label(time.time()) + "\n" + coverage + "刀型按默认配对推断。\n" + img)
 
 
 @sv.on_prefix('今日战报', '昨日战报', "我的战报")

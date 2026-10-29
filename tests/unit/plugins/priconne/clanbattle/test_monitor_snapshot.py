@@ -3,8 +3,48 @@ from __future__ import annotations
 import json
 import asyncio
 from types import SimpleNamespace
+from copy import deepcopy
 
 import pytest
+
+
+async def test_settlement_enrichment_matches_members_and_retries_optional_report_failure(clanbattle):
+    from src.plugins.priconne.clanbattle.model import ClanBattle
+    from src.plugins.priconne.clanbattle.period import BattlePeriod
+
+    clan = ClanBattle(10001)
+    clan.event, clan.clan_battle_id, clan.clan_id, clan.loop_num = BattlePeriod(42, 1000, 2000), 42, 8, 1
+    rows = [dict(id=uid, pcrid=uid, name="同名", time=1001, lap=42, boss=str(uid),
+                 damage=raw, flag=0, battle_log_id=uid, remain_time=90, battle_time=90, settlement=None)
+            for uid, raw in [(1, 500), (2, 700), (3, 900)]]
+    calls = []
+
+    async def records(start, end):
+        return deepcopy(rows)
+
+    async def save(changed):
+        for item in changed:
+            rows[item["id"] - 1]["settlement"] = item["settlement"]
+
+    async def api(path, params, **kwargs):
+        calls.append((path, params))
+        if len(calls) == 1:
+            raise RuntimeError("temporary optional metadata failure")
+        return {"max_hp": 1000, "damage_report": [{"viewer_id": 3, "damage": 900}]}
+
+    clan.record = SimpleNamespace(get_settlement_records=records, save_settlement_facts=save)
+    clan.client = SimpleNamespace(callapi=api)
+    history = [dict(viewer_id=uid, lap_num=42, order_num=uid, create_time=1001,
+                    history_id=uid, damage=actual, kill=1) for uid, actual in [(1, 100), (2, 200)]]
+    await clan._enrich_records(history, [], 1)
+    result = list(clan.settlements.values())
+    assert [item["effective_damage"] for item in result] == [100, 200, None]
+    await clan._enrich_records([], [], 1)
+    result = list(clan.settlements.values())
+    assert [item["effective_damage"] for item in result] == [100, 200, 900]
+    assert [item["damage"] for item in result] == [500, 700, 900]
+    await clan._enrich_records([], [], 1)
+    assert len(calls) == 2 and calls[-1][1]["order_num"] == 3
 
 
 async def test_final_sync_keeps_last_second_same_time_records_and_serializes_overlapping_collection(clanbattle):
@@ -39,7 +79,7 @@ async def test_final_sync_keeps_last_second_same_time_records_and_serializes_ove
     async def top():
         return {"clan_battle_id": 42, "damage_history": []}
 
-    async def api(path, params):
+    async def api(path, params, **kwargs):
         return {"start_remain_time": 90, "battle_time": 90}
 
     clan.get_battle_log, clan.get_clanbattle_top = logs, top
@@ -85,7 +125,7 @@ async def test_failed_record_batch_keeps_watermark_retryable(clanbattle):
 
     failing = True
 
-    async def api(path, params):
+    async def api(path, params, **kwargs):
         if failing and params["battle_log_id"] == 1001:
             raise RuntimeError("timeline temporarily unavailable")
         return {"start_remain_time": 90, "battle_time": 90}
@@ -106,7 +146,7 @@ async def test_roster_snapshot_preserves_same_name_game_ids(clanbattle, monkeypa
     clan.clan_id = 9
     saved = []
 
-    async def api(*args):
+    async def api(*args, **kwargs):
         return {"clan": {"members": [{"name": "同名", "viewer_id": 1},
                                       {"name": "同名", "viewer_id": 2}]}}
 
@@ -668,6 +708,100 @@ def _failing_clan(*, error_count=0):
             return False, None, ""
 
     return FailingClan()
+
+
+@pytest.mark.parametrize(('kind', 'probe_result'), [
+    ('network', (True, None, '')),
+    ('network', (False, None, '')),
+    ('game', (True, None, '')),
+    ('other', (False, 5, 'temporary')),
+])
+async def test_transient_monitor_errors_backoff_silently_without_relogin(
+    clanbattle, monkeypatch, kind, probe_result
+):
+    import httpx
+    from src.plugins.priconne.pcrclient import ApiException
+
+    clan = _failing_clan(error_count=2)
+    error = ApiException('temporary', 5) if kind == 'game' else RuntimeError('poll failed')
+    if kind == 'network':
+        error = ApiException('wrapped', 501)
+        error.__cause__ = httpx.ReadError('')
+
+    async def top():
+        raise error
+
+    async def probe():
+        return probe_result
+
+    clan.get_clanbattle_top, clan.probe_session = top, probe
+    monkeypatch.setattr(clanbattle, 'clanbattle_info', {10001: clan})
+    monkeypatch.setattr(clanbattle, 'run_group', {10001: {'self_id': 1, 'qq_id': 2}})
+    sent, delays = [], []
+
+    async def save():
+        return True
+
+    async def send(bot, event, group_id, message):
+        sent.append(message)
+
+    async def sleep(delay):
+        delays.append(delay)
+        assert sent == []
+        assert clanbattle.run_group[10001]['qq_id'] == 2
+        clanbattle._invalidate_monitor_loop(10001)
+        clanbattle._set_monitor_stopped(10001)
+
+    async def reconnect(*args):
+        pytest.fail('temporary errors must not re-login')
+
+    monkeypatch.setattr(clanbattle, '_save_run_group', save)
+    monkeypatch.setattr(clanbattle, '_loop_send', send)
+    monkeypatch.setattr(clanbattle, '_reconnect_once', reconnect)
+    monkeypatch.setattr(clanbattle.asyncio, 'sleep', sleep)
+    await clanbattle._monitor_loop(None, None, 10001, 2, 'account.json', 1, 7)
+    assert delays == [8]
+    assert sent == ['#编号HN0007监控已关闭']
+    assert not clanbattle.run_group and clan.loop_check is False
+
+
+@pytest.mark.parametrize(('code', 'expected'), [(501, None), (5, 5), (3, 3)])
+async def test_probe_distinguishes_internal_transport_code_from_game_status(clanbattle, code, expected):
+    from src.plugins.priconne.pcrclient import ApiException
+
+    async def api(*args, **kwargs):
+        assert kwargs['noerr'] is False
+        raise ApiException('failed', code)
+
+    clan = clanbattle.ClanBattle(10001)
+    clan.client = SimpleNamespace(callapi=api)
+    reachable, status, message = await clan.probe_session()
+    assert reachable is False and status == expected
+
+
+@pytest.mark.parametrize('status', [5, 3])
+async def test_transient_record_failure_reaches_monitor_without_committing_batch(clanbattle, status):
+    from src.plugins.priconne.pcrclient import ApiException
+
+    clan = clanbattle.ClanBattle(10001)
+    clan.loop_num = 1
+    clan.clan_battle_id = 9
+
+    async def latest():
+        return 0
+
+    async def commit(rows):
+        pytest.fail('incomplete batch must not be committed')
+
+    async def api(*args, **kwargs):
+        assert kwargs['noerr'] is False
+        raise ApiException('temporary', status)
+
+    clan.record = SimpleNamespace(get_latest_time=latest, add_record=commit)
+    clan.client = SimpleNamespace(callapi=api)
+    with pytest.raises(ApiException) as caught:
+        await clan.add_record([], 1)
+    assert caught.value.code == status
 
 
 async def test_cancel_during_network_backoff_cannot_restore_registration(

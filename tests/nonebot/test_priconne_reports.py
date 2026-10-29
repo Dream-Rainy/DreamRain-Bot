@@ -73,6 +73,42 @@ def _legacy_matcher(func):
     return candidates[0]
 
 
+async def test_current_battle_report_sends_verified_damage_and_marks_missing_part(app, monkeypatch):
+    from src.plugins.priconne import clanbattle, compat
+
+    records = [dict(pcrid=1, name="成员", lap=42, boss="1", flag=1, damage=500, effective_damage=100),
+               dict(pcrid=1, name="成员", lap=42, boss="2", flag=None, damage=700, effective_damage=None)]
+    sent, rendered = [], []
+    original = clanbattle.get_cbreport
+
+    class Records:
+        def __init__(self, group_id, period):
+            assert group_id == 456 and period.id == 42
+
+        async def get_all_records(self):
+            return records
+
+        async def get_max_dao(self):
+            return 9
+
+    async def render(*args):
+        rendered.append(args)
+        return await original(*args)
+
+    async def send(self, event, message, **kwargs):
+        sent.append(str(message))
+
+    monkeypatch.setattr(clanbattle, "RecordDao", Records)
+    monkeypatch.setattr(clanbattle, "get_cbreport", render)
+    monkeypatch.setattr(compat.LegacyBot, "send", send)
+    async with app.test_matcher(_legacy_matcher(clanbattle.get_report)) as ctx:
+        bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id="10000")
+        ctx.receive_event(bot, _group_event("当前战报", 701))
+    assert rendered[0][1:] == (100, 450)
+    assert "1条实际扣血待核验" in sent[0] and "[CQ:image" in sent[0]
+    assert records[0]["damage"] == 500 and records[1]["damage"] == 700
+
+
 @pytest.mark.parametrize(("command", "handler"), [("预约表", "formsubscribe"), ("查树", "tree_list")])
 async def test_registration_queries_send_images_and_keep_member_lookup_failure_safe(
     current_battle, battle_schedule, app, monkeypatch, command, handler,
@@ -238,8 +274,8 @@ async def test_review_commands_load_and_send_scoped_pages(app, battle_schedule, 
 
 
 @pytest.mark.parametrize(("command", "handler", "expected"), [
-    ("今日刀表", "today_state", "今日刀表"),
-    ("今日出刀", "today_state", "今日刀表"),
+    ("今日刀表", "today_state", "今日出刀分布"),
+    ("今日出刀", "today_state", "今日出刀分布"),
     ("出刀时段", "time_preference", "成员出刀时段偏好"),
 ])
 async def test_report_commands_render_roster_even_without_records(app, monkeypatch, command, handler, expected):
@@ -248,6 +284,14 @@ async def test_report_commands_render_roster_even_without_records(app, monkeypat
     from src.plugins.priconne.clanbattle import reports
 
     sent, tables, ranges = [], [], []
+    titles, notes = [], []
+    original_render = reports._report_image
+
+    def render(title, metadata, cards, sections, note):
+        titles.append(title)
+        notes.append(note)
+        tables.append(sections[0][2])
+        return original_render(title, metadata, cards, sections, note)
 
     async def send(self, event, message, **kwargs):
         sent.append(str(message))
@@ -268,13 +312,16 @@ async def test_report_commands_render_roster_even_without_records(app, monkeypat
     monkeypatch.setattr(clanbattle, "RecordDao", Records)
     monkeypatch.setattr(clanbattle, "run_group", {})
     monkeypatch.setattr(clanbattle, "clanbattle_info", {})
-    monkeypatch.setattr(reports, "_report_image", lambda title, metadata, cards, sections, note: tables.append(sections[0][2]) or "表格")
+    monkeypatch.setattr(reports, "_report_image", render)
     async with app.test_matcher(_legacy_matcher(getattr(clanbattle, handler))) as ctx:
         bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id="10000")
         ctx.receive_event(bot, _group_event(command, 91))
-    assert len(sent) == 1 and expected in sent[0]
-    assert "战绩同步状态待核验" in sent[0]
-    assert len(tables[0]) == 2
+    assert len(sent) == 1 and expected == titles[0] and "[CQ:image" in sent[0]
+    if handler == "today_state":
+        assert sent[0].startswith("[CQ:image") and "监控离线" in notes[0]
+        assert tables[0][0][1]["items"] == ["同名 (1)", "同名 (2)"] and tables[0][0][2] == 2
+    else:
+        assert "战绩同步状态待核验" in sent[0] and len(tables[0]) == 2
     assert ranges[0][0] < ranges[0][1]
 
 
@@ -417,6 +464,7 @@ async def test_status_matchers_send_image_and_keep_each_boss_count_and_name_fall
 
     clanbattle, compat, now = current_battle
     clanbattle.clanbattle_info[456].event = battle_schedule
+    clanbattle.clanbattle_info[456].qq_id = 777
     clanbattle.run_group[456]["snapshot"]["bosses"][1]["fighter_num"] = 2
     sent, rendered = [], []
     original_render = reports._report_image
@@ -435,6 +483,15 @@ async def test_status_matchers_send_image_and_keep_each_boss_count_and_name_fall
         async def get_tree(self, order):
             return [(789, now - 20, "等待")] if order == 3 else []
 
+    class Records:
+        def __init__(self, group_id):
+            assert group_id == 456
+
+        async def get_report_records(self, start, end):
+            assert start == battle_schedule.start and end <= battle_schedule.end
+            return [dict(pcrid=index % 2, name="成员", time=now - 60, lap=30, boss="1",
+                         flag=0, damage=20000000, battle_log_id=index + 1) for index in range(5)]
+
     async def member(self, **kwargs):
         raise RuntimeError("member lookup failed")
 
@@ -444,6 +501,7 @@ async def test_status_matchers_send_image_and_keep_each_boss_count_and_name_fall
     monkeypatch.setattr(clanbattle.time, "time", lambda: now)
     monkeypatch.setattr(clanbattle, "ApplyDao", Queues)
     monkeypatch.setattr(clanbattle, "TreeDao", Queues)
+    monkeypatch.setattr(clanbattle, "RecordDao", Records)
     monkeypatch.setattr(reports, "_report_image", render)
     monkeypatch.setattr(compat.LegacyBot, "get_group_member_info", member)
     monkeypatch.setattr(compat.LegacyBot, "send", send)
@@ -456,8 +514,47 @@ async def test_status_matchers_send_image_and_keep_each_boss_count_and_name_fall
     assert image.width == 1440 and image.getpixel((0, 0)) == (23, 43, 77)
     rows = rendered[0][1][2]
     assert rows[0][3:6] == [0, 3, 0] and rows[1][3:6] == [2, 0, 0]
+    assert rendered[0][0][2][0][0] == "QQ 777" and rows[0][1]["zone"] == "烂尾"
     if command == "boss状态":
         assert "QQ 123" in str(rendered) and "[CQ:at,qq=all]" in str(rendered)
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+async def test_stopped_status_restores_last_monitor_but_never_leaks_other_period_identity(
+    current_battle, app, monkeypatch, foreign,
+):
+    from src.plugins.priconne.clanbattle import reports
+
+    clanbattle, compat, now = current_battle
+    clanbattle.run_group[456]["snapshot"].update(monitor_qq_id=777, clan_battle_id=41 if foreign else 42)
+    clanbattle._set_monitor_stopped(456)
+    clanbattle._restore_run_group(json.loads(json.dumps(clanbattle.run_group)))
+    monkeypatch.setattr(clanbattle, "clanbattle_info", {})
+    captured, requested, sent = [], [], []
+
+    async def member(self, **kwargs):
+        requested.append(kwargs["user_id"])
+        return {"card": "演示监控人"}
+
+    async def send(self, event, message, **kwargs):
+        sent.append(message)
+
+    def no_records(*args, **kwargs):
+        raise AssertionError("离线状态不得查询实时样本或登记")
+
+    monkeypatch.setattr(clanbattle.time, "time", lambda: now)
+    monkeypatch.setattr(clanbattle, "RecordDao", no_records)
+    monkeypatch.setattr(compat.LegacyBot, "get_group_member_info", member)
+    monkeypatch.setattr(compat.LegacyBot, "send", send)
+    monkeypatch.setattr(reports, "_report_image", lambda *args: captured.append(args) or "[CQ:image,file=test.png]")
+    async with app.test_matcher(_legacy_matcher(clanbattle.daostate)) as ctx:
+        bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id="10000")
+        ctx.receive_event(bot, _group_event("状态", 712))
+    assert sent == ["[CQ:image,file=test.png]"]
+    monitor = captured[0][3][0]
+    assert monitor[1][0] == "上次监控人"
+    assert requested == ([] if foreign else [777])
+    assert monitor[2][0][0] == ("未知" if foreign else "演示监控人 (QQ 777)")
 
 
 @pytest.mark.parametrize("condition", ["expired", "ended", "foreign"])
