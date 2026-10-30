@@ -55,8 +55,33 @@ def test_member_ranges_use_unrounded_same_boss_stage_full_medians(review):
     assert groups[1, 1] == [("2", 300_000_000, 1)]
     assert groups[2, 1] == [("3", 320_000_000, 2)]
     assert groups[3, 1] == [("4", 350_000_000, 1)]
-    assert groups[3, 2] == [("1", 400_000_000, 1)]
+    assert groups[0, 2] == [("1", 400_000_000, 1)]
     assert sum(len(entries) for entries in groups.values()) == 5
+
+
+def test_natural_ranges_find_separated_clusters_without_splitting_ties_or_weighting_attack_counts(review):
+    module, _ = review
+    values = [100_000_000, 100_000_000, 101_000_000, 200_000_000, 201_000_000,
+              300_000_000, 301_000_000, 400_000_000, 401_000_000]
+    samples = {("D", 1, str(index)): [value] * (50 if index == 0 else 1)
+               for index, value in enumerate(values)}
+    groups = module.damage_ranges(dict(samples=samples))
+    assert [[row[1] for row in groups[bucket, 1]] for bucket in range(4)] == [
+        values[:3], values[3:5], values[5:7], values[7:]]
+    assert groups[0, 1][0][2] == 50
+    samples.update({("D", 2, str(index)): [value * 10] for index, value in enumerate(values)})
+    other = module.damage_ranges(dict(samples=samples))
+    assert [other[bucket, 1] for bucket in range(4)] == [groups[bucket, 1] for bucket in range(4)]
+    assert sum(len(other[bucket, boss]) for bucket in range(4) for boss in (1, 2)) == 18
+
+
+@pytest.mark.parametrize("values,expected", [([], 0), ([0, 0], 1), ([1, 1, 2, 2, 3], 3)])
+def test_natural_ranges_reduce_group_count_for_empty_or_repeated_values(review, values, expected):
+    module, _ = review
+    entries = [(str(index), value, 1) for index, value in enumerate(values)]
+    groups = module._natural_groups(entries)
+    assert len(groups) == expected
+    assert [entry for group in groups for entry in group] == entries
 
 
 def test_all_empty_reports_and_partial_zero_damage_chart_render_without_changing_global_fonts(review):
@@ -70,6 +95,7 @@ def test_all_empty_reports_and_partial_zero_damage_chart_render_without_changing
     assert partial["stage"] == "C" and len(partial["samples"]) == 1
     images = [module.render_review(empty, page) for page in module.REVIEW_PAGES]
     images.append(module.render_review(partial, "distribution"))
+    images.append(module.render_review(partial, "ranges"))
     for message in images:
         encoded, = re.findall(r"base64://([A-Za-z0-9+/=]+)", message)
         image = Image.open(io.BytesIO(base64.b64decode(encoded)))

@@ -136,6 +136,62 @@ def _report_image(title, metadata, cards, sections, note):
     return f"[CQ:image,file={pic2b64(_report_canvas(title, metadata, cards, sections, note))}]"
 
 
+def _range_columns_image(title, metadata, caption, columns, note):
+    fonts = {size: _load_font(size) for size in (20, 22, 23, 25)}
+    colors = ("#245BBA", "#3E6EA5", "#536E90", "#667386")
+    layouts, bottom = [], 0
+    for column in columns:
+        cards, height = [], 276
+        for group in column["groups"]:
+            count = f"{group['count']}人"
+            badge = fonts[20].getlength(count) + 16
+            heading = _wrapped(group["range"], 228 - badge - 12, fonts[22])
+            members = []
+            for member, samples in group["members"]:
+                sample = f"（{samples}）"
+                lines = _wrapped(member, 218 - fonts[20].getlength(sample), fonts[23])
+                members.append((lines, sample))
+            card_height = 16 + len(heading) * 31 + 14 + sum(len(lines) * 32 + 5 for lines, _ in members) + 12
+            cards.append((heading, count, badge, members, card_height))
+            height += card_height + 14
+        bottom = max(bottom, height if cards else 358)
+        layouts.append(cards)
+    notes = _wrapped(note, 1360, fonts[20])
+    canvas = Image.new("RGB", (1440, bottom + 24 + len(notes) * 28 + 24), "#F5F6F9")
+    header = _report_canvas(title, metadata, [], [], "")
+    canvas.paste(header.crop((0, 0, 1440, 130)), (0, 0))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((40, 151), caption, font=fonts[23], fill="#53647B")
+    for index, (column, cards) in enumerate(zip(columns, layouts)):
+        x, y = 40 + index * 275, 276
+        draw.rounded_rectangle((x, 190, x + 260, 262), radius=12, fill="#E5EBF6")
+        draw.text((x + 16, 198), column["title"], font=fonts[25], fill="#245BBA")
+        draw.text((x + 16, 233), column["subtitle"], font=fonts[20], fill="#53647B")
+        if not cards:
+            draw.rounded_rectangle((x, y, x + 260, y + 68), radius=12, fill="white")
+            draw.text((x + 16, y + 20), "暂无完整刀", font=fonts[23], fill="#667386")
+        for group_index, (heading, count, badge, members, height) in enumerate(cards):
+            color = colors[group_index]
+            draw.rounded_rectangle((x, y, x + 260, y + height), radius=12, fill="white", outline="#DCE5F2")
+            draw.rounded_rectangle((x, y + 12, x + 4, y + height - 12), radius=2, fill=color)
+            for line_index, line in enumerate(heading):
+                draw.text((x + 16, y + 14 + line_index * 31), line, font=fonts[22], fill=color)
+            draw.rounded_rectangle((x + 244 - badge, y + 14, x + 244, y + 42), radius=7, fill="#EEF3FB")
+            draw.text((x + 252 - badge, y + 13), count, font=fonts[20], fill=color)
+            line_y = y + 16 + len(heading) * 31 + 14
+            for lines, sample in members:
+                draw.text((x + 244 - fonts[20].getlength(sample), line_y + 2), sample,
+                          font=fonts[20], fill="#667386")
+                for line in lines:
+                    draw.text((x + 16, line_y), line, font=fonts[23], fill="#172B4D")
+                    line_y += 32
+                line_y += 5
+            y += height + 14
+    for index, line in enumerate(notes):
+        draw.text((40, bottom + 24 + index * 28), line, font=fonts[20], fill="#53647B")
+    return f"[CQ:image,file={pic2b64(canvas)}]"
+
+
 def _chart_report_image(title, metadata, cards, label, chart, note):
     header = _report_canvas(title, metadata, cards, [], "")
     font = _load_font(22)

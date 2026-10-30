@@ -1,6 +1,5 @@
 """本期复盘：五日节奏、成员明细和同阶段刀伤。"""
 
-from bisect import bisect_right
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 import io
@@ -16,13 +15,11 @@ from PIL import Image
 from ..compat.convert2img import _load_font
 from ..util.tools import lap2stage
 from .period import GAME_TZ
-from .render import _report_image, _chart_report_image
+from .render import _report_image, _chart_report_image, _range_columns_image
 from .reports import member_roster
 from .settlement import uncertain
 
 REVIEW_PAGES = ("overview", "members", "bosses", "distribution", "ranges")
-DAMAGE_BOUNDS = (300_000_000, 320_000_000, 350_000_000)
-RANGE_LABELS = ("<3.0亿", "3.0–3.2亿", "3.2–3.5亿", "≥3.5亿")
 _PLOT_FONT = FontProperties(fname=str(_load_font(23).path), size=17)
 
 
@@ -140,33 +137,70 @@ def _bosses(data):
         (laps, "覆盖周目")], sections, "中位数取本期同王同阶段推断完整刀的原始伤害；待核验不混入样本。")
 
 
+def _natural_groups(entries):
+    ordered = sorted(entries, key=lambda row: (row[1], row[0]))
+    if not ordered:
+        return []
+    raw = [row[1] for row in ordered]
+    count, groups = len(raw), min(4, len(set(raw)))
+    # 平移和缩放避免大刀伤的平方和相减损失精度。
+    sums, squares = [0.0], [0.0]
+    for value in raw:
+        scaled = (value - raw[0]) / 1e8
+        sums.append(sums[-1] + scaled)
+        squares.append(squares[-1] + scaled * scaled)
+    costs = [[math.inf] * (count + 1) for _ in range(groups + 1)]
+    previous = [[None] * (count + 1) for _ in range(groups + 1)]
+    costs[0][0] = 0
+    for group in range(1, groups + 1):
+        for end in range(group, count + 1):
+            for start in range(group - 1, end):
+                if start and raw[start - 1] == raw[start]:
+                    continue
+                sse = max(0.0, squares[end] - squares[start]
+                          - (sums[end] - sums[start]) ** 2 / (end - start))
+                candidate = costs[group - 1][start] + sse
+                if candidate < costs[group][end]:
+                    costs[group][end], previous[group][end] = candidate, start
+    result, end = [], count
+    for group in range(groups, 0, -1):
+        start = previous[group][end]
+        result.append(ordered[start:end])
+        end = start
+    return list(reversed(result))
+
+
 def damage_ranges(data):
-    result = defaultdict(list)
+    members = defaultdict(list)
     for (stage, boss, uid), values in data["samples"].items():
-        value = median(values)
-        result[bisect_right(DAMAGE_BOUNDS, value), boss].append((uid, value, len(values)))
+        members[boss].append((uid, median(values), len(values)))
+    result = defaultdict(list)
+    for boss, entries in members.items():
+        for bucket, group in enumerate(_natural_groups(entries)):
+            result[bucket, boss] = group
     return result
 
 
 def _ranges(data):
     cells = damage_ranges(data)
-    rows = []
-    for bucket in reversed(range(4)):
-        row = [RANGE_LABELS[bucket]]
-        for boss in range(1, 6):
-            entries = sorted(cells[bucket, boss], key=lambda item: (-item[1], item[0]))
-            row.append("\n".join(f"{data['labels'][uid]}（{count}）" for uid, value, count in entries) or "—")
-        rows.append(row)
-    columns = ["刀伤范围"]
+    columns = []
     for boss in range(1, 6):
-        values = [values for (stage, b, uid), values in data["samples"].items() if b == boss]
-        columns.append(f"{boss}王\n{len(values)}人 · {sum(map(len, values))}次")
-    return _report_image("五王刀伤分档 · 成员表", data["metadata"], [
-        (len({uid for stage, boss, uid in data["samples"]}), "有完整刀成员"),
-        (len(data["samples"]), "成员×BOSS"), (sum(map(len, data["samples"].values())), "完整刀样本"),
-        (4, "伤害档位")], [(f"{data['stage']}阶段｜完整刀中位数分档" if data["stage"] else "暂无完整刀样本",
-                             columns, rows, [160, 240, 240, 240, 240, 240])],
-        "按推断完整刀的原始伤害中位数分档；括号为样本数；区间含下限、不含上限。")
+        groups = [cells[bucket, boss] for bucket in range(4) if cells[bucket, boss]]
+        precision = next((digits for digits in range(2, 11) if all(
+            f"{a[-1][1]/1e8:.{digits}f}" != f"{b[0][1]/1e8:.{digits}f}"
+            for a, b in zip(groups, groups[1:]))), 10)
+        cards = []
+        for group in reversed(groups):
+            low, high = (f"{value / 1e8:.{precision}f}" for value in (group[0][1], group[-1][1]))
+            cards.append(dict(range=(low if low == high else f"{low}–{high}") + "亿",
+                              count=len(group), members=[(data['labels'][uid], count)
+                                  for uid, value, count in sorted(group, key=lambda row: (-row[1], row[0]))]))
+        count = sum(map(len, groups))
+        samples = sum(row[2] for group in groups for row in group)
+        columns.append(dict(title=f"{boss}王", subtitle=f"{count}人 · {samples}刀", groups=cards))
+    caption = f"{data['stage']}阶段 · 自然断点 · 各王独立分档" if data["stage"] else "暂无完整刀样本"
+    return _range_columns_image("五王刀伤分档", data["metadata"], caption, columns,
+                                "区间为组内观测范围；按完整刀原始伤害中位数分组，括号为刀数，单次样本仅供参考。")
 
 
 def _distribution(data):
