@@ -26,6 +26,11 @@ def _wrapped(value, width, font):
 
 def _cell_layout(value, width, fonts):
     available = width - 28
+    if isinstance(value, dict) and value.get("type") == "knife":
+        lines = _wrapped(value["text"], available, fonts[25])
+        detail = _wrapped(value["detail"], available, fonts[18]) if value["detail"] else []
+        return dict(type="knife", value=value, lines=lines, detail=detail,
+                    height=len(lines) * 32 + (len(detail) * 22 + 2 if detail else 0) + 20)
     if isinstance(value, dict) and value.get("type") == "hp":
         lines = _wrapped(value["label"], available, fonts[23])
         caption = _wrapped(value["caption"], available, fonts[20])
@@ -51,6 +56,21 @@ def _cell_layout(value, width, fonts):
 def _draw_cell(draw, cell, x, y, width, height, fonts, centered=False):
     top = y + (height - cell["height"]) / 2 + 15 if centered else y + 15
     x += 14
+    if cell["type"] == "knife":
+        color, background = cell["value"]["color"], cell["value"]["background"]
+        top = y + (height - cell["height"]) / 2 + 10
+        available = width - 28
+        if background:
+            draw.rounded_rectangle((x, top - 2, x + available, top + len(cell["lines"]) * 32),
+                                   radius=8, fill=background)
+        for index, line in enumerate(cell["lines"]):
+            draw.text((x + (available - fonts[25].getlength(line)) / 2, top + index * 32 - 1),
+                      line, font=fonts[25], fill=color)
+        detail_y = top + len(cell["lines"]) * 32 + 2
+        for index, line in enumerate(cell["detail"]):
+            draw.text((x + (available - fonts[18].getlength(line)) / 2, detail_y + index * 22),
+                      line, font=fonts[18], fill="#53647B")
+        return
     if cell["type"] == "tags":
         value = cell["value"]
         color = value["color"]
@@ -76,7 +96,7 @@ def _draw_cell(draw, cell, x, y, width, height, fonts, centered=False):
 
 def _report_canvas(title, metadata, cards, sections, note):
     width, ink, muted, blue = 1440, "#172B4D", "#53647B", "#245BBA"
-    fonts = {size: _load_font(size) for size in (20, 21, 22, 23, 25, 30, 34, 38)}
+    fonts = {size: _load_font(size) for size in (18, 20, 21, 22, 23, 25, 30, 34, 38)}
     layouts = []
     content_y = 280 if cards else 156
     height = content_y
@@ -120,7 +140,7 @@ def _report_canvas(title, metadata, cards, sections, note):
         for row_index, (row, row_height) in enumerate(zip(cells, row_heights)):
             draw.rectangle((40, y, width - 40, y + row_height), fill="#FFFFFF" if row_index % 2 == 0 else "#EEF1F7")
             x = 40
-            centered = any(cell["type"] == "tags" for cell in row)
+            centered = any(cell["type"] in ("tags", "knife") for cell in row)
             for cell, w in zip(row, widths):
                 _draw_cell(draw, cell, x, y, w, row_height, fonts, centered)
                 x += w
@@ -169,7 +189,7 @@ def _range_columns_image(title, metadata, caption, columns, note):
         draw.text((x + 16, 233), column["subtitle"], font=fonts[20], fill="#53647B")
         if not cards:
             draw.rounded_rectangle((x, y, x + 260, y + 68), radius=12, fill="white")
-            draw.text((x + 16, y + 20), "暂无完整刀", font=fonts[23], fill="#667386")
+            draw.text((x + 16, y + 20), "暂无样本", font=fonts[23], fill="#667386")
         for group_index, (heading, count, badge, members, height) in enumerate(cards):
             color = colors[group_index]
             draw.rounded_rectangle((x, y, x + 260, y + height), radius=12, fill="white", outline="#DCE5F2")

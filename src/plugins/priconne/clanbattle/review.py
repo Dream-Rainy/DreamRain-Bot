@@ -16,7 +16,7 @@ from ..compat.convert2img import _load_font
 from ..util.tools import lap2stage
 from .period import GAME_TZ
 from .render import _report_image, _chart_report_image, _range_columns_image
-from .reports import member_roster
+from .reports import member_roster, daily_members, _recorded_knife_rows, _mix_color
 from .settlement import uncertain
 
 REVIEW_PAGES = ("overview", "members", "bosses", "distribution", "ranges")
@@ -39,6 +39,7 @@ def build_review(records, config, now, period, group_id):
     roster = member_roster(config) if config.get("clan_battle_id") in (None, period.id) else {}
     names = dict(roster)
     daily, members, bosses, full = [[] for _ in range(5)], defaultdict(list), defaultdict(list), defaultdict(list)
+    timed = defaultdict(list)
     first = datetime.fromtimestamp(period.start, GAME_TZ).date()
     for record in filtered:
         uid = str(record["pcrid"])
@@ -50,9 +51,13 @@ def build_review(records, config, now, period, group_id):
         bosses[stage, boss].append(record)
         if record["flag"] == 0:
             full[stage, boss, uid].append(record["damage"])
+        if record.get("remain_time") == 90 and record.get("battle_time") == 90:
+            timed[stage, boss, uid].append(record["damage"])
     stages = {stage for stage, boss, uid in full}
     stage = next((value for value in ("D", "C", "B") if value in stages), None)
     samples = {key: values for key, values in full.items() if key[0] == stage}
+    range_stage = next((value for value in ("D", "C", "B") if any(key[0] == value for key in timed)), None)
+    range_samples = {key: values for key, values in timed.items() if key[0] == range_stage}
     repeated = Counter(names.values())
     labels = {uid: name if repeated[name] == 1 else f"{name}\n{uid}" for uid, name in names.items()}
     last = max((r["time"] for r in filtered), default=None)
@@ -60,7 +65,8 @@ def build_review(records, config, now, period, group_id):
     end = datetime.fromtimestamp(period.end - 1, GAME_TZ)
     coverage = f"截至{datetime.fromtimestamp(last, GAME_TZ):%m-%d %H:%M}" if last is not None else "暂无战绩"
     return dict(records=filtered, roster=roster, names=names, labels=labels, daily=daily, members=members,
-                bosses=bosses, samples=samples, stage=stage, period=period, group_id=group_id,
+                bosses=bosses, samples=samples, stage=stage, period=period, group_id=group_id, now=now,
+                range_samples=range_samples, range_stage=range_stage,
                 metadata=f"第{period.id}期｜{date:%Y-%m-%d}～{end:%m-%d}｜群{group_id}｜{coverage}")
 
 
@@ -102,20 +108,41 @@ def _overview(data):
         "05:00换日，末日23:59:59结束；刀型按默认配对推断，伤害保留原始值。")
 
 
+def _member_knife_cell(player, quota):
+    if player["latest"] is None:
+        return dict(type="knife", text="—", detail="", color="#667386", background=None)
+    pending, amount = player["pending"], player["knife"]
+    if amount == 0:
+        color = "#667386"
+    else:
+        level = max(.5, min(3, amount * 3 / quota))
+        color = (_mix_color("#c94354", "#a97800", (level - .5) / 1.25) if level <= 1.75 else
+                 _mix_color("#a97800", "#118763", (level - 1.75) / 1.25))
+    return dict(type="knife", text=f"{amount:g}刀" + ("*" if pending or amount > quota else ""),
+                detail=f"整{player['full']} 尾{player['tail']} 补{player['comp']}",
+                color=color, background=_mix_color("#ffffff", color, .1))
+
+
 def _members(data):
+    days = [{player["pcrid"]: player for player in daily_members(_recorded_knife_rows(daily), data["names"])}
+            for daily in data["daily"]]
+    totals = {player["pcrid"]: player for player in daily_members(_recorded_knife_rows(data["records"]), data["names"])}
     rows = []
     for uid in sorted(data["names"], key=lambda uid: (-_damage(data["members"].get(uid, [])), uid)):
         records = data["members"].get(uid, [])
-        cells = [_counts([r for r in daily if str(r["pcrid"]) == uid]) for daily in data["daily"]]
-        rows.append([data["labels"][uid], *cells, _counts(records), f"{_damage(records)/1e8:.2f}"])
+        cells = [_member_knife_cell(day[uid], 3) for day in days]
+        rows.append([data["labels"][uid], *cells, _member_knife_cell(totals[uid], 15), f"{_damage(records)/1e8:.2f}"])
     date = datetime.fromtimestamp(data["period"].start, GAME_TZ)
-    columns = ["成员", *[f"{date + timedelta(days=day):%m-%d}\n第{day + 1}天" for day in range(5)],
-               "整期合计", "总伤害（亿）"]
-    return _report_image("本期复盘 · 成员五日明细", data["metadata"], [
-        (len(data["names"]), "成员"), ("5天", "活动天数"), ("15刀/人", "整期额度"),
-        (len(data["records"]), "已保存战绩")], [
+    headings = []
+    for day in range(5):
+        start = data["period"].start + day * 86400
+        end = min(start + 86400, data["period"].end)
+        status = "\n未到" if data["now"] < start else "\n进行中" if data["now"] < end else ""
+        headings.append(f"{date + timedelta(days=day):%m-%d}\n第{day + 1}天{status}")
+    columns = ["成员", *headings, "整期折算", "原始总伤害\n（亿）"]
+    return _report_image("本期复盘 · 成员五日明细", data["metadata"], [], [
         ("", columns, rows or [["暂无名册与战绩", *["—"] * 7]], [290, 140, 140, 140, 140, 140, 160, 210])],
-        "单元格按默认配对计完整/尾/补；待核验单列，—为无记录。")
+        "记录折算：整1、尾/补0.5；*待核验或超参考额度，—无记录。每日3、整期15仅作参考，不据此认定漏刀。")
 
 
 def _bosses(data):
@@ -172,7 +199,7 @@ def _natural_groups(entries):
 
 def damage_ranges(data):
     members = defaultdict(list)
-    for (stage, boss, uid), values in data["samples"].items():
+    for (stage, boss, uid), values in data["range_samples"].items():
         members[boss].append((uid, median(values), len(values)))
     result = defaultdict(list)
     for boss, entries in members.items():
@@ -198,9 +225,9 @@ def _ranges(data):
         count = sum(map(len, groups))
         samples = sum(row[2] for group in groups for row in group)
         columns.append(dict(title=f"{boss}王", subtitle=f"{count}人 · {samples}刀", groups=cards))
-    caption = f"{data['stage']}阶段 · 自然断点 · 各王独立分档" if data["stage"] else "暂无完整刀样本"
+    caption = f"{data['range_stage']}阶段 · 90秒打满 · 各王独立分档" if data["range_stage"] else "暂无90秒打满样本"
     return _range_columns_image("五王刀伤分档", data["metadata"], caption, columns,
-                                "区间为组内观测范围；按完整刀原始伤害中位数分组，括号为刀数，单次样本仅供参考。")
+                                "仅起始90秒且打满90秒；按原始刀伤中位数分档，区间为组内观测范围，括号为样本数。")
 
 
 def _distribution(data):

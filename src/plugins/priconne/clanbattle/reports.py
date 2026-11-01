@@ -403,6 +403,14 @@ def daily_members(records, roster):
     return sorted(players.values(), key=lambda p: (-p["remaining"], p["pcrid"]))
 
 
+def _recorded_knife_rows(records):
+    return [
+        dict(row, flag=row["raw_flag"], kind_issue=row.get("kind_issue") or "刀型待核验")
+        if row["flag"] not in (0, .5, 1) and row.get("raw_flag") in (0, .5, 1) else row
+        for row in records
+    ]
+
+
 def daily_report(records, config, now, period=None, status_hint=""):
     if period is not None and not period.active(now):
         return period.label(now) + "\n当前不在出刀活动时间内，发送【当前战报】查看本期累计。"
@@ -410,12 +418,7 @@ def daily_report(records, config, now, period=None, status_hint=""):
     start = pcr_date(now)
     records = [row for row in records if max(int(start.timestamp()), period.start if period else 0)
                <= row["time"] < min(now + 1, period.end if period else now + 1)]
-    display_records = [
-        dict(row, flag=row["raw_flag"], kind_issue=row.get("kind_issue") or "刀型待核验")
-        if row["flag"] not in (0, .5, 1) and row.get("raw_flag") in (0, .5, 1) else row
-        for row in records
-    ]
-    players = daily_members(display_records, roster)
+    players = daily_members(_recorded_knife_rows(records), roster)
     names = Counter(player["name"] for player in players)
     groups = defaultdict(list)
     for player in players:
