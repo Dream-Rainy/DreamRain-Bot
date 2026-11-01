@@ -60,6 +60,31 @@ def _fallback(records, status, reason):
 def analyse_day(records, *, complete, ordered=True):
     """不丢弃合法分支；无法穷尽时降级，不把未知库存当作零。"""
     records = list(records)
+    positions = {r.get("id"): i for i, r in enumerate(records) if r.get("id") is not None}
+    claimed = set()
+    for index, record in enumerate(records):
+        manual = _manual(record)
+        if (manual in (0, 1) and type(record.get("remain_time")) is int and 0 < record["remain_time"] < 90
+                or manual == 0 and record.get("killed") is True
+                or manual == 1 and record.get("killed") is False):
+            return _fallback(records, "conflict", "人工刀型与已知时长或击杀事实冲突")
+        meta = record.get("settlement")
+        source = meta.get("manual_source") if isinstance(meta, dict) else None
+        if source is not None and (_manual(record) != .5 or type(source) is not int
+                                   or source not in positions or positions[source] >= index):
+            return _fallback(records, "conflict", "人工补偿来源不在同成员同日的更早记录中")
+        if source is not None:
+            origin = records[positions[source]]
+            if (source in claimed or str(origin["pcrid"]) != str(record["pcrid"])
+                    or origin.get("killed") is False or _manual(origin) in (0, .5)
+                    or (type(origin.get("remain_time")) is int and 0 < origin["remain_time"] < 90)
+                    or (origin.get("tail_seconds") is not None and type(record.get("remain_time")) is int
+                        and 1 <= record["remain_time"] <= 90 and origin["tail_seconds"] != record["remain_time"])
+                    or ("time" in record and "time" in origin and game_day_start(record["time"]) != game_day_start(origin["time"]))):
+                return _fallback(records, "conflict", "补偿来源重复使用或与已知战斗事实冲突")
+            claimed.add(source)
+    if sum(_manual(r) in (0, 1) for r in records) > 3:
+        return _fallback(records, "conflict", "人工修正后的正常起刀超过每日三次")
     if not ordered:
         return _fallback(records, "order", "出刀顺序待核验")
     if not complete:
@@ -70,6 +95,8 @@ def analyse_day(records, *, complete, ordered=True):
     used = frozenset()
     for index, record in enumerate(records):
         start, killed, manual = record.get("remain_time"), record.get("killed"), _manual(record)
+        meta = record.get("settlement")
+        selected = meta.get("manual_source") if isinstance(meta, dict) else None
         if type(start) is not int or not 1 <= start <= 90:
             return _fallback(records, "incomplete", "起始秒数待核验")
         own, _ = evidence[index]
@@ -86,6 +113,8 @@ def analyse_day(records, *, complete, ordered=True):
                     next_states.add((starts + 1, tokens + earned, flags + (flag,), sources + (None,)))
             if manual not in (0, 1):
                 for position, (length, origin) in enumerate(tokens):
+                    if selected is not None and records[origin].get("id") != selected:
+                        continue
                     allowed = evidence[origin][1]
                     if (length is None or length == start) and (allowed is None or reused <= allowed):
                         next_states.add((starts, tokens[:position] + tokens[position + 1:],
@@ -109,6 +138,8 @@ def analyse_day(records, *, complete, ordered=True):
             kind_issue="刀型待核验" if flag is None else "补偿秒数待核验" if flag == 1 and extended is None else "",
             extended_seconds=extended,
             carry_source=records[source].get("battle_log_id") if source is not None else None,
+            carry_source_id=records[source].get("id") if source is not None else None,
+            carry_source_ids=tuple(records[i]["id"] for i in sorted(origins - {None}) if records[i].get("id") is not None),
             carry_sources=tuple(sorted({records[i].get("battle_log_id") for i in origins if i is not None and records[i].get("battle_log_id") is not None})),
         ))
     lengths = {length for _, tokens, _, _ in states for length, _ in tokens}

@@ -82,7 +82,7 @@ def analyse_records(records):
         seen.add(key)
         record.update(raw_flag=record.get("flag"), flag=None, effective_damage=None,
                       hp_before=None, killed=None, extended_seconds=None,
-                      carry_source=None, kind_status="pending", kind_issue="")
+                      carry_source=None, carry_source_id=None, carry_source_ids=(), kind_status="pending", kind_issue="")
         result.append(record)
         event = facts(record).get("event_id") or record.get("event_id")
         bosses[event, record["lap"], str(record["boss"])].append(record)

@@ -1,0 +1,3 @@
+{$MANAGEMENT_WEB_DOMAIN} {
+    reverse_proxy relay:8765
+}

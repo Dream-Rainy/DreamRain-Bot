@@ -123,7 +123,7 @@ def _member_knife_cell(player, quota):
                 color=color, background=_mix_color("#ffffff", color, .1))
 
 
-def _members(data):
+def member_data(data):
     days = [{player["pcrid"]: player for player in daily_members(_recorded_knife_rows(daily), data["names"])}
             for daily in data["daily"]]
     totals = {player["pcrid"]: player for player in daily_members(_recorded_knife_rows(data["records"]), data["names"])}
@@ -140,9 +140,13 @@ def _members(data):
         status = "\n未到" if data["now"] < start else "\n进行中" if data["now"] < end else ""
         headings.append(f"{date + timedelta(days=day):%m-%d}\n第{day + 1}天{status}")
     columns = ["成员", *headings, "整期折算", "原始总伤害\n（亿）"]
-    return _report_image("本期复盘 · 成员五日明细", data["metadata"], [], [
-        ("", columns, rows or [["暂无名册与战绩", *["—"] * 7]], [290, 140, 140, 140, 140, 140, 160, 210])],
-        "记录折算：整1、尾/补0.5；*待核验或超参考额度，—无记录。每日3、整期15仅作参考，不据此认定漏刀。")
+    return dict(title="本期复盘 · 成员五日明细", metadata=data["metadata"], cards=[], sections=[
+        ("", columns, rows or [["暂无名册与战绩", *["—"] * 7]], [290, 140, 140, 140, 140, 140, 160, 210])], note="记录折算：整1、尾/补0.5；*待核验或超参考额度，—无记录。每日3、整期15仅作参考，不据此认定漏刀。")
+
+
+def _members(data):
+    data = member_data(data)
+    return _report_image(data["title"], data["metadata"], data["cards"], data["sections"], data["note"]) if isinstance(data, dict) else data
 
 
 def _bosses(data):
@@ -208,7 +212,7 @@ def damage_ranges(data):
     return result
 
 
-def _ranges(data):
+def range_data(data):
     cells = damage_ranges(data)
     columns = []
     for boss in range(1, 6):
@@ -226,8 +230,12 @@ def _ranges(data):
         samples = sum(row[2] for group in groups for row in group)
         columns.append(dict(title=f"{boss}王", subtitle=f"{count}人 · {samples}刀", groups=cards))
     caption = f"{data['range_stage']}阶段 · 90秒打满 · 各王独立分档" if data["range_stage"] else "暂无90秒打满样本"
-    return _range_columns_image("五王刀伤分档", data["metadata"], caption, columns,
-                                "仅起始90秒且打满90秒；按原始刀伤中位数分档，区间为组内观测范围，括号为样本数。")
+    return dict(title="五王刀伤分档", metadata=data["metadata"], caption=caption, columns=columns, note="仅起始90秒且打满90秒；按原始刀伤中位数分档，区间为组内观测范围，括号为样本数。")
+
+
+def _ranges(data):
+    data = range_data(data)
+    return _range_columns_image(data["title"], data["metadata"], data["caption"], data["columns"], data["note"]) if isinstance(data, dict) else data
 
 
 def _distribution(data):

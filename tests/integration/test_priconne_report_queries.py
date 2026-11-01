@@ -1,6 +1,98 @@
 from datetime import datetime, timedelta, timezone
+import pytest
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from tests.integration.test_management_web import console, editors
+
+
+async def test_correction_uses_private_input_and_independent_before_after(editors):
+    from copy import deepcopy
+    c = editors
+    dao = c.sql.RecordDao(789, c.period)
+    async with c.sessions() as session:
+        raw, binding = await dao._correction_rows(session)
+    original = deepcopy(raw)
+    result, _, _, _ = c.sql._prepare_correction(c.period, binding, raw, 2, .5, 1, '核对来源')
+    expected_after = deepcopy(original)
+    expected_after[1]['settlement'].update(manual_flag=.5, manual_source=1)
+    assert raw == original
+    assert result['before'] == c.sql.analyse_records(original)
+    assert result['after'] == c.sql.analyse_records(expected_after)
+    assert 'manual_flag' not in result['before'][1]['settlement']
+    assert result['after'][1]['carry_source_id'] == 1
+    duplicate = dict(original[1], id=99, settlement={**original[1]['settlement'],
+        'report':dict(max_hp=900000000, totals={'123':300000000}, observed_at=1)})
+    duplicated = original+[duplicate]
+    fingerprint = c.sql._correction_fingerprint(c.period, binding, duplicated)
+    duplicate['settlement']['report']['observed_at'] = 100
+    assert c.sql.analyse_records(duplicated) == result['before']
+    assert c.sql._correction_fingerprint(c.period, binding, duplicated) == fingerprint
+
+
+async def test_concurrent_corrections_commit_only_once(editors, monkeypatch):
+    import asyncio, threading
+    from sqlalchemy import select
+    from src.plugins.priconne.orm.models import Record
+    c = editors
+    dao = c.sql.RecordDao(789, c.period)
+    operation = dict(source=1, reason='并发核对')
+    preview = await dao.correct_record(2, .5, **operation)
+    barrier = threading.Barrier(2)
+    prepare = c.sql._prepare_correction
+    def together(*args):
+        result = prepare(*args)
+        barrier.wait(timeout=10)
+        return result
+    monkeypatch.setattr(c.sql, '_prepare_correction', together)
+    results = await asyncio.gather(*(dao.correct_record(2, .5, **operation, expected=preview['version'],
+        actor=str(actor), commit=True) for actor in (456, 999)), return_exceptions=True)
+    assert sum(isinstance(result, dict) and result['saved'] for result in results) == 1, results
+    errors = [result for result in results if isinstance(result, Exception)]
+    assert len(errors) == 1 and isinstance(errors[0], ValueError)
+    async with c.sessions() as session:
+        row = (await session.execute(select(Record).where(Record.id == 2))).scalar_one()
+        assert row.settlement['correction_revision'] == 1
+        assert len(row.settlement['correction_history']) == 1
+        assert row.damage == 300000000 and row.remain_time == row.battle_time == 90
+
+
+async def test_report_queue_batch_preserves_distinct_groups_bosses_and_lap_limit(app, monkeypatch):
+    from sqlalchemy import event
+    from src.plugins.priconne.clanbattle import sql
+    from src.plugins.priconne.orm.models import Apply, Tree, Subscribe
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    sessions = async_sessionmaker(engine)
+    monkeypatch.setattr(sql, "get_session", sessions)
+    selects = []
+    def count(conn, cursor, statement, parameters, context, many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+    try:
+        async with engine.begin() as connection:
+            for model in (Apply, Tree, Subscribe):
+                await connection.run_sync(lambda db, model=model: model.__table__.create(db))
+        async with sessions() as session:
+            for group, boss, text in [(11,1,"先登记"), (11,1,"先登记"), (11,1,"另一留言"),
+                                      (11,2,"先登记"), (22,1,"另一群"), (11,3,"未请求的王")]:
+                session.add(Apply(group_id=group, boss=boss, uid=123, time=100, text=text))
+            session.add(Tree(group_id=11, boss=2, uid=123, time=100, text="先登记"))
+            for lap in (0, 999, 1000):
+                session.add(Subscribe(group_id=11, boss=1, uid=123, lap=lap, text="预约"))
+            await session.commit()
+        event.listen(engine.sync_engine, "before_cursor_execute", count)
+        queues = await sql._read_report_queues(11, [1,2,1], subscribers=True)
+        assert len(selects) == 3
+        assert queues == {1: {"apply": [(123,100,"先登记"), (123,100,"另一留言")], "tree": [],
+                              "subscribe": [(123,0,"预约"), (123,999,"预约")]},
+                          2: {"apply": [(123,100,"先登记")], "tree": [(123,100,"先登记")], "subscribe": []}}
+        selects.clear()
+        assert await sql._read_report_queues(11, [5]) == {5: {"apply": [], "tree": [], "subscribe": []}}
+        assert len(selects) == 2
+        selects.clear()
+        assert await sql._read_report_queues(11, []) == {}
+        assert selects == []
+    finally:
+        await engine.dispose()
 
 
 async def test_report_query_isolates_group_and_game_day_boundaries(app, monkeypatch):
@@ -66,10 +158,13 @@ async def test_period_queries_and_correction_exclude_other_events_but_keep_habit
         assert await dao.get_max_dao(event.start) == 3
         assert await dao.get_max_dao(event.start + 86400 * 2) == 9
         assert await dao.get_max_dao(event.end) == 15
-        assert await dao.correct_dao(7, 0.5) == 1
+        with pytest.raises(ValueError, match="多条记录"):
+            await dao.correct_dao(7, .5)
+        preview = await dao.correct_record(2, .5, reason="核对单条记录")
+        await dao.correct_record(2, .5, reason="核对单条记录", expected=preview["version"], commit=True)
         await dao.refresh()
         history = await dao.get_report_records(0, event.end + 1)
-        assert [(r["damage"], r["flag"]) for r in history] == [(900, 0), (100, 0.5), (200, 0.5), (800, 0)]
+        assert [(r["damage"], r["flag"]) for r in history] == [(900, 0), (100, 0.5), (200, 0), (800, 0)]
     finally:
         await engine.dispose()
 
@@ -104,11 +199,13 @@ async def test_settlement_query_uses_earlier_tail_context_and_preserves_later_ma
         later = await dao.get_report_records(period.start + 240, period.start + 241)
         assert len(later) == 1 and later[0]["flag"] == .5 and later[0]["carry_source"] == 1
         stale = await dao.get_settlement_records(period.start, period.end)
-        assert await dao.correct_dao(2, 0) == 1
+        with pytest.raises(ValueError, match="冲突"):
+            await dao.correct_dao(2, 0)
+        assert await dao.correct_dao(2, .5) == 1
         await dao.save_settlement_facts(stale)
         await dao.bigfun_check([[{"damage_list": [{"datetime": period.start + 240, "damage": 390, "reimburse": 1, "kill": 0}]}]])
         current = await dao.get_report_records(period.start + 240, period.start + 241)
-        assert current[0]["flag"] == 0 and current[0]["kind_status"] == "manual"
+        assert current[0]["flag"] == .5 and current[0]["kind_status"] == "manual"
         assert current[0]["damage"] == 400 and current[0]["effective_damage"] == 390
     finally:
         await engine.dispose()

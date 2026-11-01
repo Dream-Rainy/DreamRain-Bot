@@ -20,6 +20,7 @@ def register_alias_web(group, config):
     driver = get_driver()
     sessions = EditorSessions(superusers=lambda: driver.config.superusers)
     portal = AliasPortal(lxns_client, sessions)
+    _register_management(portal)
     if config.alias_web_relay_url:
         from .relay_bridge import EditorBridge
         portal.relay = EditorBridge(portal, config.alias_web_relay_url, config.alias_web_relay_token)
@@ -52,3 +53,53 @@ def register_alias_web(group, config):
         await finish_with(BotResponse(text=message))
 
     return portal
+
+
+def _register_management(alias):
+    from src.plugins.management import portal as management
+    if "aliases" in management.modules:
+        return
+    from arcade_helper.web import BASE
+    from src.plugins.management.portal import Module
+    from .relay_bridge import API_PATH
+
+    members = {}
+    previous_portal = None
+
+    def active_portal():
+        from src.plugins.chiffon_bot import alias_portal
+        return alias_portal
+
+    async def authorize(member):
+        return active_portal() is not None and member.adapter in {"onebot", "telegram", "discord", "kaiheila"}
+
+    async def dispatch(member, method, path, query, body):
+        nonlocal previous_portal
+        alias = active_portal()
+        if previous_portal is not alias:
+            old, previous_portal = previous_portal, alias
+            if old is not None:
+                await old._close_internal_client()
+        if not API_PATH.fullmatch(path):
+            raise HTTPException(404, "别名接口不存在")
+        linked = members.get(member.key)
+        if linked is None or not alias.sessions.live(linked):
+            platform = "qq" if member.adapter == "onebot" else member.adapter
+            user = await alias.client.data.users.from_platform(platform, member.platform_id)
+            linked = alias.sessions.issue(user_id=user.user_id, platform_id=member.platform_id,
+                adapter=member.adapter, label=member.label,
+                ttl=max(1, member.expires - management.sessions.clock()))
+            members[member.key] = linked
+            def cleanup():
+                members.pop(member.key, None)
+                alias.sessions.revoke(linked.key)
+            member.cleanup.append(cleanup)
+        if path == "logout":
+            raise HTTPException(403, "请使用后台的退出按钮")
+        response = await alias.internal_client().request(method, BASE + "/api/" + path, params=query,
+            headers={"Authorization": f"Bearer {linked.key}"}, json=body if method == "POST" else None)
+        if response.status_code >= 400:
+            raise HTTPException(response.status_code, response.json().get("detail", "操作失败"))
+        return response.json()
+
+    management.register(Module("aliases", "别名审批", "chiffon_bot", dispatch, authorize))

@@ -60,6 +60,31 @@ async def test_private_editor_session_expiry_revocation_and_no_login_routes(port
         assert (await owner.get(BASE+"/api/me")).status_code == 401
 
 
+async def test_internal_client_reuses_current_portal_and_closes_on_replacement(portal, monkeypatch):
+    from src.plugins import chiffon_bot, management
+    from src.plugins.chiffon_bot.app.web.alias_portal import AliasPortal
+    from src.plugins.chiffon_bot.app.web.session import EditorSessions
+    old, _ = portal
+    management.portal.sessions.clear()
+    member = management.portal.sessions.issue(platform_id='123', adapter='onebot', label='client lifecycle')
+    module = management.portal.modules['aliases']
+    first = await module.dispatch(member, 'GET', 'me', {}, None)
+    client = old.internal_client()
+    assert (await module.dispatch(member, 'GET', 'me', {}, None))['user_id'] == first['user_id']
+    assert old.internal_client() is client
+    replacement = AliasPortal(old.client, EditorSessions(superusers=lambda:set()))
+    monkeypatch.setattr(chiffon_bot, 'alias_portal', replacement)
+    try:
+        result = await module.dispatch(member, 'GET', 'me', {}, None)
+        assert client.is_closed
+        assert result['user_id'] == first['user_id']
+        assert replacement.internal_client() is not client
+    finally:
+        await replacement.close()
+        await old.close()
+        management.portal.sessions.clear()
+
+
 async def test_submit_privacy_no_self_review_current_roles_and_effect(portal, monkeypatch):
     _, app = portal
     song = await GameSong.get(title=MAI_SONG_TITLE, game_code="maimai")

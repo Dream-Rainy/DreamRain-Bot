@@ -4,7 +4,7 @@ import traceback
 from time import time as timestamp
 from nonebot import logger
 from .base import CancleError, find_item, format_bignum, format_precent, clan_path
-from .sql import RecordDao, SubscribeDao, TreeDao, ApplyDao, clear_period_registrations
+from .sql import group_write_lock, RecordDao, SubscribeDao, TreeDao, ApplyDao, clear_period_registrations
 from .period import get_period
 from .settlement import analyse_records, facts
 from ..util.tools import load_config, write_config, lap2stage, stage_dict
@@ -61,27 +61,28 @@ class ClanBattle:
             raise Exception(f"数据库初始化失败 + {str(e)}")
 
     async def bind_period(self, event_id):
-        if self.event is not None and self.event.id == event_id:
-            return
-        event = await get_period(event_id=event_id)
-        path = os.path.join(clan_path, str(self.group_id), "clanbattle.json")
-        config = await load_config(path) or {}
-        if config.get("clan_battle_id") != event.id:
-            await clear_period_registrations(self.group_id)
-            self.boss = [Boss(), Boss(), Boss(), Boss(), Boss()]
-            for notices in (self.notice_dao, self.notice_tree, self.notice_fighter,
-                            self.notice_subscribe, self.notice_coop):
-                notices.clear()
-            self.latest_time = event.start - 1
-            config.pop("record_coverage", None)
-            config.update(clan_battle_id=event.id, battle_start=event.start, battle_end=event.end - 1)
-            await write_config(path, config)
-        self.rank, self.rank_at = 0, 0
-        self.collection_facts = {}
-        self.record_coverage = config.get("record_coverage", {})
-        self.event = event
-        self.clan_battle_id = event.id
-        self.record = RecordDao(self.group_id, event)
+        async with group_write_lock(self.group_id):
+            if self.event is not None and self.event.id == event_id:
+                return
+            event = await get_period(event_id=event_id)
+            path = os.path.join(clan_path, str(self.group_id), "clanbattle.json")
+            config = await load_config(path) or {}
+            if config.get("clan_battle_id") != event.id:
+                await clear_period_registrations(self.group_id)
+                self.boss = [Boss(), Boss(), Boss(), Boss(), Boss()]
+                for notices in (self.notice_dao, self.notice_tree, self.notice_fighter,
+                                self.notice_subscribe, self.notice_coop):
+                    notices.clear()
+                self.latest_time = event.start - 1
+                config.pop("record_coverage", None)
+                config.update(clan_battle_id=event.id, battle_start=event.start, battle_end=event.end - 1)
+                await write_config(path, config)
+            self.rank, self.rank_at = 0, 0
+            self.collection_facts = {}
+            self.record_coverage = config.get("record_coverage", {})
+            self.event = event
+            self.clan_battle_id = event.id
+            self.record = RecordDao(self.group_id, event)
 
     def update_rank(self, rank, now):
         if (self.event is not None and type(now) in (int, float) and self.event.active(now)
@@ -148,14 +149,15 @@ class ClanBattle:
         self.clan_leader_id = detail.get("leader_viewer_id")
         for member in members["clan"]["members"]:
             member_dict[member["name"]] = member["viewer_id"]
-        config = dict(await load_config(config_file))
-        config["member"] = member_dict
-        config["member_by_id"] = {
-            str(member["viewer_id"]): member["name"]
-            for member in members["clan"]["members"]
-        }
-        config["member_updated_at"] = int(timestamp())
-        await write_config(config_file, config)
+        async with group_write_lock(self.group_id):
+            config = dict(await load_config(config_file))
+            config["member"] = member_dict
+            config["member_by_id"] = {
+                str(member["viewer_id"]): member["name"]
+                for member in members["clan"]["members"]
+            }
+            config["member_updated_at"] = int(timestamp())
+            await write_config(config_file, config)
 
     async def refresh_fighter_num(self, lap_num, order):
         boss: Boss = self.boss[order-1]
@@ -364,14 +366,18 @@ class ClanBattle:
             self.collection_facts = captured
             if self.event is not None:
                 config_path = os.path.join(clan_path, str(self.group_id), "clanbattle.json")
-                config = await load_config(config_path) or {}
-                if loop_num != self.loop_num:
-                    raise CancleError
-                new_coverage = dict(event_id=self.event.id, start=self.event.start,
-                                    through=min(observed_at, self.event.end - 1) if complete else coverage.get("through", 0), complete=complete)
-                config.update(clan_battle_id=self.event.id, record_coverage=new_coverage)
-                await write_config(config_path, config)
-                self.record_coverage = new_coverage
+                collected_event = self.event
+                async with group_write_lock(self.group_id):
+                    if collected_event is not self.event:
+                        raise CancleError
+                    config = await load_config(config_path) or {}
+                    if loop_num != self.loop_num:
+                        raise CancleError
+                    new_coverage = dict(event_id=self.event.id, start=self.event.start,
+                                        through=min(observed_at, self.event.end - 1) if complete else coverage.get("through", 0), complete=complete)
+                    config.update(clan_battle_id=self.event.id, record_coverage=new_coverage)
+                    await write_config(config_path, config)
+                    self.record_coverage = new_coverage
         except CancleError:
             raise
         except Exception as error:

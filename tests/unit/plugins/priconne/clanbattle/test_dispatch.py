@@ -145,3 +145,11 @@ def test_member_links_keep_identity_unique_and_ignore_departed_or_ambiguous_link
     for qq, uid in [(11, '2'), (22, '1'), (22, '99')]:
         with pytest.raises(ValueError):
             dispatch.register_member_link(links, roster, qq, uid)
+def test_management_retains_invalid_links_while_dispatch_never_uses_them(app):
+    from src.plugins.priconne.clanbattle.dispatch import member_link_rows, valid_member_links
+    links = {'11':'1', '12':'1', '13':'9'}
+    roster = {'1':'成员甲', '2':'成员乙'}
+    rows = member_link_rows(links, roster)
+    assert [(row['pcrid'], row['state']) for row in rows] == [('1','conflict'),('2','unbound'),('9','invalid')]
+    assert valid_member_links(links, roster) == {}
+    assert links == {'11':'1', '12':'1', '13':'9'}

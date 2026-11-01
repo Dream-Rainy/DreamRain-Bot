@@ -21,7 +21,7 @@ from ..util.tools import load_config, write_config, safe_send, check_client, DAT
 from .base import *
 from .model import ClanBattle
 from .kpi import kpi_report
-from .sql import SubscribeDao, RecordDao, SLDao, TreeDao, ApplyDao, clear_group_data
+from .sql import SubscribeDao, RecordDao, SLDao, TreeDao, ApplyDao, clear_group_data, _read_report_queues
 from .pcr_calculator import calculator
 from .reports import (
     boss_snapshot, snapshot_bosses, daily_report, preference_report, report_status,
@@ -30,7 +30,7 @@ from .reports import (
 )
 from .sql import pcr_date
 from .period import get_period
-from .dispatch import build_dispatch, activity_report, coordination_reports, register_member_link
+from .dispatch import build_dispatch, activity_report, coordination_reports
 from .review import build_review, render_review, REVIEW_PAGES
 from .summary import send_summary, summary_due
 from .settlement import battle_notice
@@ -38,8 +38,6 @@ from .rankline import get_rank_lines, parse_ranks, valid_rank, final_rankline_du
 
 _push_settings = None
 _push_lock = asyncio.Lock()
-
-_member_link_lock = asyncio.Lock()
 
 from ..pcrclient import init_device_id, ApiException, RETRYABLE_SERVER_ERROR_STATUS, _is_network_error as _client_network_error
 
@@ -119,23 +117,13 @@ async def manage_broadcast(bot, ev):
         await bot.send(ev, "仅群管理员可设置。")
         return
     command = ev.message.extract_plain_text().strip()
-    async with _push_lock:
-        settings = await _load_push_settings()
-        key = str(ev.group_id)
-        profile = dict(settings.get(key, {}))
-        if command in ("开启播报", "关闭播报"):
-            profile["broadcast"] = command == "开启播报"
-        else:
-            profile["rankline"] = command == "订阅档线"
-        profile["self_id"] = str(ev.self_id)
-        updated = {**settings, key: profile}
-        try:
-            await save_json(os.path.join(clan_path, "push_settings.json"), updated)
-        except Exception:
-            await bot.send(ev, "保存失败，设置未改变。")
-            return
-        settings.clear()
-        settings.update(updated)
+    from .service import update_push_settings
+    changes = {"broadcast": command == "开启播报"} if command in ("开启播报", "关闭播报") else {"rankline": command == "订阅档线"}
+    try:
+        await update_push_settings(ev.group_id, ev.self_id, changes, actor=str(ev.user_id))
+    except Exception:
+        await bot.send(ev, "保存失败，设置未改变。")
+        return
     await bot.send(ev, {"开启播报": "普通监控播报已开启。", "关闭播报": "普通监控播报已关闭，继续采集。",
                         "订阅档线": "已订阅期末23:55档线。", "取消档线订阅": "已取消订阅；开启出刀监控的群仍会收到。"}[command])
 
@@ -1049,40 +1037,17 @@ async def _registration_period(bot, ev):
 
 
 async def _report_context(group_id, now, period=None):
-    info = run_group.get(group_id)
-    if not isinstance(info, dict) or not isinstance(info.get("snapshot"), dict):
-        saved = await load_config(run_path)
-        info = saved.get(str(group_id), {}) if isinstance(saved, dict) else {}
-    if not isinstance(info, dict):
-        info = {}
-    snapshot = info.get("snapshot", {})
-    if not isinstance(snapshot, dict):
-        snapshot = {}
-    clan_info = clanbattle_info.get(group_id)
-    updated = snapshot.get("time", 0)
-    if period is not None:
-        if (type(updated) not in (int, float) or not period.start <= updated < period.end
-                or snapshot.get("clan_battle_id") not in (None, period.id)):
-            return {}, False
-    online = bool(
-        (period is None or period.active(now))
-        and clan_info and clan_info.loop_check and isinstance(updated, (int, float))
-        and 0 <= now - updated <= 120
-    )
-    return snapshot, online
+    from .service import report_context
+    return await report_context(group_id, now, period)
 
 
 async def _report_queues(bot, group_id, bosses, subscribers=False, member_names=True):
-    queues = {}
-    for boss in bosses:
-        order = boss["order"]
-        queues[order] = {
-            "apply": await ApplyDao(group_id).get_apply(order),
-            "subscribe": await SubscribeDao(group_id).get_subscriber(order) if subscribers else [],
-            "tree": await TreeDao(group_id).get_tree(order),
-        }
-    if not member_names:
-        return queues, {}
+    queues = await _read_report_queues(group_id, [boss["order"] for boss in bosses], subscribers=subscribers)
+    names = await _report_member_names(bot, group_id, queues) if member_names else {}
+    return queues, names
+
+
+async def _report_member_names(bot, group_id, queues):
     uids = {entry[0] for queue in queues.values() for entries in queue.values() for entry in entries}
     names = {}
     for uid in uids:
@@ -1091,7 +1056,7 @@ async def _report_queues(bot, group_id, bosses, subscribers=False, member_names=
             names[uid] = member.get("card") or member.get("nickname") or f"QQ {uid}"
         except Exception:
             names[uid] = f"QQ {uid}"
-    return queues, names
+    return names
 
 
 @sv.on_prefix('登记会战成员', '取消会战成员登记')
@@ -1104,7 +1069,7 @@ async def member_registration(bot, ev):
         await bot.send(ev, "每次只能为一名成员登记，不能@全体。")
         return
     qq = int(mentions[0]) if mentions else ev.user_id
-    if qq != ev.user_id and not priv.check_priv(ev, priv.ADMIN):
+    if qq != ev.user_id and not priv.check_priv(ev, priv.ADMIN) and not await _is_superuser(bot, ev):
         await bot.send(ev, "代他人操作会战成员登记需要群管理员权限。")
         return
     argument = "".join(segment.data.get("text", "") for segment in ev.message if segment.type == "text").strip()
@@ -1112,35 +1077,15 @@ async def member_registration(bot, ev):
     if (cancel and argument) or (not cancel and not re.fullmatch(r'[1-9][0-9]*', argument)):
         await bot.send(ev, "格式：【登记会战成员 游戏ID】或【取消会战成员登记】；群管理员可附加@成员。")
         return
-    path = os.path.join(clan_path, str(ev.group_id), "member_links.json")
-    async with _member_link_lock:
-        links = await load_config(path)
-        if not isinstance(links, dict) and os.path.isfile(path):
-            await bot.send(ev, "身份登记文件无法读取，请管理员检查；未覆盖已有登记。")
-            return
-        if cancel:
-            if not isinstance(links, dict) or str(qq) not in links:
-                await bot.send(ev, "该QQ尚未登记会战成员。")
-                return
-            links = dict(links)
-            links.pop(str(qq))
-            message = f"已取消QQ {qq}的会战成员登记。"
-        else:
-            config = await load_config(os.path.join(clan_path, str(ev.group_id), "clanbattle.json"))
-            try:
-                links = register_member_link(links, member_roster(config), qq, argument)
-            except ValueError as error:
-                await bot.send(ev, str(error))
-                return
-            message = f"已登记QQ {qq} ↔ {member_roster(config)[argument]}（游戏ID {argument}）。\n仅登记身份对应，不需要账号密码。"
-        try:
-            await write_config(path + ".tmp", links)
-            os.replace(path + ".tmp", path)
-        except OSError:
-            logger.exception("priconne member registration save failed")
-            await bot.send(ev, "身份登记保存失败，请重试；原登记已保留。")
-            return
-    await bot.send(ev, MessageSegment.text(message))
+    from .service import change_member_link
+    from fastapi import HTTPException
+    try:
+        result = await change_member_link(bot, ev.group_id, qq, None if cancel else argument,
+                    actor=ev.user_id, admin=priv.check_priv(ev, priv.ADMIN) or await _is_superuser(bot, ev))
+    except (HTTPException, ValueError) as error:
+        await bot.send(ev, getattr(error, "detail", str(error)))
+        return
+    await bot.send(ev, MessageSegment.text(result["message"]))
 
 
 def _dispatch_ready(snapshot, online, now, period):
@@ -1456,6 +1401,12 @@ async def player_report(bot, ev):
 
 @sv.on_rex(r'修正出刀\s?(\d+)\s?(完整刀|尾刀|补偿)?')
 async def correct_dao(bot, ev):
+    if not getattr(ev, "group_id", None):
+        await bot.send(ev, "请在公会群内修正出刀。")
+        return
+    if not priv.check_priv(ev, priv.ADMIN) and not await _is_superuser(bot, ev):
+        await bot.send(ev, "仅群管理员可修正出刀。")
+        return
     period = await _event_period(bot, ev)
     if period is None:
         return
@@ -1463,9 +1414,17 @@ async def correct_dao(bot, ev):
     info = ev["match"]
     dao_id = info.group(1)
     dao = info.group(2)
+    if dao not in ("完整刀", "尾刀", "补偿"):
+        await bot.send(ev, "请明确刀型：【修正出刀 编号 完整刀/尾刀/补偿】；未修改记录。")
+        return
     item = 0 if dao == "完整刀" else 1 if dao == "尾刀" else 0.5
-    if await records.correct_dao(dao_id, item):
-        await bot.send(ev, "修改成功")
+    try:
+        changed = await records.correct_dao(dao_id, item, actor=str(ev.user_id))
+    except ValueError as error:
+        await bot.send(ev, str(error))
+        return
+    if changed:
+        await bot.send(ev, "修改成功，已记录人工修正；可在后台查看历史并撤销。")
     else:
         await bot.send(ev, "请检查你输入了正确的出刀编号")
     
@@ -1675,3 +1634,7 @@ async def daily_rank_broadcast():
             await bot.send_group_msg(self_id=self_id, group_id=group_id, message=msg)
         except Exception as e:
             logger.warning(f"priconne daily rank broadcast failed, group={group_id}: {e}")
+
+
+from .web import register as _register_management
+_register_management()

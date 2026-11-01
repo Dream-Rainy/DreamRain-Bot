@@ -24,6 +24,8 @@
 
 ## 别名网页工作台
 
+别名面板也可从[通用管理后台](management-web.md)进入，继续使用原提交、审核和禁止自审规则；群管理员身份不授予别名审核权限。原 `/arcade.editor` 入口与配置保持可用。
+
 采用 LuckPerms 式独立编辑器：在独立服务器部署 `arcade-helper[web]` 的网页/中继，机器人设置 `alias_web_relay_url=https://编辑器域名`、`alias_web_relay_token=<中继服务密钥>`，只发起出站 HTTPS/WSS 连接，不注册别名网页 HTTP 路由。默认 `alias_web_enabled=true`；中继未配置时提示补全配置，不提供直连方式。`alias_web_enabled=false` 可关闭编辑器命令。
 
 私聊 `/arcade.editor` 获取临时链接，打开即可进入工作台，无需再次发送确认指令。机器人在创建链接时绑定真实平台账号，浏览器自动证明持有链接密钥；密钥仅放在 URL fragment，页面读取后立即清除地址栏中的凭据。链接最长一小时，是创建者身份的临时凭证，拿到链接的人可以使用该身份，请勿转发。审核权限实时沿用 `SUPERUSERS`，禁止审核自己或共同提交的请求。

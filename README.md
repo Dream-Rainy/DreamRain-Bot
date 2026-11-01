@@ -44,6 +44,7 @@
 | --- | --- |
 | [部署与配置](docs/deployment.md) | Docker 部署、非交互数据库迁移、Playwright、GPU、字体和环境变量 |
 | [歌曲别名与审核](docs/aliases.md) | 别名提交、网页编辑器、管理员命令、作品关联与旧数据迁移 |
+| [通用管理后台](docs/management-web.md) | 临时管理入口、别名审批、公会战报表、群权限与独立中继部署 |
 | [查歌与搜索配置](docs/song-search.md) | 查询与选曲规则、embedding、reranker 和搜索维护 |
 
 ## 常用命令示例

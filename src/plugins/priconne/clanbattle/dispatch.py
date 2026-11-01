@@ -35,6 +35,20 @@ def register_member_link(raw, roster, qq, uid):
     return links
 
 
+def member_link_rows(raw, roster):
+    links = raw if isinstance(raw, dict) else {}
+    valid = valid_member_links(links, roster)
+    rows = []
+    for uid, name in roster.items():
+        accounts = sorted(str(qq) for qq, value in links.items() if str(value) == uid)
+        state = "unbound" if not accounts else "bound" if len(accounts) == 1 and accounts[0] in valid else "conflict"
+        rows.append(dict(pcrid=uid, name=name, qq=accounts, state=state))
+    for qq, uid in links.items():
+        if str(uid) not in roster:
+            rows.append(dict(pcrid=str(uid), name="失效关联", qq=[str(qq)], state="invalid"))
+    return rows
+
+
 def build_dispatch(records, config, now, period, links=None, bosses=None, queues=None, ready=False):
     data = {"now": now, "period": period, "active": bool(period and period.active(now)),
             "members": [], "active_members": [], "pending": [], "windows": [], "unplanned": [],

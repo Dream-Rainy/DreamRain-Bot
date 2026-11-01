@@ -4,6 +4,7 @@ from __future__ import annotations
 from arcade_helper.web import BASE
 from dataclasses import asdict
 from typing import Annotated
+import httpx
 
 from arcade_helper.aliases import AliasService
 from arcade_helper.aliases.models import AliasConflictError, AliasPermissionError
@@ -11,7 +12,7 @@ from arcade_helper.catalog.importer import prepare_arcade_catalog
 from arcade_helper.core.errors import ArcadeHelperError
 from arcade_helper.storage.tortoise.catalog_models import CatalogImport, GameSong, SongReference
 from arcade_helper.storage.tortoise.alias_models import AliasRequest
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -54,12 +55,30 @@ class AliasPortal:
     def __init__(self, client, sessions: EditorSessions):
         self.client, self.sessions = client, sessions
         self.relay = None
+        self._internal_client = None
         self.router = self.make_router()
 
+    def internal_client(self):
+        if self._internal_client is None or self._internal_client.is_closed:
+            app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+            app.include_router(self.router)
+            self._internal_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://alias.internal")
+        return self._internal_client
+
+    async def _close_internal_client(self):
+        client, self._internal_client = self._internal_client, None
+        if client is not None:
+            await client.aclose()
+
     async def close(self):
-        if self.relay:
-            await self.relay.close()
-        self.sessions.clear()
+        try:
+            if self.relay:
+                await self.relay.close()
+        finally:
+            try:
+                await self._close_internal_client()
+            finally:
+                self.sessions.clear()
 
     def member(self, request):
         return request.state.alias_member
@@ -103,6 +122,9 @@ class AliasPortal:
                         write = request.method not in {"GET", "HEAD"}
                         scheme, _, key = request.headers.get("authorization", "").partition(" ")
                         request.state.alias_member = portal.sessions.member(key if scheme == "Bearer" else None)
+                        from src.plugins.management.portal import context_allowed
+                        if not context_allowed("chiffon_bot", request.state.alias_member):
+                            raise HTTPException(403, "别名工作台访问已被禁用")
                         if write:
                             chunks, size = [], 0
                             async for chunk in request.stream():

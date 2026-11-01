@@ -349,19 +349,17 @@ class PermissionManager:
             )
         return rows
 
+    def is_context_allowed(self, plugin_id: str, user_id: int | None, group_id: int | None = None,
+                           *, check_blacklist: bool = True) -> bool:
+        """Check trusted HTTP identity without fabricating an adapter event."""
+        with self._lock:
+            if check_blacklist and user_id in self._global_blacklist:
+                return False
+            entry = self._by_plugin.get(plugin_id)
+            return entry is None or (user_id not in entry.blocked_users and group_id not in entry.blocked_groups)
+
     def _eval_plugin(self, plugin_id: str, event: Event) -> bool:
-        entry = self._by_plugin.get(plugin_id)
-        if entry is None:
-            return True
-        if entry.blocked_users:
-            uid = get_user_id(event)
-            if uid is not None and uid in entry.blocked_users:
-                return False
-        if entry.blocked_groups:
-            gid = _group_id_from_event(event)
-            if gid is not None and gid in entry.blocked_groups:
-                return False
-        return True
+        return self.is_context_allowed(plugin_id, get_user_id(event), _group_id_from_event(event), check_blacklist=False)
 
     async def is_event_allowed(self, plugin_id: str | None, bot: Bot, event: Event) -> bool:
         if not plugin_id:

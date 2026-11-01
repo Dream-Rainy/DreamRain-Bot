@@ -1,6 +1,14 @@
 import pytest
 
 
+def _patch_report_reader(monkeypatch, clanbattle, source):
+    async def read(group_id, orders, *, subscribers=False):
+        dao = source(group_id)
+        return {order: {"apply": await dao.get_apply(order), "tree": await dao.get_tree(order),
+                        "subscribe": await dao.get_subscriber(order) if subscribers else []} for order in orders}
+    monkeypatch.setattr(clanbattle, "_read_report_queues", read)
+
+
 @pytest.fixture(autouse=True)
 def battle_schedule(app, monkeypatch):
     from src.plugins.priconne import clanbattle
@@ -401,6 +409,7 @@ async def test_command_center_renders_current_queues_and_keeps_cq_comments_as_te
     monkeypatch.setattr(clanbattle, "RecordDao", Records)
     for dao in ("ApplyDao", "SubscribeDao", "TreeDao"):
         monkeypatch.setattr(clanbattle, dao, Queues)
+    _patch_report_reader(monkeypatch, clanbattle, Queues)
     monkeypatch.setattr(reports, "_report_image", lambda title, metadata, cards, sections, note: tables.append(sections[0][2]) or "表格")
     async with app.test_matcher(_legacy_matcher(clanbattle.command_center)) as ctx:
         bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id="10000")
@@ -503,6 +512,7 @@ async def test_status_matchers_send_image_and_keep_each_boss_count_and_name_fall
     monkeypatch.setattr(clanbattle, "ApplyDao", Queues)
     monkeypatch.setattr(clanbattle, "TreeDao", Queues)
     monkeypatch.setattr(clanbattle, "RecordDao", Records)
+    _patch_report_reader(monkeypatch, clanbattle, Queues)
     monkeypatch.setattr(reports, "_report_image", render)
     monkeypatch.setattr(compat.LegacyBot, "get_group_member_info", member)
     monkeypatch.setattr(compat.LegacyBot, "send", send)
@@ -717,6 +727,7 @@ async def test_unified_command_center_uses_declarations_and_rechecks_snapshot(
     monkeypatch.setattr(clanbattle, "ApplyDao", Queues)
     monkeypatch.setattr(clanbattle, "TreeDao", Queues)
     monkeypatch.setattr(clanbattle, "SubscribeDao", Queues)
+    _patch_report_reader(monkeypatch, clanbattle, Queues)
     monkeypatch.setattr(reports, "_report_image", lambda title, metadata, cards, sections, note: tables.append(sections[0][2]) or "表格")
     async with app.test_matcher(_legacy_matcher(clanbattle.command_center)) as ctx:
         bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id="10000")
@@ -752,6 +763,10 @@ async def test_member_registration_permissions_and_identity_uniqueness(
 
     sent, saved, renamed = [], [], []
     roster = {'member_by_id': {'1': '同名', '2': '同名'}, 'clan_battle_id': 42}
+
+    async def member(self, **kwargs):
+        return {"user_id": kwargs["user_id"]}
+    monkeypatch.setattr(compat.LegacyBot, "get_group_member_info", member, raising=False)
 
     async def read(path):
         return initial if path.endswith('member_links.json') else roster
@@ -831,6 +846,7 @@ async def test_dispatch_command_joins_game_ids_and_requires_fresh_record_sync(cu
     monkeypatch.setattr(clanbattle, 'RecordDao', Records)
     for name in ('ApplyDao', 'TreeDao', 'SubscribeDao'):
         monkeypatch.setattr(clanbattle, name, Queues)
+    _patch_report_reader(monkeypatch, clanbattle, Queues)
     monkeypatch.setattr(clanbattle, 'coordination_reports', lambda data, group: captured.append(data) or '调度附图')
     monkeypatch.setattr(reports, '_report_image', lambda *args: '五王表')
     monkeypatch.setattr(compat.LegacyBot, 'get_group_member_info', member)
@@ -853,7 +869,7 @@ async def test_member_registration_write_failure_preserves_existing_links(app, m
     original, sent, replacements = {'789': '2'}, [], []
 
     async def read(path):
-        return original if path.endswith('member_links.json') else {'member_by_id': {'1': '甲', '2': '乙'}}
+        return original if path.endswith('member_links.json') else {'clan_battle_id': 42, 'member_by_id': {'1': '甲', '2': '乙'}}
 
     async def write(path, value):
         assert path.endswith('member_links.json.tmp')
@@ -1000,3 +1016,23 @@ async def test_rankline_query_matcher_sends_real_image_and_rejects_bad_input(app
         assert sent[0].startswith("[CQ:image,file=base64://")
     else:
         assert not calls and "名次范围" in sent[0]
+@pytest.mark.parametrize(('admin', 'word'), [(False, '补偿'), (True, '补偿'), (True, '')])
+async def test_correct_knife_requires_admin_and_passes_real_actor(app, monkeypatch, admin, word):
+    from src.plugins.priconne import clanbattle, compat
+    sent, saved = [], []
+    class Records:
+        def __init__(self, group, period):
+            assert group == 456 and period.id == 42
+        async def correct_dao(self, log, flag, **kwargs):
+            saved.append((log, flag, kwargs)); return 1
+    async def send(self, event, message, **kwargs): sent.append(str(message))
+    monkeypatch.setattr(clanbattle, 'RecordDao', Records)
+    monkeypatch.setattr(compat.LegacyBot, 'send', send)
+    event = _group_event('修正出刀 101 '+word, 1450)
+    event.sender.role = 'admin' if admin else 'member'
+    async with app.test_matcher(_legacy_matcher(clanbattle.correct_dao)) as ctx:
+        bot = ctx.create_bot(base=Bot, adapter=ctx.create_adapter(base=Adapter), self_id='10000')
+        ctx.receive_event(bot, event)
+    assert bool(saved) is (admin and bool(word))
+    assert ('修改成功' if word else '请明确刀型') in sent[0] if admin else '仅群管理员' in sent[0]
+    if saved: assert saved == [('101', .5, {'actor':'123'})]

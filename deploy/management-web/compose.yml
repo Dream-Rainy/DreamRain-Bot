@@ -1,0 +1,27 @@
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: deploy/management-web/Dockerfile
+    environment:
+      ARCADE_RELAY_TOKEN: ${ARCADE_RELAY_TOKEN:?Set a random service token}
+      ARCADE_RELAY_ORIGIN: https://${MANAGEMENT_WEB_DOMAIN:?Set the public domain}
+      FORWARDED_ALLOW_IPS: "*"
+    restart: unless-stopped
+    networks: [management]
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      MANAGEMENT_WEB_DOMAIN: ${MANAGEMENT_WEB_DOMAIN:?Set the public domain}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    networks: [management]
+networks:
+  management:
+volumes:
+  caddy_data:
+  caddy_config:

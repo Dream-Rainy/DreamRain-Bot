@@ -174,7 +174,7 @@ def boss_hp_cell(boss, typical, ready, fallback="待核验"):
                 ratio=hp / maximum if maximum else 0)
 
 
-def status_report(snapshot, online, now, period, group_id, queues=None, names=None, details=False,
+def status_data(snapshot, online, now, period, group_id, queues=None, names=None, details=False,
                   records=None, monitor_name=None):
     updated = snapshot.get("time", 0)
     if (type(updated) not in (int, float) or not period.start <= updated < period.end
@@ -286,11 +286,15 @@ def status_report(snapshot, online, now, period, group_id, queues=None, names=No
     rank = snapshot.get("rank")
     monitor = ("在线" if live else "待刷新" if not snapshot else "历史" if not period.active(now) else
                "已过期" if now - updated > 120 else "离线")
-    return _report_image("BOSS状态" if details else "会战状态",
-                         f"第{period.id}期｜{start:%m-%d}～{end:%m-%d}｜群{group_id}｜{format_timestamp(now)}", [
+    return dict(title="BOSS状态" if details else "会战状态", metadata=f"第{period.id}期｜{start:%m-%d}～{end:%m-%d}｜群{group_id}｜{format_timestamp(now)}", cards=[
         (activity, "活动进度"), (f"{rank}名" if type(rank) is int and rank > 0 else "—", "保存排名"),
         (min(b["lap_num"] for b in bosses) if bosses else "—", "最低周目"),
-        (monitor, "监控状态")], sections, "")
+        (monitor, "监控状态")], sections=sections, note="")
+
+
+def status_report(snapshot, online, now, period, group_id, queues=None, names=None, details=False, records=None, monitor_name=None):
+    data = status_data(snapshot, online, now, period, group_id, queues, names, details, records, monitor_name)
+    return _report_image(data["title"], data["metadata"], data["cards"], data["sections"], data["note"]) if isinstance(data, dict) else data
 
 
 def registration_report(kind, entries, names, now, period, group_id, snapshot=None, online=False, bound=True):
@@ -411,7 +415,7 @@ def _recorded_knife_rows(records):
     ]
 
 
-def daily_report(records, config, now, period=None, status_hint=""):
+def daily_data(records, config, now, period=None, status_hint=""):
     if period is not None and not period.active(now):
         return period.label(now) + "\n当前不在出刀活动时间内，发送【当前战报】查看本期累计。"
     roster = member_roster(config)
@@ -459,8 +463,13 @@ def daily_report(records, config, now, period=None, status_hint=""):
         note += " 名册待刷新。"
     if any(player["pending"] for player in players):
         note = (note + " * 刀型待核验").strip()
-    return _report_image("今日出刀分布", metadata, [], [
-        ("", ["刀数", "成员", "人数"], rows or [["—", "暂无名册与战绩", 0]], [180, 1060, 120])], note)
+    return dict(title="今日出刀分布", metadata=metadata, cards=[], sections=[
+        ("", ["刀数", "成员", "人数"], rows or [["—", "暂无名册与战绩", 0]], [180, 1060, 120])], note=note)
+
+
+def daily_report(records, config, now, period=None, status_hint=""):
+    data = daily_data(records, config, now, period, status_hint)
+    return _report_image(data["title"], data["metadata"], data["cards"], data["sections"], data["note"]) if isinstance(data, dict) else data
 
 
 def carry_inventory_members(records, config, now, period):
